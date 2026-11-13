@@ -37,6 +37,16 @@ export type SkyUltraBarterDisplayMode = 'half' | 'full' | 'windowed';
 /** Half / full / windowed container layouts shared by the Magic and Favorites menu replacements. */
 export type SkyUltraContainerDisplayMode = SkyUltraBarterDisplayMode;
 export interface SkyUltraSettings {
+  /** Advanced startup options, persisted in the same JSON file; restart to apply. */
+  runtime?: {
+    mainWidth?: number;
+    mainHeight?: number;
+    popupWidth?: number;
+    popupHeight?: number;
+    renderMode?: 'gpu' | 'cpu';
+    cefMultithreaded?: boolean;
+    hotReload?: boolean;
+  };
   schemaVersion?: number;
   splash: SkyUltraSplashSettings;
   actorExport: SkyUltraActorExportSettings;

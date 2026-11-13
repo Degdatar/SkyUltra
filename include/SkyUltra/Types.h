@@ -2,11 +2,14 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace skyultra {
+
+class BridgeEventQueue;
 
 using ViewId = std::uint64_t;
 
@@ -72,6 +75,8 @@ enum class InputMode : std::uint8_t {
 
 struct ViewConfig {
     std::string id;
+    std::shared_ptr<BridgeEventQueue> bridge_event_queue;
+    std::shared_ptr<BridgeEventQueue> bridge_response_queue;
     std::optional<ModContentPolicy> mod_content_policy;
     BrowserEngine browser_engine{ BrowserEngine::Ultralight };
     SizeU size{ 1280, 720 };
@@ -82,7 +87,7 @@ struct ViewConfig {
     float opacity{ 1.0F };
     float scale{ 1.0F };
     std::int32_t z_index{};
-    // Zero follows the browser engine's fastest supported frame rate.
+    // Zero selects backend-default pacing; CEF follows display refresh up to 120 FPS.
     std::uint32_t max_fps{};
     bool visible{ true };
     bool transparent{ true };

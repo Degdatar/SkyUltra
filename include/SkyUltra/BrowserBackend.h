@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SkyUltra/Types.h"
+#include "SkyUltra/BridgeEventQueue.h"
 
 #include <functional>
 #include <memory>
@@ -20,6 +21,10 @@ enum InputModifier : std::uint32_t {
 
 [[nodiscard]] std::string BuildBridgeEventScript(
     std::string_view event_name, std::string_view payload_json);
+[[nodiscard]] std::string BuildBridgeEventBatchScript(
+    const BridgeEventQueue::Batch& batch, std::string_view acknowledgement = {}, bool responses = false);
+[[nodiscard]] std::string BuildBridgeResponseJson(
+    std::string_view request_id, bool success, std::string_view payload_json, std::string_view error_message);
 [[nodiscard]] std::string BuildBridgeResponseScript(
     std::string_view request_id, bool success, std::string_view payload_json,
     std::string_view error_message);
@@ -120,6 +125,8 @@ public:
     virtual ~IWebView() = default;
 
     [[nodiscard]] virtual ViewId Id() const noexcept = 0;
+    [[nodiscard]] virtual std::shared_ptr<BridgeEventQueue> BridgeEvents() const { return {}; }
+    [[nodiscard]] virtual std::shared_ptr<BridgeEventQueue> BridgeResponses() const { return {}; }
     virtual void Navigate(std::string_view url) = 0;
     virtual void Resize(SizeU size) = 0;
     virtual void SetScale(float scale) = 0;

@@ -18,7 +18,7 @@ SkyUI, ENB, Community Shaders, SSE Engine Fixes, TrueHUD and Wheeler are **not r
 ### Installing with Mod Organizer 2 (MO2) or Vortex
 
 1. Install the **SkyUltra** archive through MO2 or Vortex and enable it in your mod list.
-2. Ensure no other mod overwrites `Data/SKSE/Plugins/SkyUltra.dll`, `Data/SKSE/Plugins/SkyUltra.ini`, or the `Data/Interface/skyultra_*.swf` files (`skyultra_inventory.swf`, `skyultra_barter.swf`, `skyultra_container.swf`, `skyultra_loot.swf`, `skyultra_pickpocket.swf`, `skyultra_mannequin.swf`, `skyultra_magic.swf`, `skyultra_favorites.swf`).
+2. Ensure no other mod overwrites `Data/SKSE/Plugins/SkyUltra.dll` or the `Data/Interface/skyultra_*.swf` files (`skyultra_inventory.swf`, `skyultra_barter.swf`, `skyultra_container.swf`, `skyultra_loot.swf`, `skyultra_pickpocket.swf`, `skyultra_mannequin.swf`, `skyultra_magic.swf`, `skyultra_favorites.swf`). Settings persist in `Data/SKSE/Plugins/SkyUltra.settings.json`; SkyUltra no longer reads or ships an INI. Advanced startup options are documented in [runtime settings](BRIDGE_DELIVERY.md#one-settings-file).
 3. Launch Skyrim via `skse64_loader.exe` (or `sksevr_loader.exe` in VR).
 
 ---

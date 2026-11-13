@@ -1,4 +1,5 @@
 #include "SkyUltra/BrowserBackend.h"
+#include "SkyUltra/BridgeBatchScript.h"
 
 #include <nlohmann/json.hpp>
 
@@ -61,6 +62,27 @@ std::string BuildBridgeEventScript(std::string_view event_name, std::string_view
     script += QuoteJavaScriptString(payload_json);
     script += ")};window.dispatchEvent(new CustomEvent(\"skyultra:message\",{detail}));})();";
     return script;
+}
+
+std::string BuildBridgeEventBatchScript(
+    const BridgeEventQueue::Batch& batch, std::string_view acknowledgement, bool responses)
+{
+    std::string script = "(" + std::string(kBridgeBatchDispatcher) + ")([";
+    bool first = true;
+    for (const auto& event : batch.events) {
+        if (!first) script += ',';
+        first = false;
+        script += '[' + QuoteJavaScriptString(event.name) + ',' + QuoteJavaScriptString(event.payload_json) + ']';
+    }
+    script += "]," + QuoteJavaScriptString(acknowledgement) + (responses ? ",true);" : ",false);");
+    return script;
+}
+
+std::string BuildBridgeResponseJson(std::string_view id, bool success,
+    std::string_view payload, std::string_view error)
+{
+    return "{\"id\":" + QuoteJavaScriptString(id) + (success ? ",\"ok\":true,\"data\":" +
+        std::string(payload.empty() ? "null" : payload) : ",\"ok\":false,\"error\":" + QuoteJavaScriptString(error)) + "}";
 }
 
 std::string BuildBridgeResponseScript(

@@ -50,8 +50,9 @@ preserving relative paths. The plugin DLL alone is insufficient.
 
 Settings persist under `Data/SKSE/Plugins/SkyUltra.settings.json` (redirected by
 MO2 when active). The supplied splash video/audio is retained; its playback,
-volume and replay choices are settings. Runtime browser choices also use
-`Data/SKSE/Plugins/SkyUltra.ini`.
+volume and replay choices are settings. Advanced startup options use the same
+JSON file's `runtime` object and apply after restarting Skyrim. The INI is no
+longer read or shipped. See [runtime settings and bridge delivery](../../docs/BRIDGE_DELIVERY.md).
 
 The built-in app installs `installSkyUltraCompetitorShims` during its lifecycle.
 Independent mod pages explicitly install their own shims before legacy scripts.

@@ -820,6 +820,14 @@ export default function DevStudioPage({
                       <small>ALLOWED METHODS</small>
                       <strong>{view.allowedMethods.length}</strong>
                     </span>
+                    {view.eventQueue && <span title={`${view.eventQueue.controlPending} host controls; ${view.eventQueue.inFlight} in flight; ${view.eventQueue.rejected} rejected; oldest queued ${view.eventQueue.oldestMs.toFixed(1)} ms; longest batch ${view.eventQueue.maxDispatchMs.toFixed(1)} ms`}>
+                      <small>PENDING EVENTS</small>
+                      <strong>{view.eventQueue.pending} / {view.eventQueue.capacity}</strong>
+                    </span>}
+                    {view.responseQueue && <span title={`${view.responseQueue.pending} pending replies; ${view.responseQueue.rejected} rejected replies`}>
+                      <small>BRIDGE BUFFER</small>
+                      <strong>{formatBytes((view.eventQueue?.bytes ?? 0) + view.responseQueue.bytes)}</strong>
+                    </span>}
                   </div>
 
                   {inspectedViewId === view.viewId && (() => {

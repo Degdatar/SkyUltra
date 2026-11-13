@@ -315,9 +315,9 @@ if(SKYULTRA_BUILD_CEF OR SKYULTRA_BUILD_ULTRALIGHT)
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "$<TARGET_FILE_DIR:SkyUltra>/resources/SkyUltra/Files"
             "${CMAKE_CURRENT_BINARY_DIR}/package/Data/Interface"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/resources/SkyUltra.ini"
+        COMMAND ${CMAKE_COMMAND} -E rm -f
             "$<TARGET_FILE_DIR:SkyUltra>/SkyUltra.ini"
+            "${CMAKE_CURRENT_BINARY_DIR}/package/Data/SKSE/Plugins/SkyUltra.ini"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/resources/skyultra_inventory.swf"
             "${CMAKE_CURRENT_BINARY_DIR}/package/Data/Interface/skyultra_inventory.swf"

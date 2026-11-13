@@ -65,7 +65,8 @@ ViewId ViewManager::Add(ViewConfig config, const ViewFactory& create_view)
     config.opacity = std::clamp(config.opacity, 0.0F, 1.0F);
     config.scale = std::clamp(config.scale, 0.25F, 4.0F);
     if (config.max_fps != 0) {
-        config.max_fps = std::clamp(config.max_fps, 1U, 240U);
+        config.max_fps = std::clamp(config.max_fps, 1U,
+            config.browser_engine == BrowserEngine::CEF ? 120U : 240U);
     }
     if (config.bounds.width <= 0.0F || config.bounds.height <= 0.0F) {
         config.bounds.width = static_cast<float>(config.size.width) / config.scale;
@@ -117,7 +118,8 @@ bool ViewManager::UpdateConfig(ViewId id, const ViewConfig& config)
     updated.opacity = std::clamp(updated.opacity, 0.0F, 1.0F);
     updated.scale = std::clamp(updated.scale, 0.25F, 4.0F);
     if (updated.max_fps != 0) {
-        updated.max_fps = std::clamp(updated.max_fps, 1U, 240U);
+        updated.max_fps = std::clamp(updated.max_fps, 1U,
+            updated.browser_engine == BrowserEngine::CEF ? 120U : 240U);
     }
     if (updated.bounds.width <= 0.0F || updated.bounds.height <= 0.0F) {
         updated.bounds.width = static_cast<float>(updated.size.width) / updated.scale;

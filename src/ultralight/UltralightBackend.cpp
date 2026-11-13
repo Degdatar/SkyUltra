@@ -737,11 +737,6 @@ private:
 
 using InputCommand = std::variant<MouseInput, KeyInput, TextInput>;
 
-struct BridgeEvent {
-    std::string name;
-    std::string payload_json;
-};
-
 struct ViewMailbox {
     explicit ViewMailbox(ViewId view_id, const ViewConfig& view_config, std::string initial_url,
         std::string file_mount_token,
@@ -751,6 +746,10 @@ struct ViewMailbox {
         config(view_config), current_url(initial_url), file_mount_token(std::move(file_mount_token)),
         load_listener(view_id, requested_at)
     {
+        bridge_events = config.bridge_event_queue ? config.bridge_event_queue : std::make_shared<BridgeEventQueue>();
+        config.bridge_event_queue = bridge_events;
+        bridge_responses = config.bridge_response_queue ? config.bridge_response_queue : std::make_shared<BridgeEventQueue>(false);
+        config.bridge_response_queue = bridge_responses;
         if (!initial_url.empty()) {
             pending_navigations.push_back(std::move(initial_url));
         }
@@ -764,8 +763,11 @@ struct ViewMailbox {
     std::string file_mount_token;
     std::deque<std::string> pending_navigations;
     std::deque<InputCommand> pending_input;
-    std::deque<BridgeEvent> pending_bridge_events;
-    std::deque<PageBridgeResponse> pending_bridge_responses;
+    std::shared_ptr<BridgeEventQueue> bridge_events;
+    std::atomic_uint64_t bridge_consumer{};
+    std::shared_ptr<BridgeEventQueue> bridge_responses;
+    std::atomic_uint64_t response_consumer{};
+    std::chrono::steady_clock::time_point last_slow_bridge_log{};
     PageBridgeMessageCallback page_bridge_callback;
     InputMode focus_mode{ InputMode::None };
     SkyUltraLoadListener load_listener;
@@ -789,7 +791,14 @@ struct RenderFramePacket {
 
 class UltralightView final : public IWebView {
 public:
-    explicit UltralightView(std::shared_ptr<ViewMailbox> mailbox) : mailbox_(std::move(mailbox)) {}
+    explicit UltralightView(std::shared_ptr<ViewMailbox> mailbox) : mailbox_(std::move(mailbox)) {
+        mailbox_->bridge_consumer = mailbox_->bridge_events->Attach([weak = std::weak_ptr<ViewMailbox>(mailbox_)] {
+            if (const auto mailbox = weak.lock()) mailbox->wake_async_worker();
+        });
+        mailbox_->response_consumer = mailbox_->bridge_responses->Attach([weak = std::weak_ptr<ViewMailbox>(mailbox_)] {
+            if (const auto mailbox = weak.lock()) mailbox->wake_async_worker();
+        });
+    }
 
     ~UltralightView() override
     {
@@ -895,35 +904,29 @@ public:
     [[nodiscard]] bool SendEventJson(
         std::string_view event_name, std::string_view payload_json) override
     {
-        constexpr std::size_t kMaxPendingBridgeEvents = 128;
         {
             const std::scoped_lock lock(mailbox_->mutex);
-            if (!mailbox_->config.enable_javascript ||
-                mailbox_->pending_bridge_events.size() >= kMaxPendingBridgeEvents) {
+            if (!mailbox_->config.enable_javascript || mailbox_->close_requested) {
                 return false;
             }
-            mailbox_->pending_bridge_events.push_back({ std::string(event_name), std::string(payload_json) });
         }
-        WakeAsyncWorker();
-        return true;
+        return mailbox_->bridge_events->Push(event_name, payload_json) == BridgeEventQueue::Result::Accepted;
     }
+    [[nodiscard]] std::shared_ptr<BridgeEventQueue> BridgeEvents() const override { return mailbox_->bridge_events; }
+    [[nodiscard]] std::shared_ptr<BridgeEventQueue> BridgeResponses() const override { return mailbox_->bridge_responses; }
 
     [[nodiscard]] bool ResolveRequest(
         std::string_view request_id, bool success, std::string_view payload_json,
         std::string_view error_message) override
     {
-        constexpr std::size_t kMaxPendingBridgeResponses = 128;
         {
             const std::scoped_lock lock(mailbox_->mutex);
-            if (!mailbox_->config.enable_javascript || mailbox_->pending_bridge_responses.size() >=
-                    kMaxPendingBridgeResponses) {
+            if (!mailbox_->config.enable_javascript || mailbox_->close_requested) {
                 return false;
             }
-            mailbox_->pending_bridge_responses.push_back({ std::string(request_id), success,
-                std::string(payload_json), std::string(error_message) });
         }
-        WakeAsyncWorker();
-        return true;
+        return mailbox_->bridge_responses->Push(request_id,
+            BuildBridgeResponseJson(request_id, success, payload_json, error_message)) == BridgeEventQueue::Result::Accepted;
     }
 
     [[nodiscard]] std::optional<SoftwareFrame> TakeFrame() override
@@ -967,13 +970,11 @@ struct ViewSnapshot {
     ViewConfig config;
     std::string file_mount_token;
     std::deque<std::string> navigations;
-    std::deque<BridgeEvent> bridge_events;
-    std::deque<PageBridgeResponse> bridge_responses;
     InputMode focus_mode{ InputMode::None };
     bool close_requested{};
 };
 
-ViewSnapshot TakeSnapshot(const std::shared_ptr<ViewMailbox>& mailbox, bool take_bridge_events = true)
+ViewSnapshot TakeSnapshot(const std::shared_ptr<ViewMailbox>& mailbox)
 {
     const std::scoped_lock lock(mailbox->mutex);
     ViewSnapshot snapshot;
@@ -981,39 +982,33 @@ ViewSnapshot TakeSnapshot(const std::shared_ptr<ViewMailbox>& mailbox, bool take
     snapshot.file_mount_token = mailbox->file_mount_token;
     snapshot.focus_mode = mailbox->focus_mode;
     snapshot.navigations.swap(mailbox->pending_navigations);
-    if (take_bridge_events) {
-        snapshot.bridge_events.swap(mailbox->pending_bridge_events);
-        snapshot.bridge_responses.swap(mailbox->pending_bridge_responses);
-    }
     snapshot.close_requested = mailbox->close_requested;
     return snapshot;
 }
 
-void DispatchBridgeEvents(View& view, const std::deque<BridgeEvent>& events)
+double DispatchBridgeEvents(View& view, const std::shared_ptr<ViewMailbox>& mailbox, bool responses = false)
 {
-    for (const auto& event : events) {
-        const auto script = BuildBridgeEventScript(event.name, event.payload_json);
-        ultralight::String exception;
-        view.EvaluateScript(ultralight::String(script.c_str(), script.size()), &exception);
-        if (!exception.empty()) {
-            SKSE::log::warn("SkyUltra JavaScript event '{}' failed: {}.",
-                event.name, exception.utf8().data());
-        }
+    const auto& queue = responses ? mailbox->bridge_responses : mailbox->bridge_events;
+    const auto batch = queue->Take(responses ? mailbox->response_consumer.load() : mailbox->bridge_consumer.load());
+    if (!batch) return 0;
+    const auto started = std::chrono::steady_clock::now();
+    const auto script = BuildBridgeEventBatchScript(*batch, {}, responses);
+    ultralight::String exception;
+    view.EvaluateScript(ultralight::String(script.c_str(), script.size()), &exception);
+    batch->executed = true;
+    const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    queue->RecordDispatch(elapsed);
+    if (elapsed >= 100 && std::chrono::steady_clock::now() - mailbox->last_slow_bridge_log >= std::chrono::seconds(10)) {
+        mailbox->last_slow_bridge_log = std::chrono::steady_clock::now();
+        const auto stats = queue->Snapshot();
+        SKSE::log::warn("SkyUltra bridge view {} ({}): {} messages starting '{}', {:.1f} ms; pending {}, bytes {}, rejected {}, oldest {:.1f} ms.",
+            mailbox->id, responses ? "replies" : "events", batch->events.size(), batch->events.front().name,
+            elapsed, stats.pending, stats.bytes, stats.rejected, stats.oldest_ms);
     }
-}
-
-void DispatchBridgeResponses(View& view, const std::deque<PageBridgeResponse>& responses)
-{
-    for (const auto& response : responses) {
-        const auto script = BuildBridgeResponseScript(response.request_id, response.success,
-            response.payload_json, response.error_message);
-        ultralight::String exception;
-        view.EvaluateScript(ultralight::String(script.c_str(), script.size()), &exception);
-        if (!exception.empty()) {
-            SKSE::log::warn("SkyUltra JavaScript response for request '{}' failed: {}.",
-                response.request_id, exception.utf8().data());
-        }
+    if (!exception.empty()) {
+        SKSE::log::warn("SkyUltra bridge batch failed for view {}: {}.", mailbox->id, exception.utf8().data());
     }
+    return elapsed;
 }
 
 unsigned UltralightModifiers(std::uint32_t modifiers)
@@ -1194,6 +1189,7 @@ struct UltralightRuntime::State {
     double performance_view_commands_total_ms{};
     double performance_view_commands_max_ms{};
     double performance_async_view_work_total_ms{};
+    std::size_t next_async_view{};
     double performance_async_view_work_max_ms{};
     std::array<double, kViewCommandStageCount> performance_command_stage_total_ms{};
     std::array<double, kViewCommandStageCount> performance_command_stage_max_ms{};
@@ -1318,12 +1314,18 @@ bool UltralightRuntime::State::HasPendingAsyncViewWork()
 {
     for (const auto& live : live_views) {
         const std::scoped_lock lock(live.mailbox->mutex);
+        // Navigation/resize/teardown need a render-frame pass. Do not busy-loop
+        // the async worker while it is waiting for those commands to be applied.
+        if (live.mailbox->close_requested || !live.mailbox->pending_navigations.empty() ||
+            live.mailbox->config.size.width != live.applied_config.size.width ||
+            live.mailbox->config.size.height != live.applied_config.size.height ||
+            live.mailbox->config.scale != live.applied_config.scale) continue;
         if (!live.mailbox->pending_input.empty() ||
             live.mailbox->focus_mode != live.applied_focus ||
             live.mailbox->config.visible != live.applied_config.visible ||
             (live.mailbox->load_listener.BridgeReady() &&
-                (!live.mailbox->pending_bridge_events.empty() ||
-                 !live.mailbox->pending_bridge_responses.empty()))) {
+                (live.mailbox->bridge_events->Pending(live.mailbox->bridge_consumer.load()) ||
+                 live.mailbox->bridge_responses->Pending(live.mailbox->response_consumer.load())))) {
             return true;
         }
     }
@@ -1336,12 +1338,16 @@ void UltralightRuntime::State::ProcessAsyncViewWork()
         return;
     }
     const auto async_view_work_start = std::chrono::steady_clock::now();
-    for (auto& live : live_views) {
+    const auto view_count = live_views.size();
+    const auto start_view = next_async_view;
+    for (std::size_t offset = 0; offset < view_count; ++offset) {
+        if (offset > 0 && std::chrono::steady_clock::now() - async_view_work_start >= std::chrono::milliseconds(4)) break;
+        const auto view_index = (start_view + offset) % view_count;
+        auto& live = live_views[view_index];
+        next_async_view = (view_index + 1) % view_count;
         InputMode focus_mode{};
         bool visible{};
         std::deque<InputCommand> input;
-        std::deque<BridgeEvent> bridge_events;
-        std::deque<PageBridgeResponse> bridge_responses;
         {
             const std::scoped_lock lock(live.mailbox->mutex);
             const auto& config = live.mailbox->config;
@@ -1354,10 +1360,9 @@ void UltralightRuntime::State::ProcessAsyncViewWork()
             }
             focus_mode = live.mailbox->focus_mode;
             visible = config.visible;
-            input.swap(live.mailbox->pending_input);
-            if (live.mailbox->load_listener.BridgeReady()) {
-                bridge_events.swap(live.mailbox->pending_bridge_events);
-                bridge_responses.swap(live.mailbox->pending_bridge_responses);
+            for (std::size_t i = 0; i < 1 && !live.mailbox->pending_input.empty(); ++i) {
+                input.push_back(std::move(live.mailbox->pending_input.front()));
+                live.mailbox->pending_input.pop_front();
             }
         }
 
@@ -1369,6 +1374,7 @@ void UltralightRuntime::State::ProcessAsyncViewWork()
                 has_active_views.store(true, std::memory_order_relaxed);
             } else {
                 live.held_mouse_button = ultralight::MouseEvent::kButton_None;
+                if (!live.warmup_pending) live.view->set_visible(false);
             }
             live.applied_config.visible = visible;
             const auto visibility_ms = std::chrono::duration<double, std::milli>(
@@ -1397,22 +1403,22 @@ void UltralightRuntime::State::ProcessAsyncViewWork()
                 performance_config_operation_max_name = "focus";
             }
         }
-        // JS replies can unblock the app while Skyrim is loading or rendering
-        // slowly. They do not require a new GPU frame or a render-thread pump.
-        if (!bridge_events.empty() || !bridge_responses.empty()) {
-            const auto bridge_start = std::chrono::steady_clock::now();
-            DispatchBridgeEvents(*live.view, bridge_events);
-            DispatchBridgeResponses(*live.view, bridge_responses);
-            const auto bridge_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - bridge_start).count();
+        const auto deliver_bridge = [&](bool responses) {
+            const auto bridge_ms = DispatchBridgeEvents(*live.view, live.mailbox, responses);
             const auto index = static_cast<std::size_t>(ViewCommandStage::Bridge);
             performance_command_stage_total_ms[index] += bridge_ms;
             if (bridge_ms > performance_command_stage_max_ms[index]) {
                 performance_command_stage_max_ms[index] = bridge_ms;
                 performance_command_stage_max_view[index] = live.mailbox->id;
             }
-        }
+        };
+        // Replies and input precede bulk events and can run without a GPU frame.
+        if (live.mailbox->load_listener.BridgeReady()) deliver_bridge(true);
         if (input.empty()) {
+            if (live.mailbox->load_listener.BridgeReady() &&
+                std::chrono::steady_clock::now() - async_view_work_start < std::chrono::milliseconds(4)) {
+                deliver_bridge(false);
+            }
             continue;
         }
 
@@ -1439,6 +1445,10 @@ void UltralightRuntime::State::ProcessAsyncViewWork()
         if (input_ms > performance_command_stage_max_ms[stage_index]) {
             performance_command_stage_max_ms[stage_index] = input_ms;
             performance_command_stage_max_view[stage_index] = live.mailbox->id;
+        }
+        if (live.mailbox->load_listener.BridgeReady() &&
+            std::chrono::steady_clock::now() - async_view_work_start < std::chrono::milliseconds(4)) {
+            deliver_bridge(false);
         }
     }
     const auto async_view_work_ms = std::chrono::duration<double, std::milli>(
@@ -1707,7 +1717,7 @@ void UltralightRuntime::State::ProcessFrame(
         new_views.swap(pending_views);
     }
     for (auto& mailbox : new_views) {
-        auto snapshot = TakeSnapshot(mailbox, false);
+        auto snapshot = TakeSnapshot(mailbox);
         if (snapshot.close_requested) {
             file_mounts->Remove(snapshot.file_mount_token);
             continue;
@@ -1776,6 +1786,7 @@ void UltralightRuntime::State::ProcessFrame(
         }
         if(live.applied_config.id=="SkyUltra.Menu" && (++live.warmup_frames<3 || !live.mailbox->load_listener.HiddenWarmupComplete()))return;
         live.warmup_pending = false;
+        if (!live.applied_config.visible) live.view->set_visible(false);
         if (rendered_frame) {
             SKSE::log::info("SkyUltra pre-rendered hidden GPU view {} before it is opened.",
                 live.mailbox->id);
@@ -1812,8 +1823,7 @@ void UltralightRuntime::State::ProcessFrame(
     };
     for (auto live = live_views.begin(); live != live_views.end();) {
         auto stage_start = std::chrono::steady_clock::now();
-        auto snapshot = TakeSnapshot(
-            live->mailbox, live->mailbox->load_listener.BridgeReady());
+        auto snapshot = TakeSnapshot(live->mailbox);
         record_command_stage(ViewCommandStage::Snapshot, live->mailbox->id, stage_start);
         if (snapshot.close_requested) {
             SetGpuFrame(live->mailbox, {}, false);
@@ -1854,12 +1864,6 @@ void UltralightRuntime::State::ProcessFrame(
         record_command_stage(ViewCommandStage::Navigation, live->mailbox->id, stage_start);
 
         stage_start = std::chrono::steady_clock::now();
-        if (!snapshot.bridge_events.empty()) {
-            DispatchBridgeEvents(view, snapshot.bridge_events);
-        }
-        if (!snapshot.bridge_responses.empty()) {
-            DispatchBridgeResponses(view, snapshot.bridge_responses);
-        }
         record_command_stage(ViewCommandStage::Bridge, live->mailbox->id, stage_start);
         ++live;
     }
@@ -2321,7 +2325,7 @@ void UltralightRuntime::State::WorkerMain()
 
         auto produced_frame = process_frame ? std::move(in_progress_frame) : nullptr;
 
-        const bool pending_async_view_work = process_frame && !initialization_failed &&
+        const bool pending_async_view_work = !initialization_failed &&
             HasPendingAsyncViewWork();
         lock.lock();
         worker_busy = false;

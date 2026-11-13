@@ -106,9 +106,13 @@ There are two permission checks: `permissions.pageRequests` in the manifest, and
 ## Engines and lifecycle
 
 - `Engine::Default` follows host configuration; a manifest pin takes precedence when present. `Cef` and `Ultralight` request specific backends included in that host build. Inspect `SkyWebView.getRuntimeInfo()` in the page for the actual engine.
-- Events use a name span and a JSON span; both lengths are required by the C API. Payloads use the bridge's 64 KiB budget, including message envelope overhead.
+- Events use a name span and a JSON span; both lengths are required by the C API. Native-to-page events accept up to 1 MiB of JSON; page-to-native requests retain the bridge's 64 KiB message budget, including envelope overhead.
 - Keep handles session-local. Hide a panel when finished and destroy a view when its owner no longer needs it. Reloading replaces the document, so recreate page event subscriptions and the ready handshake.
 - Use `get_mod_storage_directory` for persistent data when the manifest grants storage. Query capacity first; the required byte count includes the trailing NUL.
+
+`send_event_json` and `complete_page_request` reserve delivery capacity synchronously. `SKYULTRA_OK` means the host owns the message, not that a page handler has finished. Each view has a 1,024-message / 64 MiB event queue and a separate reply queue with the same limits, counting in-flight batches. `SKYULTRA_QUEUE_FULL` (`7`) means no ownership transferred; retain the message and retry later without blocking the game thread. Other failures still require checking their result code. Do not retry an accepted command. Navigation and view destruction have explicit lifecycle limits; see [delivery details and diagnostics](../docs/BRIDGE_DELIVERY.md).
+
+The `max_fps` field retains its existing behavior and ABI position: `0` selects the native API's 60 FPS default; positive values request a per-view cap. CEF clamps requests to 1–120 FPS, and Ultralight clamps positive requests to 1–240 FPS subject to its runtime edition's limit. `SKYULTRA_FPS_UNCAPPED` selects the backend default: display refresh within 120 FPS for CEF, or Ultralight's runtime default. It does not bypass CEF's host ceiling. No C function-table layout or API version changed.
 
 ## Source-only checks
 

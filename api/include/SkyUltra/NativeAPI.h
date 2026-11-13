@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Use for an engine's fastest supported frame rate. A max_fps value of 0 keeps the 60 FPS default. */
+/* Use backend-default cadence (CEF remains capped at 120 FPS). 0 keeps the 60 FPS API default. */
 #define SKYULTRA_FPS_UNCAPPED UINT32_MAX
 
 #if defined(_WIN32)
@@ -33,6 +33,7 @@ typedef enum SkyUltraResult {
     SKYULTRA_UNSUPPORTED = 4,
     SKYULTRA_INTERNAL_ERROR = 5,
     SKYULTRA_BUFFER_TOO_SMALL = 6,
+    SKYULTRA_QUEUE_FULL = 7,
 } SkyUltraResult;
 
 typedef enum SkyUltraViewStateV1 {
@@ -83,7 +84,7 @@ typedef struct SkyUltraViewConfigV1 {
     float opacity;
     float scale;
     int32_t z_index;
-    /* 0 keeps the 60 FPS default; SKYULTRA_FPS_UNCAPPED uses the fastest backend rate. */
+    /* 0 keeps 60 FPS; positive caps are honored. CEF never exceeds 120 FPS, including the sentinel. */
     uint32_t max_fps;
     uint32_t flags;
     uint32_t layer;

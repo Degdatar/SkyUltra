@@ -45,8 +45,9 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
-constexpr std::uint32_t kMaxCefWindowlessFrameRate = 240;
+constexpr std::uint32_t kMaxCefWindowlessFrameRate = 120;
 constexpr char kEditableFocusMessage[] = "skyultra_editable_focus";
+constexpr char kBridgeBatchAckMessage[] = "skyultra_bridge_batch_ack";
 
 constexpr bool IsFatalGpuResourceFailure(HRESULT reason) noexcept
 {
@@ -193,7 +194,7 @@ std::uint32_t CurrentDisplayRefreshRate() noexcept
 
 int CefWindowlessFrameRate(std::uint32_t fps) noexcept
 {
-    // CEF requires a positive rate. Follow the active display when SkyUltra is uncapped.
+    // Follow the active display by default, within CEF's 120 FPS host ceiling.
     return static_cast<int>(fps == 0 ? CurrentDisplayRefreshRate() :
         std::clamp(fps, 1U, kMaxCefWindowlessFrameRate));
 }
@@ -332,7 +333,10 @@ struct QueuedCefInputCommand {
 
 struct BrowserState {
     BrowserState(std::shared_ptr<RuntimeState> runtime_state, ViewId view_id, ViewConfig view_config) :
-        runtime(std::move(runtime_state)), id(view_id), config(std::move(view_config)) {}
+        runtime(std::move(runtime_state)), id(view_id), config(std::move(view_config)) {
+        if (!config.bridge_event_queue) config.bridge_event_queue = std::make_shared<BridgeEventQueue>();
+        if (!config.bridge_response_queue) config.bridge_response_queue = std::make_shared<BridgeEventQueue>(false);
+    }
 
     std::shared_ptr<RuntimeState> runtime;
     std::atomic<ViewId> id{};
@@ -347,8 +351,15 @@ struct BrowserState {
     std::chrono::steady_clock::time_point last_slow_input_log{};  // CEF UI thread only.
     std::chrono::steady_clock::time_point last_slow_paint_log{};  // CEF UI thread only.
     std::deque<SoftwareFrame> frames;
-    std::deque<std::pair<std::string, std::string>> pending_bridge_events;
-    std::deque<PageBridgeResponse> pending_bridge_responses;
+    std::atomic_uint64_t bridge_consumer{}, response_consumer{};
+    std::atomic_bool bridge_drain_scheduled{};
+    std::shared_ptr<BridgeEventQueue::Batch> bridge_in_flight; // CEF UI thread
+    std::string bridge_ack;
+    std::uint64_t bridge_sequence{};
+    std::chrono::steady_clock::time_point bridge_started{}, last_slow_bridge_log{};
+    std::shared_ptr<BridgeEventQueue::Batch> response_in_flight;
+    std::string response_ack;
+    std::chrono::steady_clock::time_point response_started{};
     PageBridgeMessageCallback page_bridge_callback;
     std::vector<std::uint8_t> shadow;
     SizeU shadow_size{};
@@ -375,6 +386,65 @@ struct BrowserState {
     std::atomic_bool closed{};
     std::chrono::steady_clock::time_point requested_at{ std::chrono::steady_clock::now() };
 };
+
+void ScheduleCefBridgeDrain(const std::shared_ptr<BrowserState>& state);
+void DrainCefBridge(const std::shared_ptr<BrowserState>& state)
+{
+    CEF_REQUIRE_UI_THREAD();
+    state->bridge_drain_scheduled.store(false);
+    if (!state->browser || state->close_requested || !state->main_frame_ready) return;
+    const auto frame = state->browser->GetMainFrame();
+    if (!frame) return;
+    const auto submit = [&](bool responses) {
+        auto& flight = responses ? state->response_in_flight : state->bridge_in_flight;
+        if (flight) return;
+        std::shared_ptr<BridgeEventQueue> queue;
+        { const std::scoped_lock lock(state->mutex); queue = responses ? state->config.bridge_response_queue : state->config.bridge_event_queue; }
+        const auto batch = queue->Take(responses ? state->response_consumer.load() : state->bridge_consumer.load());
+        if (!batch) return;
+        auto& ack = responses ? state->response_ack : state->bridge_ack;
+        ack = std::string(responses ? "__SKYULTRA_REPLY_ACK__" : "__SKYULTRA_BATCH_ACK__") + std::to_string(state->Id()) + ":" + std::to_string(++state->bridge_sequence);
+        flight = batch;
+        (responses ? state->response_started : state->bridge_started) = std::chrono::steady_clock::now();
+        frame->ExecuteJavaScript(BuildBridgeEventBatchScript(*batch, ack, responses), frame->GetURL(), 1);
+    };
+    submit(true);
+    submit(false);
+}
+void ScheduleCefBridgeDrain(const std::shared_ptr<BrowserState>& state)
+{
+    if (state->bridge_drain_scheduled.exchange(true)) return;
+    try {
+        if (!PostToCefUI([state] { DrainCefBridge(state); })) state->bridge_drain_scheduled.store(false);
+    } catch (...) { state->bridge_drain_scheduled.store(false); throw; }
+}
+
+bool AcknowledgeCefBridgeBatch(const std::shared_ptr<BrowserState>& state, std::string_view token)
+{
+    CEF_REQUIRE_UI_THREAD();
+    const bool reply = !state->response_ack.empty() && token == state->response_ack;
+    if (!reply && (state->bridge_ack.empty() || token != state->bridge_ack)) return false;
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration<double, std::milli>(now -
+        (reply ? state->response_started : state->bridge_started)).count();
+    std::shared_ptr<BridgeEventQueue> queue;
+    { const std::scoped_lock lock(state->mutex);
+      queue = reply ? state->config.bridge_response_queue : state->config.bridge_event_queue; }
+    queue->RecordDispatch(elapsed);
+    auto& flight = reply ? state->response_in_flight : state->bridge_in_flight;
+    if (flight) flight->executed = true;
+    if (elapsed >= 100 && now - state->last_slow_bridge_log >= std::chrono::seconds(10)) {
+        state->last_slow_bridge_log = now;
+        const auto stats = queue->Snapshot();
+        if (state->runtime->log_info) state->runtime->log_info("CEF bridge view " + std::to_string(state->Id()) +
+            ": " + std::to_string(elapsed) + " ms; pending " + std::to_string(stats.pending) +
+            ", bytes " + std::to_string(stats.bytes) + ", rejected " + std::to_string(stats.rejected));
+    }
+    flight.reset();
+    (reply ? state->response_ack : state->bridge_ack).clear();
+    ScheduleCefBridgeDrain(state);
+    return true;
+}
 
 std::string ToUtf8(const std::u32string& text)
 {
@@ -737,13 +807,19 @@ public:
         }
     }
 
-    bool OnProcessMessageReceived(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,
+    bool OnProcessMessageReceived(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame,
         CefProcessId source_process, CefRefPtr<CefProcessMessage> message) override
     {
-        if (source_process != PID_RENDERER || !message ||
-            message->GetName().ToString() != kEditableFocusMessage) {
-            return false;
+        if (source_process != PID_RENDERER || !message) return false;
+        if (message->GetName().ToString() == kBridgeBatchAckMessage) {
+            const auto arguments = message->GetArgumentList();
+            if (frame && frame->IsMain() && arguments && arguments->GetSize() == 1 &&
+                arguments->GetType(0) == VTYPE_STRING) {
+                (void)AcknowledgeCefBridgeBatch(state_, arguments->GetString(0).ToString());
+            }
+            return true;
         }
+        if (message->GetName().ToString() != kEditableFocusMessage) return false;
         const auto arguments = message->GetArgumentList();
         if (!arguments || arguments->GetSize() < 1) {
             return false;
@@ -762,6 +838,10 @@ public:
     {
         CEF_REQUIRE_UI_THREAD();
         if (frame && frame->IsMain()) {
+            state_->response_in_flight.reset();
+            state_->response_ack.clear();
+            state_->bridge_in_flight.reset();
+            state_->bridge_ack.clear();
             state_->main_frame_ready = false;
             state_->app_shell_ready=false;state_->first_prime_paint_at={};
             LogStartupStage("navigation started");
@@ -836,6 +916,8 @@ public:
     {
         CEF_REQUIRE_UI_THREAD();
         const auto text = message.ToString();
+        // Compatibility fallback for an older subprocess; current renderers use IPC.
+        if (AcknowledgeCefBridgeBatch(state_, text)) return true;
         if (state_->page_bridge_callback) {
             PageBridgeMessage parsed;
             if (ParseBridgeConsoleMessage(state_->id, text, parsed)) {
@@ -1202,8 +1284,11 @@ public:
         state_->browser = nullptr;
         state_->closed.store(true, std::memory_order_release);
         state_->main_frame_ready = false;
-        state_->pending_bridge_events.clear();
-        state_->pending_bridge_responses.clear();
+        state_->response_in_flight.reset();
+        state_->response_ack.clear();
+        state_->bridge_in_flight.reset();
+        state_->bridge_ack.clear();
+
         {
             const std::scoped_lock lock(state_->runtime->mutex);
             if (state_->runtime->open_browsers > 0) {
@@ -1272,16 +1357,7 @@ private:
     void FlushPendingBridge(CefRefPtr<CefFrame> frame)
     {
         if (!frame) return;
-        while (!state_->pending_bridge_events.empty()) {
-            auto event = std::move(state_->pending_bridge_events.front());
-            state_->pending_bridge_events.pop_front();
-            DispatchBridgeEvent(frame, event.first, event.second);
-        }
-        while (!state_->pending_bridge_responses.empty()) {
-            auto response = std::move(state_->pending_bridge_responses.front());
-            state_->pending_bridge_responses.pop_front();
-            DispatchBridgeResponse(frame, response);
-        }
+        ScheduleCefBridgeDrain(state_);
     }
 
     void LogAcceleratedFailure(std::string message)
@@ -1335,11 +1411,25 @@ private:
 class CefView final : public IWebView {
 public:
     CefView(std::shared_ptr<BrowserState> state, CefRefPtr<CefBrowserClient> client) :
-        state_(std::move(state)), client_(std::move(client)) {}
+        state_(std::move(state)), client_(std::move(client)) {
+        state_->bridge_consumer = state_->config.bridge_event_queue->Attach([weak = std::weak_ptr<BrowserState>(state_)] {
+            if (const auto state = weak.lock()) ScheduleCefBridgeDrain(state);
+        });
+        state_->response_consumer = state_->config.bridge_response_queue->Attach([weak = std::weak_ptr<BrowserState>(state_)] {
+            if (const auto state = weak.lock()) ScheduleCefBridgeDrain(state);
+        });
+        ScheduleCefBridgeDrain(state_);
+    }
 
     ~CefView() override { Close(); }
 
     [[nodiscard]] ViewId Id() const noexcept override { return state_->id; }
+    [[nodiscard]] std::shared_ptr<BridgeEventQueue> BridgeEvents() const override {
+        const std::scoped_lock lock(state_->mutex); return state_->config.bridge_event_queue;
+    }
+    [[nodiscard]] std::shared_ptr<BridgeEventQueue> BridgeResponses() const override {
+        const std::scoped_lock lock(state_->mutex); return state_->config.bridge_response_queue;
+    }
 
     void Navigate(std::string_view url) override
     {
@@ -1435,68 +1525,19 @@ public:
         QueueCefInput(state_, input);
     }
 
-    [[nodiscard]] bool SendEventJson(
-        std::string_view event_name, std::string_view payload_json) override
+    [[nodiscard]] bool SendEventJson(std::string_view name, std::string_view payload) override
     {
-        {
-            const std::scoped_lock lock(state_->mutex);
-            if (!state_->config.enable_javascript) {
-                return false;
-            }
-        }
-        const std::string name(event_name);
-        const std::string payload(payload_json);
-        return PostToCefUI([state = state_, name, payload] {
-            if (!state->browser || state->close_requested) {
-                return;
-            }
-            const auto frame = state->browser->GetMainFrame();
-            if (!frame) {
-                return;
-            }
-            if (!state->main_frame_ready) {
-                constexpr std::size_t kMaxPendingBridgeEvents = 128;
-                if (state->pending_bridge_events.size() < kMaxPendingBridgeEvents) {
-                    state->pending_bridge_events.emplace_back(name, payload);
-                }
-                return;
-            }
-            const auto script = BuildBridgeEventScript(name, payload);
-            frame->ExecuteJavaScript(script, frame->GetURL(), 1);
-        });
+        { const std::scoped_lock lock(state_->mutex); if (!state_->config.enable_javascript) return false; }
+        return BridgeEvents()->Push(name, payload) == BridgeEventQueue::Result::Accepted;
     }
 
-    [[nodiscard]] bool ResolveRequest(
-        std::string_view request_id, bool success, std::string_view payload_json,
-        std::string_view error_message) override
+    [[nodiscard]] bool ResolveRequest(std::string_view id, bool success, std::string_view payload, std::string_view error) override
     {
         {
             const std::scoped_lock lock(state_->mutex);
-            if (!state_->config.enable_javascript) {
-                return false;
-            }
+            if (!state_->config.enable_javascript || state_->closed.load()) return false;
         }
-        PageBridgeResponse response{ std::string(request_id), success,
-            std::string(payload_json), std::string(error_message) };
-        return PostToCefUI([state = state_, response = std::move(response)] {
-            if (!state->browser || state->close_requested) {
-                return;
-            }
-            const auto frame = state->browser->GetMainFrame();
-            if (!frame) {
-                return;
-            }
-            if (!state->main_frame_ready) {
-                constexpr std::size_t kMaxPendingBridgeResponses = 128;
-                if (state->pending_bridge_responses.size() < kMaxPendingBridgeResponses) {
-                    state->pending_bridge_responses.push_back(response);
-                }
-                return;
-            }
-            const auto script = BuildBridgeResponseScript(response.request_id, response.success,
-                response.payload_json, response.error_message);
-            frame->ExecuteJavaScript(script, frame->GetURL(), 1);
-        });
+        return BridgeResponses()->Push(id, BuildBridgeResponseJson(id, success, payload, error)) == BridgeEventQueue::Result::Accepted;
     }
 
     [[nodiscard]] std::optional<SoftwareFrame> TakeFrame() override
@@ -1976,6 +2017,8 @@ std::unique_ptr<IWebView> CefRuntime::CreateView(
             const std::scoped_lock lock(browser_state->mutex);
             browser_state->id.store(id, std::memory_order_relaxed);
             browser_state->config = config;
+            if (!browser_state->config.bridge_event_queue) browser_state->config.bridge_event_queue = std::make_shared<BridgeEventQueue>();
+            if (!browser_state->config.bridge_response_queue) browser_state->config.bridge_response_queue = std::make_shared<BridgeEventQueue>(false);
             browser_state->requested_at = requested_at;
             browser_state->gpu_frame.reset();
             browser_state->frames.clear();
@@ -1993,8 +2036,11 @@ std::unique_ptr<IWebView> CefRuntime::CreateView(
                 browser_state->app_shell_ready = false;
                 browser_state->page_bridge_callback = std::move(page_bridge_callback);
                 browser_state->main_frame_ready = false;
-                browser_state->pending_bridge_events.clear();
-                browser_state->pending_bridge_responses.clear();
+                browser_state->response_in_flight.reset();
+                browser_state->response_ack.clear();
+                browser_state->bridge_in_flight.reset();
+                browser_state->bridge_ack.clear();
+
                 browser_state->adopted_initial_url = url;
                 if (browser_state->browser && !browser_state->close_requested &&
                     !browser_state->runtime->gpu_suspended.load(std::memory_order_acquire)) {

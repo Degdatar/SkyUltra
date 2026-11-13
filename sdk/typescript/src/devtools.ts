@@ -17,6 +17,21 @@ export interface SkyUltraDiagnosticFinding {
   fixSnippet?: string;
 }
 
+export interface SkyUltraBridgeQueueStats {
+  capacity: number;
+  byteLimit: number;
+  pending: number;
+  controlPending: number;
+  inFlight: number;
+  bytes: number;
+  rejected: number;
+  delivered: number;
+  cancelled: number;
+  coalesced: number;
+  oldestMs: number;
+  maxDispatchMs: number;
+}
+
 export interface SkyUltraDeveloperViewRecord {
   handle: number;
   viewId: number;
@@ -36,6 +51,8 @@ export interface SkyUltraDeveloperViewRecord {
   surfaceBytes: number;
   allowedMethods: string[];
   initialUrl: string;
+  eventQueue?: SkyUltraBridgeQueueStats;
+  responseQueue?: SkyUltraBridgeQueueStats;
 }
 
 export interface SkyUltraDeveloperBridgeEntry {
@@ -180,12 +197,12 @@ export function diagnoseSkyUltraModRecord(
     });
   }
 
-  if (mod.totalAssetBytes > 25 * 1024 * 1024) {
+  if (mod.totalAssetBytes > 1024 * 1024 * 1024) {
     findings.push({
       severity: 'warning',
       code: 'LARGE_ASSET_FOOTPRINT',
-      title: 'Large package asset footprint (> 25 MB)',
-      detail: `Package contains ${(mod.totalAssetBytes / (1024 * 1024)).toFixed(1)} MB across ${mod.assetCount} files. Compress large textures/videos to keep startup fast.`,
+      title: 'Large package asset footprint (> 1 GB)',
+      detail: `Package contains ${(mod.totalAssetBytes / (1024 * 1024)).toFixed(1)} MB across ${mod.assetCount} files. This is an advisory package-size warning, not a browser storage quota. Check which assets are actually loaded at startup.`,
     });
   }
 

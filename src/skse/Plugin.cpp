@@ -1,3 +1,4 @@
+#include "SkyUltra/RuntimeSettings.h"
 #include <SKSE/SKSE.h>
 #include <RE/M/MenuCursor.h>
 #include <RE/T/TESObjectCELL.h>
@@ -148,7 +149,17 @@ std::array<bool, 2> g_vr_suppressed_triggers{};
 std::array<bool, 2> g_vr_suppressed_exit_buttons{};
 std::array<bool, 2> g_vr_suppressed_keyboard_buttons{};
 
+std::shared_ptr<skyultra::BridgeEventQueue> NativeEventsForView(skyultra::ViewId id, bool responses = false)
+{
+    if (g_view_manager) if (auto* view = g_view_manager->Find(id)) {
+        if (auto queue = responses ? view->BridgeResponses() : view->BridgeEvents()) return queue;
+    }
+    return std::make_shared<skyultra::BridgeEventQueue>(!responses);
+}
+
 struct NativeApiViewRecord {
+    std::shared_ptr<skyultra::BridgeEventQueue> bridge_events{std::make_shared<skyultra::BridgeEventQueue>()};
+    std::shared_ptr<skyultra::BridgeEventQueue> bridge_responses{std::make_shared<skyultra::BridgeEventQueue>(false)};
     SkyUltraViewStateV1 state{ SKYULTRA_VIEW_PENDING };
     std::optional<skyultra::ViewId> manager_id;
     SkyUltraModHandle mod_handle{};
@@ -436,31 +447,13 @@ std::string_view RuntimeName(const SKSE::LoadInterface* skse) noexcept
     return "Skyrim AE";
 }
 
-std::uint32_t ReadPerformanceSetting(
-    const std::filesystem::path& settings_path,
-    const wchar_t* key,
-    const char* setting_name,
-    std::uint32_t default_value,
-    std::uint32_t minimum,
-    std::uint32_t maximum)
-{
-    const auto value = GetPrivateProfileIntW(
-        L"Performance", key, default_value, settings_path.c_str());
-    if (value < minimum || value > maximum) {
-        SKSE::log::warn(
-            "SkyUltra.ini Performance.{}={} is outside {}..{}; using {}.",
-            setting_name, value, minimum, maximum, default_value);
-        return default_value;
-    }
-    return value;
-}
-
 std::string PerformanceFpsLabel(std::uint32_t fps)
 {
     return fps == 0 ? "display refresh" : std::to_string(fps) + " FPS";
 }
 
 skyultra::VideoSplashSettings g_splash_settings;
+nlohmann::json g_runtime_settings = skyultra::DefaultRuntimeSettings();
 struct ActorExportSettings {std::uint32_t full_view{4096},portrait{4096};};
 ActorExportSettings g_actor_export_settings;
 
@@ -649,7 +642,7 @@ nlohmann::json FrameworkSettingsJson()
             }
         }
     }
-    return {{"schemaVersion",2},
+    return {{"schemaVersion",2}, {"runtime",g_runtime_settings},
         {"splash",{{"enabled",g_splash_settings.enabled},{"playback",g_splash_settings.full_duration?"full-duration":"until-ready"},
         {"replay",g_splash_settings.replay},{"audio",g_splash_settings.audio},{"volume",g_splash_settings.volume}}},
         {"actorExport",{{"fullView",g_actor_export_settings.full_view},{"portrait",g_actor_export_settings.portrait}}},
@@ -874,8 +867,13 @@ bool WriteFrameworkSettingsDisk(std::string& error)
 }
 bool SaveFrameworkSettings(const nlohmann::json& input,std::string& error)
 {
+    auto next_runtime = g_runtime_settings;
+    if (input.is_object() && input.contains("runtime") &&
+        !skyultra::ParseRuntimeSettings(input["runtime"], g_runtime_settings, next_runtime, error)) return false;
     skyultra::VideoSplashSettings parsed=g_splash_settings;auto exports=g_actor_export_settings;auto hotkey=g_skyultra_hotkey;auto keyboard_hotkey=g_keyboard_hotkey;auto menu_engine=g_menu_browser_engine;auto mod_engines=g_mod_browser_engines;auto vr_head_tracking=g_vr_head_tracking;auto replace_skyrim_inventory=g_replace_skyrim_inventory;auto replace_skyrim_barter=g_replace_skyrim_barter;auto menu_display_mode=g_menu_display_mode;auto inventory_display_mode=g_inventory_display_mode;auto barter_display_mode=g_barter_display_mode;auto menu_pause_world=g_menu_pause_world;auto inventory_pause_world=g_inventory_pause_world;auto barter_pause_world=g_barter_pause_world;auto extra_menus=g_extra_menus;auto mod_hotkeys=g_mod_hotkeys;auto profile_state=g_profile_state_json;
     if(!ParseFrameworkSettings(input,parsed,exports,hotkey,keyboard_hotkey,menu_engine,mod_engines,vr_head_tracking,replace_skyrim_inventory,replace_skyrim_barter,menu_display_mode,inventory_display_mode,barter_display_mode,menu_pause_world,inventory_pause_world,barter_pause_world,extra_menus,mod_hotkeys,profile_state,error))return false;
+    if (next_runtime != g_runtime_settings) SKSE::log::info("SkyUltra runtime settings saved; restart Skyrim to apply runtime options.");
+    g_runtime_settings = std::move(next_runtime);
     const bool engine_changed = (menu_engine != g_menu_browser_engine);
     const auto previous_mod_engines = g_mod_browser_engines;
     g_splash_settings=std::move(parsed);g_actor_export_settings=exports;g_skyultra_hotkey=std::move(hotkey);g_keyboard_hotkey=std::move(keyboard_hotkey);g_menu_browser_engine=menu_engine;g_mod_browser_engines=mod_engines;g_vr_head_tracking=vr_head_tracking;g_replace_skyrim_inventory=replace_skyrim_inventory;g_replace_skyrim_barter=replace_skyrim_barter;g_menu_display_mode=std::move(menu_display_mode);g_inventory_display_mode=std::move(inventory_display_mode);g_barter_display_mode=std::move(barter_display_mode);g_menu_pause_world=menu_pause_world;g_inventory_pause_world=inventory_pause_world;g_barter_pause_world=barter_pause_world;g_extra_menus=std::move(extra_menus);g_mod_hotkeys=std::move(mod_hotkeys);g_profile_state_json=std::move(profile_state);
@@ -933,41 +931,6 @@ bool SaveFrameworkSettings(const nlohmann::json& input,std::string& error)
     return true;
 }
 
-void LoadPerformanceSettings()
-{
-    const auto settings_path = PluginDirectory() / L"SkyUltra.ini";
-    g_performance_settings.main_size.width = ReadPerformanceSetting(
-        settings_path, L"MainWidth", "MainWidth", 0, 0, 4096);
-    g_performance_settings.main_size.height = ReadPerformanceSetting(
-        settings_path, L"MainHeight", "MainHeight", 0, 0, 4096);
-    if (g_performance_settings.main_size.width == 1280 &&
-        g_performance_settings.main_size.height == 720) {
-        // Treat the former shipped default as native resolution after upgrade.
-        g_performance_settings.main_size = {};
-    }
-    g_performance_settings.main_fps = ReadPerformanceSetting(
-        settings_path, L"MainFPS", "MainFPS", 0, 0, 240);
-    g_performance_settings.popup_size.width = ReadPerformanceSetting(
-        settings_path, L"PopupWidth", "PopupWidth", 420, 128, 4096);
-    g_performance_settings.popup_size.height = ReadPerformanceSetting(
-        settings_path, L"PopupHeight", "PopupHeight", 240, 128, 4096);
-    g_performance_settings.popup_fps = ReadPerformanceSetting(
-        settings_path, L"PopupFPS", "PopupFPS", 0, 0, 240);
-    const auto& settings = g_performance_settings;
-    if (settings.main_size.width == 0 || settings.main_size.height == 0) {
-        SKSE::log::info(
-            "SkyUltra performance profile: main=native display resolution@{}, popup={}x{}@{}.",
-            PerformanceFpsLabel(settings.main_fps), settings.popup_size.width,
-            settings.popup_size.height, PerformanceFpsLabel(settings.popup_fps));
-    } else {
-        SKSE::log::info(
-            "SkyUltra performance profile: main={}x{}@{}, popup={}x{}@{}.",
-            settings.main_size.width, settings.main_size.height,
-            PerformanceFpsLabel(settings.main_fps), settings.popup_size.width,
-            settings.popup_size.height, PerformanceFpsLabel(settings.popup_fps));
-    }
-}
-
 bool IsBrowserEngineBuilt(skyultra::BrowserEngine engine) noexcept
 {
     switch (engine) {
@@ -1000,56 +963,29 @@ skyultra::BrowserEngine DefaultBrowserEngine() noexcept
     return skyultra::BrowserEngine::Ultralight;
 }
 
-const wchar_t* BrowserRenderModeName(BrowserRenderMode mode) noexcept
+void LoadRuntimeSettings()
 {
-    return mode == BrowserRenderMode::Cpu ? L"cpu" : L"gpu";
-}
-
-std::wstring ReadBrowserSetting(
-    const std::filesystem::path& settings_path,
-    const wchar_t* key,
-    const wchar_t* default_value)
-{
-    std::array<wchar_t, 32> value{};
-    const auto length = GetPrivateProfileStringW(
-        L"Browser", key, default_value, value.data(),
-        static_cast<DWORD>(value.size()), settings_path.c_str());
-    return std::wstring(value.data(), length);
-}
-
-void LoadBrowserSettings()
-{
-    const auto settings_path = PluginDirectory() / L"SkyUltra.ini";
-    BrowserSettings settings;
-
-    const auto stored_render_mode = ReadBrowserSetting(settings_path, L"RenderMode", L"gpu");
-    if (stored_render_mode == L"cpu") {
-        settings.render_mode = BrowserRenderMode::Cpu;
-    } else if (stored_render_mode != L"gpu") {
-        SKSE::log::warn("SkyUltra.ini has an unknown Browser.RenderMode value; using GPU rendering.");
+    g_runtime_settings = skyultra::DefaultRuntimeSettings();
+    std::ifstream input(PluginDirectory() / L"SkyUltra.settings.json");
+    if (input) {
+        const auto root = nlohmann::json::parse(input, nullptr, false);
+        if (root.is_object() && root.contains("runtime")) {
+            nlohmann::json parsed;
+            std::string error;
+            if (skyultra::ParseRuntimeSettings(root["runtime"], g_runtime_settings, parsed, error))
+                g_runtime_settings = std::move(parsed);
+            else SKSE::log::warn("SkyUltra runtime settings: {}; using defaults.", error);
+        }
     }
-    if (REL::Module::IsVR() && settings.render_mode == BrowserRenderMode::Cpu) {
-        SKSE::log::warn("SkyUltra VR requires GPU frames for its OpenVR overlay; using GPU rendering for this session.");
-        settings.render_mode = BrowserRenderMode::Gpu;
-    }
-    settings.cef_multithreaded = GetPrivateProfileIntW(
-        L"Browser", L"CefMultiThreaded", TRUE, settings_path.c_str()) != 0;
-
-    g_browser_settings = settings;
-    SKSE::log::info("SkyUltra browser settings: default engine={}, renderer={}, CEF multithreaded={}",
-        BrowserEngineName(DefaultBrowserEngine()),
-        settings.render_mode == BrowserRenderMode::Gpu ? "GPU" : "CPU",
-        settings.cef_multithreaded ? "yes" : "no");
-}
-
-void LoadDevelopmentSettings()
-{
-    const auto settings_path = PluginDirectory() / L"SkyUltra.ini";
-    g_mod_hot_reload_enabled = GetPrivateProfileIntW(
-        L"Development", L"HotReload", FALSE, settings_path.c_str()) != 0;
-    if (g_mod_hot_reload_enabled) {
-        SKSE::log::info("SkyUltra manifest-view hot reload is enabled.");
-    }
+    g_performance_settings.main_size = {g_runtime_settings["mainWidth"].get<std::uint32_t>(), g_runtime_settings["mainHeight"].get<std::uint32_t>()};
+    g_performance_settings.popup_size = {g_runtime_settings["popupWidth"].get<std::uint32_t>(), g_runtime_settings["popupHeight"].get<std::uint32_t>()};
+    g_performance_settings.main_fps = g_performance_settings.popup_fps = 0;
+    g_browser_settings.render_mode = g_runtime_settings["renderMode"] == "cpu" ? BrowserRenderMode::Cpu : BrowserRenderMode::Gpu;
+    if (REL::Module::IsVR()) g_browser_settings.render_mode = BrowserRenderMode::Gpu;
+    g_browser_settings.cef_multithreaded = g_runtime_settings["cefMultithreaded"].get<bool>();
+    g_mod_hot_reload_enabled = g_runtime_settings["hotReload"].get<bool>();
+    SKSE::log::info("SkyUltra settings: JSON persistence; default browser pacing restored; renderer={}; CEF multithreaded={}; hot reload={}",
+        g_browser_settings.render_mode == BrowserRenderMode::Gpu ? "GPU" : "CPU", g_browser_settings.cef_multithreaded, g_mod_hot_reload_enabled);
 }
 
 struct ScopedWinHandle final {
@@ -2638,6 +2574,8 @@ bool ToggleModViewsByHotkey(std::string_view mod_id)
         NativeApiViewRecord record;
         record.state = SKYULTRA_VIEW_READY;
         record.manager_id = created_id;
+        record.bridge_events = NativeEventsForView(created_id);
+        record.bridge_responses = NativeEventsForView(created_id, true);
         record.mod_handle = mod_handle;
         record.initial_url = entry_url;
         record.javascript_enabled = true;
@@ -3784,9 +3722,7 @@ void StartBrowser()
         g_browser_started.store(false, std::memory_order_release);
         return;
     }
-    LoadPerformanceSettings();
-    LoadBrowserSettings();
-    LoadDevelopmentSettings();
+    LoadRuntimeSettings();
     std::vector<std::unique_ptr<skyultra::IWebRuntime>> runtimes;
     runtimes.reserve(2);
 
@@ -3908,6 +3844,8 @@ void StartBrowser()
     const auto menu_handle=g_next_native_view_handle.fetch_add(1);
     NativeApiViewRecord record;
     record.state=SKYULTRA_VIEW_READY;record.manager_id=g_menu_view_id;record.mod_handle=menu_mod;
+    record.bridge_events = NativeEventsForView(g_menu_view_id);
+    record.bridge_responses = NativeEventsForView(g_menu_view_id, true);
     record.initial_url=menu_url;record.javascript_enabled=true;record.wait_for_page_ready=true;
     menu_manifest->page_request_methods.emplace("game.itemAction");
     for (const auto* method : { "game.getSpells", "game.equipSpell", "game.renameSpell", "game.deleteSpell", "game.getFavorites", "game.setFavorite", "game.getContainerSnapshot", "game.containerTransfer" }) menu_manifest->page_request_methods.emplace(method);
@@ -4091,6 +4029,8 @@ void SwitchMenuBrowserEngine(skyultra::BrowserEngine target_engine)
         }
 
         auto next_cfg = *current_cfg;
+        next_cfg.bridge_event_queue = NativeEventsForView(g_menu_view_id);
+        next_cfg.bridge_response_queue = NativeEventsForView(g_menu_view_id, true);
         next_cfg.browser_engine = desired;
         const auto old_id = g_menu_view_id;
         skyultra::RemoveActorPreview(old_id);
@@ -4173,6 +4113,8 @@ void SwitchModBrowserEngine(std::string_view mod_id_view, skyultra::BrowserEngin
             const auto* cfg_ptr = g_view_manager->Config(item.manager_id);
             if (cfg_ptr == nullptr) continue;
             auto next_cfg = *cfg_ptr;
+            next_cfg.bridge_event_queue = NativeEventsForView(item.manager_id);
+            next_cfg.bridge_response_queue = NativeEventsForView(item.manager_id, true);
             next_cfg.browser_engine = desired;
             skyultra::RemoveActorPreview(item.manager_id);
             (void)g_view_manager->Remove(item.manager_id);
@@ -4627,6 +4569,8 @@ void SetNativeApiViewFailed(SkyUltraViewHandle handle)
         if (const auto it = g_native_views.find(handle); it != g_native_views.end() &&
             it->second.state != SKYULTRA_VIEW_CLOSING) {
             it->second.state = SKYULTRA_VIEW_FAILED;
+            it->second.bridge_events->Close();
+            it->second.bridge_responses->Close();
             if(it->second.pending_config)skyultra::CancelFrameworkSplash(it->second.pending_config->id);
             it->second.pending_config.reset();
         }
@@ -4643,6 +4587,8 @@ void CreateNativeApiViewOnGameThread(
         if (it == g_native_views.end() || it->second.state == SKYULTRA_VIEW_CLOSING) {
             return;
         }
+        config.bridge_event_queue = it->second.bridge_events;
+        config.bridge_response_queue = it->second.bridge_responses;
     }
 
     if (g_view_manager == nullptr || g_browser_runtime == nullptr) {
@@ -4671,6 +4617,10 @@ void CreateNativeApiViewOnGameThread(
             }
             if (it->second.state != SKYULTRA_VIEW_CLOSING) {
                 it->second.state = view_id == 0 ? SKYULTRA_VIEW_FAILED : SKYULTRA_VIEW_READY;
+                if (view_id == 0) {
+                    it->second.bridge_events->Close();
+                    it->second.bridge_responses->Close();
+                }
             }
         }
     }
@@ -4777,6 +4727,7 @@ std::string BuildDeveloperSnapshotJson()
         std::optional<skyultra::ViewConfig> pending_config;
         std::vector<std::string> allowed_methods;
         std::string initial_url;
+        skyultra::BridgeEventQueue::Stats event_queue, response_queue;
     };
     std::vector<ViewSnapItem> raw_views;
     {
@@ -4796,7 +4747,9 @@ std::string BuildDeveloperSnapshotJson()
                 rec.pending_page_requests.size(),
                 rec.pending_config,
                 std::move(methods),
-                rec.initial_url
+                rec.initial_url,
+                rec.bridge_events->Snapshot(),
+                rec.bridge_responses->Snapshot()
             });
         }
     }
@@ -4834,6 +4787,14 @@ std::string BuildDeveloperSnapshotJson()
         ++mod_view_counts[mod_id];
         mod_surface_bytes[mod_id] += surf_bytes;
 
+        const auto queue_json = [](const skyultra::BridgeEventQueue::Stats& stats) {
+            return nlohmann::json{{"capacity", skyultra::BridgeEventQueue::kMaxPendingEvents},
+                {"byteLimit", skyultra::BridgeEventQueue::kMaxPendingBytes},
+                {"pending", stats.pending - stats.controls}, {"controlPending", stats.controls},
+                {"inFlight", stats.in_flight}, {"bytes", stats.bytes},
+                {"rejected", stats.rejected}, {"delivered", stats.delivered}, {"cancelled", stats.cancelled},
+                {"coalesced", stats.coalesced}, {"oldestMs", stats.oldest_ms}, {"maxDispatchMs", stats.max_dispatch_ms}};
+        };
         views_json.push_back({
             { "handle", v.handle },
             { "viewId", v.manager_id.value_or(0) },
@@ -4848,6 +4809,8 @@ std::string BuildDeveloperSnapshotJson()
             { "width", cfg.size.width },
             { "height", cfg.size.height },
             { "fpsLimit", cfg.max_fps },
+            { "eventQueue", queue_json(v.event_queue) },
+            { "responseQueue", queue_json(v.response_queue) },
             { "inputScopeDepth", v.input_scope_depth },
             { "pendingRequests", v.pending_requests },
             { "surfaceBytes", surf_bytes },
@@ -5595,7 +5558,7 @@ std::string HandleManageDiagnosticSampleJson(const nlohmann::json& params)
     probe_cfg.anchor = skyultra::Anchor::TopLeft;
     probe_cfg.layer = skyultra::ViewLayer::Hud;
     probe_cfg.z_index = -200;
-    probe_cfg.max_fps = 15U;
+    probe_cfg.max_fps = 15;
     probe_cfg.visible = false;
     probe_cfg.transparent = true;
     probe_cfg.click_through = true;
@@ -6734,6 +6697,8 @@ SkyUltraResult SKYULTRA_CALL NativeApiDestroyView(SkyUltraViewHandle handle)
             return SKYULTRA_OK;
         }
         it->second.state = SKYULTRA_VIEW_CLOSING;
+        it->second.bridge_events->Close();
+        it->second.bridge_responses->Close();
     }
     if (!QueueNativeApiTask([handle] {
             g_game_subscriptions.erase(handle);
@@ -6981,20 +6946,22 @@ SkyUltraResult SKYULTRA_CALL NativeApiSendEventJson(
             return SKYULTRA_UNSUPPORTED;
         }
     }
-    std::string event_name_copy(event_name);
-    std::string payload_copy(payload);
-    if (!QueueNativeApiTask([handle, event_name = std::move(event_name_copy),
-                                payload = std::move(payload_copy)] {
-            const auto view_id = NativeManagerViewId(handle);
-            auto* view = view_id && g_view_manager != nullptr ? g_view_manager->Find(*view_id) : nullptr;
-            if (view != nullptr && !view->SendEventJson(event_name, payload)) {
-                SKSE::log::warn("SkyUltra could not queue JavaScript event '{}' for view {}.",
-                    event_name, *view_id);
-            }
-        })) {
-        return SKYULTRA_NOT_INITIALIZED;
+    std::shared_ptr<skyultra::BridgeEventQueue> queue;
+    {
+        const std::scoped_lock lock(g_native_views_mutex);
+        const auto it = g_native_views.find(handle);
+        if (it == g_native_views.end() || it->second.state == SKYULTRA_VIEW_CLOSING ||
+            it->second.state == SKYULTRA_VIEW_FAILED) return SKYULTRA_NOT_FOUND;
+        queue = it->second.bridge_events;
     }
-    return SKYULTRA_OK;
+    try {
+        switch (queue->Push(event_name, payload)) {
+        case skyultra::BridgeEventQueue::Result::Accepted: return SKYULTRA_OK;
+        case skyultra::BridgeEventQueue::Result::Full: return SKYULTRA_QUEUE_FULL;
+        case skyultra::BridgeEventQueue::Result::Closed: return SKYULTRA_NOT_FOUND;
+        }
+    } catch (...) { return SKYULTRA_INTERNAL_ERROR; }
+    return SKYULTRA_INTERNAL_ERROR;
 }
 
 SkyUltraResult SKYULTRA_CALL NativeApiSetPageRequestCallback(
@@ -7156,41 +7123,24 @@ SkyUltraResult SKYULTRA_CALL NativeApiCompletePageRequest(
         request->second.completion_queued = true;
     }
 
-    const std::string request_id_copy(request_id);
-    const std::string result_json_copy(result_json);
-    const std::string error_copy(error);
-    if (!QueueNativeApiTask([handle, request_id_copy, success, result_json_copy, error_copy] {
-            const auto view_id = NativeManagerViewId(handle);
-            auto* view = view_id && g_view_manager != nullptr ?
-                g_view_manager->Find(*view_id) : nullptr;
-            if (view == nullptr || !view->ResolveRequest(
-                    request_id_copy, success != 0, result_json_copy, error_copy)) {
-                const std::scoped_lock lock(g_native_views_mutex);
-                if (const auto owner = g_native_views.find(handle); owner != g_native_views.end()) {
-                    if (const auto request = owner->second.pending_page_requests.find(request_id_copy);
-                        request != owner->second.pending_page_requests.end()) {
-                        request->second.completion_queued = false;
-                    }
-                }
-                SKSE::log::warn("SkyUltra could not queue the response for page request '{}'.",
-                    request_id_copy);
-                return;
-            }
-            const std::scoped_lock lock(g_native_views_mutex);
-            if (const auto owner = g_native_views.find(handle); owner != g_native_views.end()) {
-                owner->second.pending_page_requests.erase(request_id_copy);
-            }
-        })) {
+    auto accepted = skyultra::BridgeEventQueue::Result::Closed;
+    bool internal_error{};
+    try {
+        std::shared_ptr<skyultra::BridgeEventQueue> queue;
+        { const std::scoped_lock lock(g_native_views_mutex); const auto it = g_native_views.find(handle);
+          if (it == g_native_views.end()) return SKYULTRA_NOT_FOUND; queue = it->second.bridge_responses; }
+        accepted = queue->Push(request_id, skyultra::BuildBridgeResponseJson(request_id, success != 0, result_json, error));
+    } catch (...) { internal_error = true; }
+    {
         const std::scoped_lock lock(g_native_views_mutex);
         if (const auto owner = g_native_views.find(handle); owner != g_native_views.end()) {
-            if (const auto request = owner->second.pending_page_requests.find(std::string(request_id));
-                request != owner->second.pending_page_requests.end()) {
-                request->second.completion_queued = false;
-            }
+            if (accepted == skyultra::BridgeEventQueue::Result::Accepted) owner->second.pending_page_requests.erase(std::string(request_id));
+            else if (const auto request = owner->second.pending_page_requests.find(std::string(request_id)); request != owner->second.pending_page_requests.end()) request->second.completion_queued = false;
         }
-        return SKYULTRA_NOT_INITIALIZED;
     }
-    return SKYULTRA_OK;
+    if (internal_error) return SKYULTRA_INTERNAL_ERROR;
+    if (accepted == skyultra::BridgeEventQueue::Result::Accepted) return SKYULTRA_OK;
+    return accepted == skyultra::BridgeEventQueue::Result::Full ? SKYULTRA_QUEUE_FULL : SKYULTRA_NOT_FOUND;
 }
 
 const SkyUltraNativeAPI_V1 g_native_api_v1{

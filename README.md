@@ -32,6 +32,8 @@ Install the release through your mod manager, enable it, and start Skyrim with S
 
 Views can select CEF or Ultralight independently when the host includes both. The current CMake defaults enable both and select CEF; shipped settings, a manifest's `browserEngine`, and per-mod/menu overrides may change the selection. Engine availability and page capabilities should be checked rather than inferred from another view. Performance Lab compares a particular workload; engine switching and frame rates are not timing guarantees.
 
+Settings use `Data/SKSE/Plugins/SkyUltra.settings.json`; the INI is retired. CEF follows the display refresh by default with a 120 FPS maximum, and both engines honor lower per-view caps. The host accepts up to 1,024 pending native events per view with bounded, scheduled delivery and queue diagnostics. See [bridge delivery, performance and startup settings](docs/BRIDGE_DELIVERY.md) for limits, backpressure and engine constraints.
+
 ## Start developing
 
 Use [the SDK walkthrough](docs/SDK_GUIDE.md) to create a manifest and page without C++. Use [the native API guide](api/README.md) for SKSE plugins or [the Papyrus SDK](sdk/papyrus/README.md) for script-driven views. The page bridge is **`window.SkyWebView`**.
