@@ -1,0 +1,29 @@
+{
+  "name": "@skyultra/sdk",
+  "version": "0.1.0",
+  "description": "Typed TypeScript SDK and local preview tooling for SkyUltra web pages.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "tools",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "node ./tools/dev-server.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

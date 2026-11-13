@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "samples.broken_mod",
+  "name": "Broken Diagnostic Sample",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "permissions": {
+    "storage": false,
+    "assetAccess": true,
+    "networkHosts": [],
+    "pageRequests": [
+      "game.getPlayerSnapshot"
+    ]
+  }
+}

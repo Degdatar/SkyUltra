@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>SkyUltra Mod</title>
+  <style>
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", Arial, sans-serif;
+  color: #edf4f2;
+  background: #091116;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --ink: #edf4f2;
+  --muted: #91a4a8;
+  --line: rgba(147, 179, 183, .2);
+  --panel: rgba(13, 25, 31, .94);
+  --gold: #e7b766;
+  --cyan: #67e4d2;
+  --violet: #b29bff;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  min-width: 320px;
+  min-height: 360px;
+  margin: 0;
+  overflow: hidden;
+  background: #091116;
+}
+
+body {
+  background:
+    radial-gradient(ellipse at 78% 5%, rgba(31, 104, 101, .28), transparent 35%),
+    radial-gradient(ellipse at 12% 100%, rgba(148, 95, 43, .15), transparent 36%),
+    linear-gradient(135deg, #0d1920 0%, #081116 72%);
+}
+
+.sky-frame {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
+  padding: clamp(24px, 3.5vw, 48px) clamp(26px, 4.8vw, 64px) 22px;
+  overflow: hidden;
+  background:
+    linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+.sky-frame::before,
+.sky-frame::after {
+  position: absolute;
+  z-index: -1;
+  width: 360px;
+  height: 360px;
+  border: 1px solid rgba(103, 228, 210, .13);
+  border-radius: 50%;
+  content: "";
+  pointer-events: none;
+}
+
+.sky-frame::before {
+  top: -260px;
+  right: 4%;
+  box-shadow: 0 0 0 28px rgba(103,228,210,.025), 0 0 0 72px rgba(103,228,210,.02);
+}
+
+.sky-frame::after {
+  right: -250px;
+  bottom: -280px;
+  border-color: rgba(231, 183, 102, .12);
+  box-shadow: 0 0 0 36px rgba(231,183,102,.025), 0 0 0 84px rgba(231,183,102,.02);
+}
+
+.topbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 13px;
+  min-height: 42px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand-mark {
+  display: grid;
+  width: 39px;
+  height: 39px;
+  place-items: center;
+  border: 1px solid rgba(231, 183, 102, .76);
+  border-radius: 12px;
+  color: var(--gold);
+  font-family: Georgia, serif;
+  font-size: 23px;
+  font-weight: 700;
+  box-shadow: inset 0 0 20px rgba(231, 183, 102, .08);
+}
+
+.brand-copy { display: grid; gap: 3px; }
+.brand-name, .brand-subtitle, .eyebrow, .card-label, .response-key, .footer {
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.brand-name { color: var(--ink); font-size: 11px; font-weight: 800; }
+.brand-subtitle { color: var(--muted); font-size: 8px; font-weight: 700; }
+.topbar-spacer { flex: 1; }
+
+.engine-chip,
+.method-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: #b9c9c9;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  white-space: nowrap;
+}
+
+.engine-chip { padding: 9px 13px; background: rgba(12, 29, 34, .74); }
+.live-dot, .status-orb {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 12px rgba(103, 228, 210, .78);
+}
+
+.content {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-rows: minmax(195px, 1fr) minmax(104px, auto) minmax(125px, auto);
+  gap: 17px;
+  min-height: 0;
+  padding: 21px 0 17px;
+}
+
+.hero {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 0;
+  padding: clamp(18px, 3.2vw, 42px);
+  overflow: hidden;
+  border: 1px solid rgba(134, 173, 177, .21);
+  border-radius: 16px;
+  background:
+    linear-gradient(105deg, rgba(14, 27, 33, .97), rgba(12, 26, 32, .9) 53%, rgba(14, 40, 43, .76)),
+    var(--panel);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .2), inset 0 1px rgba(255,255,255,.025);
+}
+
+.hero-copy { position: relative; z-index: 1; max-width: 690px; }
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 14px;
+  color: var(--cyan);
+  font-size: 8px;
+  font-weight: 800;
+}
+.eyebrow-line { display: inline-block; width: 21px; height: 1px; background: var(--gold); }
+
+h1 {
+  margin: 0;
+  color: #f0f4ef;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(40px, 6.2vw, 78px);
+  font-weight: 400;
+  letter-spacing: -.055em;
+  line-height: .98;
+  text-shadow: 0 3px 25px rgba(255,255,255,.05);
+}
+.hero-description {
+  max-width: 500px;
+  margin: 13px 0 18px;
+  color: #a9b9bc;
+  font-size: clamp(11px, 1.12vw, 14px);
+  line-height: 1.55;
+}
+.bridge-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #c5d6d2;
+  font-size: 10px;
+  font-weight: 650;
+}
+.status-orb { width: 6px; height: 6px; }
+.status-orb-error { background: #ff7e79; box-shadow: 0 0 12px rgba(255,126,121,.65); }
+
+.hero-emblem {
+  position: absolute;
+  top: 50%;
+  right: clamp(30px, 9vw, 125px);
+  display: grid;
+  width: clamp(130px, 18vw, 225px);
+  aspect-ratio: 1;
+  place-items: center;
+  transform: translateY(-50%);
+  color: var(--gold);
+  opacity: .86;
+}
+.emblem-ring { position: absolute; border: 1px solid rgba(231,183,102,.28); border-radius: 50%; }
+.emblem-ring-outer { inset: 0; box-shadow: 0 0 42px rgba(231,183,102,.08), inset 0 0 36px rgba(103,228,210,.05); }
+.emblem-ring-inner { inset: 14%; border-style: dashed; border-color: rgba(103,228,210,.25); }
+.emblem-star { font-size: clamp(42px, 7vw, 82px); text-shadow: 0 0 32px rgba(231,183,102,.45); }
+.rune { position: absolute; color: var(--cyan); font-family: Georgia,serif; font-size: 17px; }
+.rune-one { top: 11%; left: 47%; }
+.rune-two { right: 9%; top: 48%; }
+.rune-three { bottom: 11%; left: 46%; }
+
+.status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; min-height: 0; }
+.status-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(130deg, rgba(20, 34, 40, .96), rgba(11, 22, 28, .94));
+}
+.card-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 10px;
+  background: rgba(0,0,0,.18);
+  font-size: 18px;
+}
+.icon-gold { color: var(--gold); }
+.icon-cyan { color: var(--cyan); }
+.icon-violet { color: var(--violet); }
+.card-copy { min-width: 0; }
+.card-label { margin: 0 0 4px; color: #81979c; font-size: 7px; font-weight: 800; }
+.card-copy h2 { overflow: hidden; margin: 0 0 4px; color: #e8eeeb; font-family: Georgia,serif; font-size: 17px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.card-copy > p:last-child { overflow: hidden; margin: 0; color: #91a4a8; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.card-index { position: absolute; top: 11px; right: 12px; color: #60777c; font-size: 7px; font-weight: 800; letter-spacing: .12em; }
+
+.bridge-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 0;
+  padding: 16px 19px;
+  border: 1px solid rgba(103,228,210,.2);
+  border-radius: 13px;
+  background: linear-gradient(110deg, rgba(13, 28, 33, .97), rgba(12, 25, 31, .93));
+}
+.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+.panel-heading .eyebrow { margin: 0 0 5px; font-size: 7px; }
+.panel-heading h2 { margin: 0; color: #e9efeb; font-family: Georgia,serif; font-size: 20px; font-weight: 400; }
+.method-tag { padding: 8px 10px; border-color: rgba(103,228,210,.25); color: var(--cyan); font-family: Consolas, monospace; font-size: 9px; letter-spacing: 0; }
+.panel-description { margin: 8px 0 11px; color: #9bafb0; font-size: 10px; line-height: 1.45; }
+.response-line { display: flex; align-items: center; gap: 12px; min-height: 30px; padding: 6px 10px; border: 1px solid rgba(147,179,183,.13); border-radius: 7px; background: rgba(3, 10, 14, .45); }
+.response-key { flex: 0 0 auto; color: #738a8e; font-size: 7px; font-weight: 800; }
+.response-line code { overflow: hidden; color: var(--cyan); font-family: Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+
+.footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+  color: #6f8589;
+  font-size: 7px;
+  font-weight: 750;
+}
+.footer > span { display: flex; align-items: center; gap: 7px; }
+.footer-seal { color: var(--gold); font-size: 12px; }
+.footer i { display: inline-block; width: 3px; height: 3px; border-radius: 50%; background: #597176; }
+.footer b { color: #52686d; font-weight: 400; }
+kbd { padding: 4px 6px; border: 1px solid rgba(147,179,183,.23); border-radius: 4px; color: #b7c4c3; font: inherit; }
+
+@media (max-width: 720px) {
+  .sky-frame { padding-right: 20px; padding-left: 20px; }
+  .content { grid-template-rows: minmax(170px, 1fr) auto minmax(125px, auto); }
+  .hero-emblem { right: 20px; opacity: .34; }
+  .status-grid { grid-template-columns: 1fr; }
+  .status-card { min-height: 72px; }
+  .footer { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-height: 620px) {
+  .sky-frame { padding-top: 14px; padding-bottom: 12px; }
+  .topbar { min-height: 35px; padding-bottom: 9px; }
+  .brand-mark { width: 32px; height: 32px; font-size: 19px; }
+  .content { grid-template-rows: minmax(155px, 1fr) 92px 112px; gap: 10px; padding: 12px 0 10px; }
+  .hero { padding: 18px 26px; }
+  .hero-description { margin: 8px 0 10px; }
+  .status-card { padding: 9px 12px; }
+  .bridge-panel { padding: 11px 15px; }
+  .panel-description { margin: 5px 0 7px; }
+  .footer { min-height: 20px; padding-top: 7px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+  </style>
+</head>
+<body>
+  <div class="sky-frame">
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">S</div>
+      <div class="brand-copy">
+        <span class="brand-name">SKYULTRA</span>
+        <span class="brand-subtitle">IN-GAME WEBVIEW</span>
+      </div>
+      <div class="topbar-spacer"></div>
+      <span class="engine-chip"><span class="live-dot"></span> PAPYRUS SAMPLE</span>
+    </header>
+
+    <main class="content">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="eyebrow-line"></span> A NEW WEBVIEW FOR SKYRIM</p>
+          <h1 id="mod-name">Your Mod</h1>
+          <p class="hero-description">A custom in-game page, rendered over Skyrim and connected to your Papyrus quest.</p>
+          <div class="bridge-status" role="status" aria-live="polite">
+            <span class="status-orb" id="status-orb"></span>
+            <span id="bridge-status">Starting the native bridge…</span>
+          </div>
+        </div>
+        <div class="hero-emblem" aria-hidden="true">
+          <div class="emblem-ring emblem-ring-outer"></div>
+          <div class="emblem-ring emblem-ring-inner"></div>
+          <div class="emblem-star">✦</div>
+          <span class="rune rune-one">ᚠ</span>
+          <span class="rune rune-two">ᛟ</span>
+          <span class="rune rune-three">ᚱ</span>
+        </div>
+      </section>
+
+      <section class="status-grid" aria-label="SkyUltra capabilities">
+        <article class="status-card">
+          <div class="card-icon icon-gold" aria-hidden="true">⌘</div>
+          <div class="card-copy">
+            <p class="card-label">NATIVE HOST</p>
+            <h2 id="runtime-host">Skyrim</h2>
+            <p>Page hosted inside your game session</p>
+          </div>
+          <span class="card-index">01</span>
+        </article>
+        <article class="status-card">
+          <div class="card-icon icon-cyan" aria-hidden="true">↔</div>
+          <div class="card-copy">
+            <p class="card-label">PAPYRUS LINK</p>
+            <h2 id="request-state">Connecting</h2>
+            <p id="request-detail">Waiting for the quest response</p>
+          </div>
+          <span class="card-index">02</span>
+        </article>
+        <article class="status-card">
+          <div class="card-icon icon-violet" aria-hidden="true">◈</div>
+          <div class="card-copy">
+            <p class="card-label">LOCAL CONTENT</p>
+            <h2>Ready</h2>
+            <p>HTML, styles, scripts, and images</p>
+          </div>
+          <span class="card-index">03</span>
+        </article>
+      </section>
+
+      <section class="bridge-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">NATIVE REQUEST</p>
+            <h2>Connected to your world</h2>
+          </div>
+          <span class="method-tag">sample.getStatus</span>
+        </div>
+        <p class="panel-description">This page made a typed request to the SkyUltra Papyrus bridge. Your quest answers it and returns JSON to the page.</p>
+        <div class="response-line">
+          <span class="response-key">RESPONSE</span>
+          <code id="bridge-response">Waiting for response…</code>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span><span class="footer-seal">✦</span> SKYULTRA <i></i> LOCAL MOD PAGE</span>
+      <span><kbd>ESC</kbd> RELEASE GAME CONTROLS <b>·</b> <kbd>SHIFT + F6</kbd> HIDE PAGE</span>
+    </footer>
+  </div>
+
+  <script>
+(() => {
+  if (Object.prototype.hasOwnProperty.call(window, "SkyWebView")) return;
+
+  const listeners = new Map();
+  const pendingRequests = new Map();
+  let nextRequestId = 0;
+  const requestNamespace = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const nativeBridgePrefix = "__SKYULTRA_BRIDGE__";
+  // Keep these values aligned with the SKSE plugin and NativeAPI.h versions.
+  const runtimeInfo = Object.freeze({
+    host: "skyrim",
+    pluginVersion: "0.1.0.0",
+    nativeApiVersion: 4,
+    bridgeVersion: 1,
+    browserEngine: "unknown",
+    capabilities: Object.freeze({ events: true, requests: true, requestCancellation: true }),
+  });
+
+  function utf8ByteLength(value) {
+    let bytes = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      if (code <= 0x7f) bytes += 1;
+      else if (code <= 0x7ff) bytes += 2;
+      else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length &&
+          value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else bytes += 3;
+    }
+    return bytes;
+  }
+
+  function publishNativeMessage(message) {
+    const serialized = JSON.stringify(message);
+    if (typeof serialized !== "string") {
+      throw new TypeError("SkyWebView request data must be JSON serializable");
+    }
+    if (utf8ByteLength(serialized) > 65536) {
+      throw new RangeError("SkyWebView request messages must be no larger than 64 KiB");
+    }
+    console.debug(nativeBridgePrefix + serialized);
+  }
+
+  function abortError(reason) {
+    const error = new Error(typeof reason === "string" && reason ? reason : "The request was cancelled");
+    error.name = "AbortError";
+    return error;
+  }
+
+  function on(name, callback) {
+    if (typeof name !== "string" || !name || typeof callback !== "function") {
+      throw new TypeError("SkyWebView.on expects an event name and a callback");
+    }
+    let callbacks = listeners.get(name);
+    if (!callbacks) {
+      callbacks = new Set();
+      listeners.set(name, callbacks);
+    }
+    callbacks.add(callback);
+    return () => off(name, callback);
+  }
+
+  function off(name, callback) {
+    const callbacks = listeners.get(name);
+    if (!callbacks) return false;
+    const removed = callbacks.delete(callback);
+    if (callbacks.size === 0) listeners.delete(name);
+    return removed;
+  }
+
+  function request(name, params, options = {}) {
+    if (typeof name !== "string" || !name || utf8ByteLength(name) > 128) {
+      return Promise.reject(new TypeError("SkyWebView.request expects a non-empty UTF-8 name of at most 128 bytes"));
+    }
+    if (options === null || typeof options !== "object") {
+      return Promise.reject(new TypeError("SkyWebView.request options must be an object"));
+    }
+
+    const signal = options.signal;
+    if (signal != null && (typeof signal !== "object" || typeof signal.addEventListener !== "function")) {
+      return Promise.reject(new TypeError("SkyWebView.request signal must be an AbortSignal"));
+    }
+    if (signal?.aborted) {
+      return Promise.reject(abortError(signal.reason));
+    }
+
+    const id = `${requestNamespace}-${(++nextRequestId).toString(36)}`;
+    return new Promise((resolve, reject) => {
+      const cleanup = () => signal?.removeEventListener("abort", onAbort);
+      const onAbort = () => {
+        if (!pendingRequests.delete(id)) return;
+        cleanup();
+        reject(abortError(signal.reason));
+        try {
+          publishNativeMessage({ kind: "cancel", id });
+        } catch (error) {
+          console.error("SkyWebView could not notify native code about request cancellation:", error);
+        }
+      };
+
+      pendingRequests.set(id, { resolve, reject, cleanup });
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      try {
+        publishNativeMessage({ kind: "request", id, name, params: params === undefined ? null : params });
+      } catch (error) {
+        pendingRequests.delete(id);
+        cleanup();
+        reject(error);
+      }
+    });
+  }
+
+  window.addEventListener("skyultra:message", (event) => {
+    const detail = event.detail;
+    if (!detail || typeof detail.name !== "string") return;
+    const callbacks = listeners.get(detail.name);
+    if (!callbacks) return;
+    for (const callback of [...callbacks]) {
+      try {
+        callback(detail.data);
+      } catch (error) {
+        console.error("SkyWebView event handler failed:", error);
+      }
+    }
+  });
+
+  window.addEventListener("skyultra:response", (event) => {
+    const detail = event.detail;
+    if (!detail || typeof detail.id !== "string") return;
+    const pending = pendingRequests.get(detail.id);
+    if (!pending) return;
+    pendingRequests.delete(detail.id);
+    pending.cleanup();
+    if (detail.ok === true) {
+      pending.resolve(detail.data);
+    } else {
+      const error = new Error(typeof detail.error === "string" ? detail.error : "The native request failed");
+      error.name = "SkyUltraRequestError";
+      pending.reject(error);
+    }
+  });
+
+  window.addEventListener("pagehide", () => {
+    for (const [id, pending] of pendingRequests) {
+      pendingRequests.delete(id);
+      pending.cleanup();
+      pending.reject(abortError("The page was unloaded"));
+      try {
+        publishNativeMessage({ kind: "cancel", id });
+      } catch (error) {
+        console.error("SkyWebView could not notify native code about an unloaded page request:", error);
+      }
+    }
+  });
+
+  Object.defineProperty(window, "SkyWebView", {
+    value: Object.freeze({
+      bridgeVersion: runtimeInfo.bridgeVersion,
+      on,
+      off,
+      request,
+      getRuntimeInfo: () => runtimeInfo,
+    }),
+    writable: false,
+    configurable: false,
+  });
+  if (!Object.prototype.hasOwnProperty.call(window, "__SKYULTRA_RUNTIME__")) {
+    Object.defineProperty(window, "__SKYULTRA_RUNTIME__", {
+      value: runtimeInfo,
+      writable: false,
+      configurable: false,
+    });
+  }
+})();
+
+  </script>
+  <script>
+    (() => {
+      const byId = (id) => document.getElementById(id);
+      const pathname = decodeURIComponent(window.location.pathname || "");
+      const parts = pathname.split("/").filter(Boolean);
+      let modName = "Your Mod";
+      for (let index = 0; index < parts.length - 1; index += 1) {
+        if (parts[index].toLowerCase() === "skyultra") {
+          modName = parts[index + 1] || modName;
+          break;
+        }
+      }
+      byId("mod-name").textContent = modName;
+      document.title = `SkyUltra Mod: ${modName}`;
+
+      const bridge = window.SkyWebView;
+      if (!bridge || typeof bridge.request !== "function") {
+        byId("bridge-status").textContent = "SkyUltra bridge did not initialize";
+        byId("request-state").textContent = "Unavailable";
+        byId("request-detail").textContent = "Check the installed SkyUltra runtime";
+        byId("bridge-response").textContent = "No native bridge detected";
+        byId("status-orb").classList.add("status-orb-error");
+        return;
+      }
+
+      if (typeof bridge.getRuntimeInfo === "function") {
+        const runtime = bridge.getRuntimeInfo();
+        if (runtime && runtime.host) byId("runtime-host").textContent = runtime.host;
+      }
+
+      let settled = false;
+      const timeout = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        byId("bridge-status").textContent = "No response from the Papyrus quest";
+        byId("request-state").textContent = "Timed out";
+        byId("request-detail").textContent = "Check the quest event handler and SKSE log";
+        byId("bridge-response").textContent = "The page request is still pending";
+        byId("status-orb").classList.add("status-orb-error");
+      }, 8000);
+
+      bridge.request("sample.getStatus")
+        .then((result) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          byId("bridge-status").textContent = "Native bridge connected";
+          byId("request-state").textContent = "Connected";
+          byId("request-detail").textContent = "Papyrus replied successfully";
+          byId("bridge-response").textContent = JSON.stringify(result);
+        })
+        .catch((error) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          byId("bridge-status").textContent = "Native bridge request failed";
+          byId("request-state").textContent = "Failed";
+          byId("request-detail").textContent = error && error.message ? error.message : "Check the SKSE log";
+          byId("bridge-response").textContent = String(error && error.message ? error.message : error);
+          byId("status-orb").classList.add("status-orb-error");
+        });
+    })();
+  </script>
+</body>
+</html>

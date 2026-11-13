@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "modname",
+  "name": "ModName",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "browserEngine": "ultralight",
+  "permissions": {
+    "storage": false,
+    "assetAccess": true,
+    "networkHosts": [],
+    "pageRequests": []
+  }
+}

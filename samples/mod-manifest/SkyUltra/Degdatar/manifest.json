@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "degdatar",
+  "name": "Degdatar",
+  "version": "1.0.0",
+  "entry": "Files/index.html",
+  "browserEngine": "cef",
+  "permissions": {
+    "storage": true,
+    "assetAccess": true,
+    "networkHosts": [],
+    "pageRequests": [
+      "sample.getStatus"
+    ]
+  }
+}

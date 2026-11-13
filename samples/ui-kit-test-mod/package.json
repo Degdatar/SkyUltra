@@ -1,0 +1,26 @@
+{
+  "name": "skyultra-ui-kit-test-mod",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@skyultra/sdk": "file:../../sdk/typescript",
+    "@skyultra/ui": "file:../../sdk/ui",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}

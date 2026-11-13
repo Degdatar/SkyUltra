@@ -1,0 +1,26 @@
+{
+  "name": "@skyultra/vite-plugin",
+  "version": "0.1.0",
+  "description": "Vite integration for building and validating SkyUltra web mods.",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md",
+    "assets/SkyUltraBridge.js"
+  ],
+  "peerDependencies": {
+    "vite": ">=6.0.0 <8.0.0"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}

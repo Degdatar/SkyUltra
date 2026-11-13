@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "skyultra",
+  "version-string": "0.1.0",
+  "builtin-baseline": "386d7c478221b7ee0c97bfe6ea61dcf65121d564",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    },
+    "directxmath",
+    "directxtk",
+    "fmt",
+    "nlohmann-json",
+    "rapidcsv",
+    "simpleini",
+    "spdlog",
+    "toml11",
+    "xbyak"
+  ],
+  "overrides": [
+    {
+      "name": "spdlog",
+      "version-semver": "1.17.0",
+      "port-version": 1
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "samples.legacy_webview_port",
+  "name": "SkyUltra Legacy WebView Port Sample",
+  "version": "1.0.0",
+  "entry": "index.html",
+  "permissions": {
+    "storage": false,
+    "assetAccess": true,
+    "networkHosts": [],
+    "pageRequests": [
+      "game.getPlayerSnapshot",
+      "game.subscribe",
+      "game.unsubscribe",
+      "ui.close",
+      "ui.pageReady"
+    ]
+  }
+}

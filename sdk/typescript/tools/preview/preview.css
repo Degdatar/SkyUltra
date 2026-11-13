@@ -1,0 +1,123 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", sans-serif;
+  background: #0b1114;
+  color: #e8edf0;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  min-width: 760px;
+  min-height: 100vh;
+  margin: 0;
+  background: radial-gradient(ellipse at 22% -10%, #1c343b 0, transparent 44%), #0b1114;
+}
+
+button, input, textarea { font: inherit; }
+
+button {
+  min-height: 38px;
+  padding: 0 15px;
+  border: 1px solid #43cee0;
+  border-radius: 7px;
+  background: #0b6570;
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:hover { background: #087b88; }
+
+input, textarea {
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #344850;
+  border-radius: 7px;
+  outline: none;
+  background: #0e1b20;
+  color: #eef7f8;
+}
+
+input:focus, textarea:focus { border-color: #45ccdc; }
+
+.toolbar {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  gap: 26px;
+  padding: 12px 24px;
+  border-bottom: 1px solid #23343a;
+  background: #0d171b;
+}
+
+.brand {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  color: #e9edf0;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-decoration: none;
+}
+
+.brand small { display: block; margin-top: 3px; color: #91a6ac; font-size: 9px; letter-spacing: .16em; }
+.brand-mark { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid #c6a05d; border-radius: 50%; color: #e4c17d; font: 700 19px Georgia, serif; }
+
+.page-form { display: flex; flex: 1; align-items: center; gap: 9px; color: #a7b8bd; font-size: 12px; }
+.page-form #entry { flex: 1; min-width: 120px; }
+.page-form input[type="number"] { width: 88px; }
+.by { color: #667d84; }
+.live-state { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; color: #9fb1b6; font-size: 12px; }
+.pulse { width: 8px; height: 8px; border-radius: 50%; background: #dfa94d; box-shadow: 0 0 12px currentColor; }
+.live-state.connected .pulse { background: #62d39e; }
+.live-state.disconnected .pulse { background: #eb7979; }
+
+main { display: grid; min-height: calc(100vh - 72px); grid-template-columns: minmax(0, 1fr) 300px; }
+.stage { display: flex; min-width: 0; flex-direction: column; padding: 28px; }
+.viewport {
+  position: relative;
+  flex: 1;
+  min-height: 300px;
+  overflow: hidden;
+  border: 1px solid #33474e;
+  border-radius: 10px;
+  background-color: #192328;
+  background-image: linear-gradient(45deg, #243238 25%, transparent 25%), linear-gradient(-45deg, #243238 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #243238 75%), linear-gradient(-45deg, transparent 75%, #243238 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+
+.viewport iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  border: 0;
+  background: transparent;
+  transform-origin: top left;
+}
+
+.stage-caption { display: flex; justify-content: space-between; gap: 12px; padding: 12px 2px 0; color: #80949a; font-size: 11px; }
+.event-panel { display: flex; flex-direction: column; gap: 24px; padding: 30px 22px; border-left: 1px solid #23343a; background: #0e181c; }
+.eyebrow { margin: 0 0 10px; color: #47cddd; font-size: 10px; font-weight: 800; letter-spacing: .15em; }
+h1 { margin: 0; font-size: 23px; }
+.intro { margin: 10px 0 0; color: #a8b9be; font-size: 13px; line-height: 1.55; }
+.note { padding: 14px; border: 1px solid #344850; border-radius: 8px; background: #122126; color: #ced9dc; font-size: 12px; line-height: 1.5; }
+.note strong { color: #e6c27b; }
+.note p { margin: 7px 0 0; color: #9eb0b5; }
+code { color: #80dce5; }
+.event-form { display: flex; flex-direction: column; gap: 9px; }
+.event-form label { color: #b8c6ca; font-size: 12px; font-weight: 700; }
+.event-form textarea { resize: vertical; font-family: Consolas, monospace; font-size: 12px; }
+.event-form output { min-height: 16px; color: #85d9a7; font-size: 11px; }
+
+@media (max-width: 1050px) {
+  .toolbar { flex-wrap: wrap; gap: 12px 20px; }
+  .page-form { order: 3; flex-basis: 100%; }
+  main { grid-template-columns: minmax(0, 1fr) 260px; }
+}

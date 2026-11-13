@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SkyUltra Page Preview</title>
+    <link rel="stylesheet" href="/__skyultra/preview.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <a class="brand" href="/__skyultra/preview" aria-label="SkyUltra preview home">
+        <span class="brand-mark">S</span>
+        <span>SKYULTRA <small>PAGE PREVIEW</small></span>
+      </a>
+      <form id="page-form" class="page-form">
+        <label for="entry">Page</label>
+        <input id="entry" name="entry" value="/index.html" spellcheck="false" />
+        <label for="width">Viewport</label>
+        <input id="width" name="width" type="number" min="320" max="7680" value="1920" />
+        <span class="by">×</span>
+        <input id="height" name="height" type="number" min="200" max="4320" value="1080" />
+        <button type="submit">Load page</button>
+      </form>
+      <div class="live-state"><span class="pulse"></span><span id="live-label">Connecting…</span></div>
+    </header>
+    <main>
+      <section class="stage" aria-label="Page viewport preview">
+        <div id="viewport" class="viewport">
+          <iframe id="page" title="SkyUltra page preview" src="/index.html"></iframe>
+        </div>
+        <div class="stage-caption">
+          <span id="size-label">1920 × 1080 CSS pixels</span>
+          <span>Browser preview · transparent backgrounds use a checkerboard</span>
+        </div>
+      </section>
+      <aside class="event-panel">
+        <div>
+          <p class="eyebrow">LOCAL DEVELOPMENT</p>
+          <h1>Preview your page</h1>
+          <p class="intro">Edits to HTML, CSS, JavaScript, and assets refresh this view automatically.</p>
+        </div>
+        <div class="note">
+          <strong>Simulated native bridge</strong>
+          <p><code>SkyWebView.request()</code> returns a preview response. Native game events and Skyrim’s D3D11 composition are not simulated.</p>
+        </div>
+        <form id="event-form" class="event-form">
+          <label for="event-name">Send a test event to the page</label>
+          <input id="event-name" value="inventoryUpdated" maxlength="128" />
+          <textarea id="event-data" rows="4" spellcheck="false">{"count": 3}</textarea>
+          <button type="submit">Send event</button>
+          <output id="event-status" aria-live="polite"></output>
+        </form>
+      </aside>
+    </main>
+    <script src="/__skyultra/preview.js"></script>
+  </body>
+</html>

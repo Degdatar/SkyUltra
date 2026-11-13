@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "my-mod",
+  "name": "My Mod",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "browserEngine": "cef",
+  "permissions": {
+    "storage": false,
+    "assetAccess": true,
+    "networkHosts": [],
+    "pageRequests": []
+  }
+}

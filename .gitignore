@@ -1,0 +1,27 @@
+# CMake & C++ Build Artifacts
+build/
+build-*/
+out/
+_deps/
+.vs/
+.vscode/
+CMakeUserPresets.json
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+
+# Node & Frontend Tooling
+node_modules/
+dist/
+.vite-temp/
+*.tsbuildinfo
+*.log
+
+# OS & Temp Files
+.DS_Store
+Thumbs.db
+*~

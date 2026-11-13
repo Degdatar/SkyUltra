@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#08111a" />
+  <meta name="description" content="SkyUltra Field Atlas: a live Skyrim interface, actor observatory, HUD builder and reusable UI kit." />
+  <title>SkyUltra · The Field Atlas</title>
+  <style>
+    :root{color-scheme:dark;font-family:"Segoe UI",Arial,sans-serif}html,body,#root{height:100%;margin:0;background:#08111a;color:#deebee}body{-webkit-user-select:none;user-select:none}
+    #skyultra-boot{box-sizing:border-box;position:relative;display:flex;min-height:100vh;flex-direction:column;align-items:center;justify-content:center;padding:40px;background:radial-gradient(ellipse at 50% 40%,#1d303a,#08111a 68%)}
+    #skyultra-boot::before,#skyultra-boot::after{content:"";position:absolute;inset:30px;border:1px solid #3d5662;pointer-events:none}#skyultra-boot::after{inset:36px;border-color:#253a45}
+    .boot-top,.boot-footer{position:absolute;left:55px;right:55px;display:flex;align-items:center;justify-content:space-between;gap:20px;color:#8da5b2;font-size:9px;letter-spacing:.18em}.boot-top{top:55px}.boot-footer{bottom:55px}.boot-top b{color:#d6bd83;font-weight:400}
+    .boot-content{width:min(700px,85vw);display:flex;flex-direction:column;align-items:center;text-align:center;isolation:isolate}.boot-logo{display:block;width:100%;max-width:570px;height:auto;object-fit:contain}.boot-rule{width:56px;height:2px;margin:25px 0;background:#cdb37f}.boot-title{font:400 clamp(25px,3vw,40px) Georgia,serif;margin:0;color:#edf1ec;letter-spacing:.015em}.boot-status{margin:18px 0 0;color:#9db6c2;font-size:12px;line-height:1.8}.boot-track{position:relative;width:220px;height:2px;margin-top:25px;overflow:hidden;background:#253b48}.boot-track i{position:absolute;left:0;top:0;bottom:0;width:55px;background:linear-gradient(90deg,#83c9d7,#dec38f);width:100%}.boot-note{margin-top:18px;color:#6f8998;font-size:10px;line-height:1.8}.boot-retry{padding:8px 16px;margin-top:16px;border:1px solid #b69e70;background:#12232f;color:#ebd5ac;cursor:pointer}
+    @keyframes field-load{to{transform:translateX(165px)}}@media(prefers-reduced-motion:reduce){.boot-track i{animation:none;width:100%}}@media(max-height:650px){.boot-logo{max-width:360px}.boot-rule{margin:14px}.boot-top{top:45px}.boot-footer{bottom:45px}}
+  </style>
+</head>
+<body>
+  <div id="root"><main id="skyultra-boot" aria-label="Loading SkyUltra" aria-live="polite">
+    <div class="boot-top"><b>SKYULTRA</b><span>SKYULTRA INTERFACE</span></div>
+    <section class="boot-content"><img class="boot-logo" src="./SkyUltraLogo.png" width="2400" height="1341" alt="SkyUltra — A Webview Interface for Skyrim" draggable="false" fetchpriority="high"/><i class="boot-rule"></i><h1 class="boot-title">A window into your world.</h1><p class="boot-status" id="boot-status">Preparing SkyUltra Interface…</p><div class="boot-track" aria-hidden="true"><i></i></div><p class="boot-note" id="boot-note">Your page opens as soon as it is ready.</p><button class="boot-retry" id="boot-retry" hidden onclick="location.reload()">Retry loading</button></section>
+    <div class="boot-footer"><span>NATIVE GPU COMPOSITION</span><span>CEF + ULTRALIGHT</span></div>
+  </main></div>
+  <script>
+    function skyUltraBootError(){var status=document.getElementById('boot-status');if(!status)return;status.textContent='The interface could not finish loading.';document.getElementById('boot-note').textContent='Retry, or check SkyUltra.log and the browser log for the failed resource.';document.getElementById('boot-retry').hidden=false;}
+    window.addEventListener('error',function(event){if(event.target&&event.target.tagName==='IMG')return;skyUltraBootError();},true);
+    window.addEventListener('unhandledrejection',skyUltraBootError);
+  </script>
+  <script type="module" src="./src/main.tsx"></script>
+</body>
+</html>

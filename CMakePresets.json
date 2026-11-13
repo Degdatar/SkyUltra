@@ -1,0 +1,36 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 26,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "local",
+      "displayName": "Windows x64 with workspace-local dependencies",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_MANIFEST_DIR": "${sourceDir}",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/_deps/vcpkg_installed",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
+        "SKYULTRA_BUILD_CEF": "ON",
+        "SKYULTRA_BUILD_ULTRALIGHT": "ON",
+        "SKYULTRA_DEFAULT_BACKEND": "CEF",
+        "SKYULTRA_CEF_ROOT": "${sourceDir}/_deps/cef",
+        "BUILD_TESTS": "OFF",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/install"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "local-release",
+      "configurePreset": "local",
+      "configuration": "Release"
+    }
+  ]
+}

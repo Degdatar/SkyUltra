@@ -1,0 +1,17 @@
+{
+  "name": "create-skyultra-mod",
+  "version": "0.1.0",
+  "description": "Scaffold a Vite web mod for SkyUltra.",
+  "type": "module",
+  "bin": {
+    "create-skyultra-mod": "./bin/create-skyultra-mod.js"
+  },
+  "files": [
+    "bin",
+    "templates",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}

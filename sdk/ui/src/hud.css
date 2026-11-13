@@ -1,0 +1,95 @@
+* { box-sizing:border-box; }
+html,body,#root { width:100%;height:100%;margin:0;overflow:hidden;background:transparent!important; }
+body { font-family:var(--sky-font-body,"Segoe UI",sans-serif); -webkit-user-select:none;user-select:none;pointer-events:none; }
+.hud-root { position:relative;display:block;width:100%;height:100%;padding:0;color:var(--sky-text,#f4efe6);font-size:12px;background:transparent!important; }
+.hud-stack { position:absolute;top:6px;right:8px;display:flex;flex-direction:column;gap:14px;width:calc(100% - 16px);transform-origin:top right;background:transparent!important; }
+.hud-root[data-density="compact"] .hud-stack { gap:10px; }
+.hud-root[data-align="bottom"] .hud-stack { top:auto;bottom:6px;transform-origin:bottom right; }
+.hud-root[data-side="left"] .hud-stack { left:8px;right:auto;transform-origin:top left; }
+.hud-root[data-side="left"][data-align="bottom"] .hud-stack { transform-origin:bottom left; }
+.hud-stack > * { flex:0 0 auto;background:transparent!important;border:0!important;box-shadow:none!important;padding:0; }
+
+/* 6-Zone Full-Screen Gameplay HUD Overlay */
+.sky-hud-screen-grid {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: transparent !important;
+  pointer-events: none;
+}
+.sky-hud-zone {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: min(420px, 32vw);
+  background: transparent !important;
+  pointer-events: none;
+}
+.hud-root[data-density="compact"] .sky-hud-zone {
+  gap: 10px;
+}
+.sky-hud-zone--top-left {
+  top: 24px;
+  left: 28px;
+  align-items: flex-start;
+}
+.sky-hud-zone--top-center {
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+  max-width: min(860px, 78vw);
+  width: min(820px, 76vw);
+}
+.sky-hud-zone--top-right {
+  top: 24px;
+  right: 28px;
+  align-items: flex-end;
+}
+.sky-hud-zone--bottom-left {
+  bottom: 26px;
+  left: 28px;
+  align-items: flex-start;
+}
+.sky-hud-zone--bottom-center {
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+}
+.sky-hud-zone--bottom-right {
+  bottom: 26px;
+  right: 28px;
+  align-items: flex-end;
+}
+.sky-hud-zone__item {
+  flex: 0 0 auto;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  padding: 0;
+}
+.sky-hud-zone--top-left .sky-hud-zone__item { transform-origin: top left; }
+.sky-hud-zone--top-center .sky-hud-zone__item { transform-origin: top center; }
+.sky-hud-zone--top-right .sky-hud-zone__item { transform-origin: top right; }
+.sky-hud-zone--bottom-left .sky-hud-zone__item { transform-origin: bottom left; }
+.sky-hud-zone--bottom-center .sky-hud-zone__item { transform-origin: bottom center; }
+.sky-hud-zone--bottom-right .sky-hud-zone__item { transform-origin: bottom right; }
+.sky-floating-hud__binding-ribbon {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font: 700 8.5px 'Bahnschrift', 'Segoe UI', sans-serif;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  text-shadow: 0 2px 8px rgb(0 0 0 / 92%);
+}
+.sky-floating-hud__custom-label {
+  color: var(--hud-accent, #e8b059);
+}
+.sky-floating-hud__bound-val {
+  color: #f6f1e7;
+  font-variant-numeric: tabular-nums;
+}

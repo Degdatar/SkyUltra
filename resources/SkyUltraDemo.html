@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkyUltra</title>
+  <style>
+    * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body {
+      display: block;
+      color: #edf1ed;
+      font: 500 15px/1.45 "Segoe UI", sans-serif;
+      background: transparent;
+    }
+    input, textarea, select, [contenteditable="true"] { user-select: text; -webkit-user-select: text; }
+    button, select { font: inherit; }
+    .shell {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      border: 0;
+      border-radius: 0;
+      background: #131d20;
+      box-shadow: none;
+    }
+    .rail {
+      display: flex;
+      flex-direction: column;
+      padding: 26px 16px 18px;
+      border-right: 1px solid #394649;
+      background: #10191c;
+    }
+    .brand { padding: 0 8px 27px; }
+    .brand-logo { display: block; width: 100%; height: 128px; margin-bottom: 12px; object-fit: contain; object-position: left center; }
+    .brand-compact-logo { display: none; }
+    .nav-label { padding: 0 10px 8px; color: #708184; font-size: 10px; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; }
+    .nav-button {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      width: 100%;
+      margin: 3px 0;
+      padding: 11px 10px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      color: #adbbbc;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+    .nav-button:hover, .nav-button.active { border-color: #35494b; color: #f0d294; background: #1a292c; }
+    .nav-icon { width: 17px; color: #79dce5; text-align: center; }
+    .rail-bottom { margin-top: auto; padding: 13px 9px 0; border-top: 1px solid #303d40; color: #819193; font-size: 11px; }
+    .online-dot { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: #77cf9c; }
+    .workspace { min-width: 0; overflow: auto; padding: 31px 38px 26px; }
+    .topline { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .eyebrow { color: #d0aa67; font-size: 11px; font-weight: 800; letter-spacing: .2em; text-transform: uppercase; }
+    .build-tag { padding: 5px 9px; border: 1px solid #3a4b4d; border-radius: 999px; color: #9caeaf; font-size: 10px; letter-spacing: .08em; }
+    h1 { margin: 13px 0 6px; font-size: 34px; line-height: 1.15; }
+    .subhead { max-width: 690px; margin: 0; color: #aab8b8; font-size: 14px; }
+    .page { display: none; }
+    .page.active { display: block; }
+    .overview-grid { display: grid; grid-template-columns: 1.25fr .75fr; gap: 14px; margin-top: 28px; }
+    .card { padding: 18px 19px; border: 1px solid #354448; border-radius: 12px; background: #192528; }
+    .card-label { color: #79dce5; font-size: 10px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+    .card h2 { margin: 8px 0 6px; font-size: 19px; }
+    .card p { margin: 0; color: #aab8b8; font-size: 13px; }
+    .status-pill { display: inline-flex; align-items: center; margin-top: 16px; padding: 7px 11px; border-radius: 999px; color: #c8f1d4; background: #244734; font-size: 12px; }
+    .route-list { display: grid; gap: 9px; margin-top: 12px; }
+    .route-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #b6c3c3; font-size: 12px; }
+    .route-engine { color: #f0d294; font-weight: 700; }
+    .wide-card { grid-column: 1 / -1; }
+    .quick-link { margin-top: 14px; padding: 8px 11px; border: 1px solid #56696a; border-radius: 7px; color: #e6d3aa; background: #202e31; cursor: pointer; }
+    .settings-head { margin-top: 26px; }
+    .settings-form { display: grid; gap: 13px; margin-top: 19px; }
+    .setting-row { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(360px, 1.2fr); align-items: center; gap: 16px; padding: 14px 16px; border: 1px solid #354448; border-radius: 10px; background: #192528; }
+    .setting-row > span:first-child { min-width: 0; }
+    .setting-title { display: block; color: #e6ece8; font-size: 13px; font-weight: 700; }
+    .setting-help { display: block; margin-top: 3px; color: #91a1a2; font-size: 11px; }
+    select {
+      width: 100%;
+      padding: 9px 11px;
+      border: 1px solid #526366;
+      border-radius: 7px;
+      outline: none;
+      color: #e8eeee;
+      background: #101a1d;
+    }
+    select:focus, button:focus-visible { border-color: #77dbe5; outline: 2px solid rgba(119, 219, 229, .25); }
+    select:disabled { opacity: .45; }
+    .toggle-wrap { display: flex; align-items: center; gap: 10px; color: #d6dfdc; font-size: 12px; }
+    .toggle-wrap input { width: 17px; height: 17px; accent-color: #54c6d1; }
+    .settings-actions { display: flex; align-items: center; gap: 14px; margin-top: 5px; }
+    .save-button { padding: 10px 16px; border: 1px solid #53cbd5; border-radius: 8px; color: #eafafa; background: #174148; font-weight: 700; cursor: pointer; }
+    .save-button:hover { background: #20565d; }
+    .save-status { color: #9eaeae; font-size: 12px; }
+    .notice { margin-top: 13px; padding: 11px 13px; border-left: 3px solid #d1aa62; border-radius: 4px; color: #b9c4c2; background: #202b2d; font-size: 11px; }
+    .footer-hint { margin-top: 22px; padding-top: 13px; border-top: 1px solid #354448; color: #849497; font-size: 11px; }
+    @media (max-width: 740px) {
+      .shell { grid-template-columns: 64px minmax(0, 1fr); }
+      .rail { padding: 16px 8px; }
+      .brand { padding: 0 4px 18px; }
+      .brand-logo { display: none; }
+      .brand-compact-logo { display: block; width: 42px; height: 42px; margin: 0 auto 12px; object-fit: contain; }
+      .nav-label, .nav-text, .rail-bottom { display: none; }
+      .nav-button { justify-content: center; padding: 11px 4px; }
+      .nav-icon { font-size: 17px; }
+      .workspace { padding: 21px 20px; }
+      .overview-grid { grid-template-columns: 1fr; }
+      .wide-card { grid-column: auto; }
+      .setting-row { grid-template-columns: 1fr; gap: 10px; }
+      h1 { font-size: 27px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand">
+        <img class="brand-logo" src="__SKYULTRA_LOGO_DATA_URI__" alt="SkyUltra, a webview interface for Skyrim">
+        <img class="brand-compact-logo" src="__SKYULTRA_LOGO_MARK_DATA_URI__" alt="SkyUltra">
+      </div>
+      <div class="nav-label">Workspace</div>
+      <button class="nav-button active" type="button" data-page="home"><span class="nav-icon">⌂</span><span class="nav-text">Overview</span></button>
+      <button class="nav-button" type="button" data-page="settings"><span class="nav-icon">⚙</span><span class="nav-text">Settings</span></button>
+      <div class="rail-bottom"><span class="online-dot"></span>Local browser ready</div>
+    </aside>
+
+    <main class="workspace">
+      <div class="topline">
+        <div class="eyebrow">SkyUltra · In-game WebView</div>
+        <div class="build-tag">LOCAL SESSION</div>
+      </div>
+
+      <section class="page active" id="home-page">
+        <h1>Your in-game web view is alive.</h1>
+        <p class="subhead">A browser layer for Skyrim, with separate views for pages and popups. Everything in this demo is bundled locally.</p>
+        <div class="overview-grid">
+          <article class="card">
+            <div class="card-label">Browser layer</div>
+            <h2>Ready for your pages</h2>
+            <p>SkyUltra renders the interface over Skyrim and routes keyboard, mouse, and controller focus to the active view.</p>
+            <div class="status-pill">Browser content loaded without network access</div>
+          </article>
+          <article class="card">
+            <div class="card-label">Engine availability</div>
+            <div class="route-list">
+              <div class="route-row"><span>CEF / Chromium</span><span class="route-engine" id="home-cef-engine">Loading…</span></div>
+              <div class="route-row"><span>Ultralight</span><span class="route-engine" id="home-ultralight-engine">Loading…</span></div>
+              <div class="route-row"><span>Default for unpinned mods</span><span class="route-engine" id="home-default-engine">Loading…</span></div>
+              <div class="route-row"><span>Rendering</span><span class="route-engine" id="home-render-mode">Loading…</span></div>
+            </div>
+            <button class="quick-link" type="button" data-open-settings>Open rendering settings</button>
+          </article>
+          <article class="card wide-card">
+            <div class="card-label">Per-mod engine choice</div>
+            <h2>Each mod picks its own browser</h2>
+            <p>Set <code>browserEngine</code> to <code>"ultralight"</code> or <code>"cef"</code> in that mod’s <code>manifest.json</code>. Both engines can serve different mods in the same session. When omitted, the mod uses the default shown above.</p>
+          </article>
+        </div>
+        <div class="footer-hint">Press Shift+F6 to close both views. Rendering and frame-rate options apply to all mods.</div>
+      </section>
+
+      <section class="page" id="settings-page">
+        <div class="settings-head">
+          <div class="eyebrow">Browser configuration</div>
+          <h1>Settings</h1>
+          <p class="subhead">Browser engines are managed by the host. Choose the rendering path and frame rates for all mods.</p>
+        </div>
+        <form class="settings-form" id="settings-form">
+          <div class="setting-row">
+            <span><span class="setting-title">Mod engine selection</span><span class="setting-help">Each author chooses an engine in their own manifest. Both compiled engines run side by side.</span></span>
+            <span class="route-engine" id="settings-engine-status">Loading…</span>
+          </div>
+          <label class="setting-row" for="render-mode">
+            <span><span class="setting-title">Browser rendering</span><span class="setting-help">CPU rendering still uses Skyrim's GPU to composite the final overlay.</span></span>
+            <select id="render-mode">
+              <option value="gpu">GPU accelerated</option>
+              <option value="cpu">CPU software rendering</option>
+            </select>
+          </label>
+          <label class="setting-row" for="main-fps">
+            <span><span class="setting-title">Main page frame rate</span><span class="setting-help">Controls page animation and redraw cadence. Follow display refresh, or set an explicit cap up to 240 FPS.</span></span>
+            <select id="main-fps">
+              <option value="0">Follow display refresh</option>
+              <option value="30">30 FPS</option>
+              <option value="60">60 FPS</option>
+              <option value="90">90 FPS</option>
+              <option value="120">120 FPS</option>
+              <option value="144">144 FPS</option>
+              <option value="165">165 FPS</option>
+              <option value="240">240 FPS</option>
+            </select>
+          </label>
+          <label class="setting-row" for="popup-fps">
+            <span><span class="setting-title">Popup frame rate</span><span class="setting-help">Set a separate animation and redraw cap for popup views.</span></span>
+            <select id="popup-fps">
+              <option value="0">Follow display refresh</option>
+              <option value="30">30 FPS</option>
+              <option value="60">60 FPS</option>
+              <option value="90">90 FPS</option>
+              <option value="120">120 FPS</option>
+              <option value="144">144 FPS</option>
+              <option value="165">165 FPS</option>
+              <option value="240">240 FPS</option>
+            </select>
+          </label>
+          <div class="setting-row">
+            <span><span class="setting-title">Multithreaded rendering</span><span class="setting-help">Controls the CEF browser loop. Ultralight always uses its dedicated render worker.</span></span>
+            <label class="toggle-wrap"><input id="cef-multithreaded" type="checkbox"><span>Run CEF on a separate browser thread</span></label>
+          </div>
+          <div class="notice" id="settings-notice">Rendering, threading, and frame-rate changes are applied after restarting Skyrim.</div>
+          <div class="settings-actions">
+            <button class="save-button" type="submit">Save settings</button>
+            <span class="save-status" id="save-status" role="status">Loading saved settings…</span>
+          </div>
+        </form>
+        <div class="footer-hint">Per-mod <code>browserEngine</code> is declared in <code>manifest.json</code>; host settings do not override mod authors’ choices.</div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    (() => {
+      const pages = {
+        home: document.getElementById("home-page"),
+        settings: document.getElementById("settings-page"),
+      };
+      const navButtons = [...document.querySelectorAll("[data-page]")];
+      const renderMode = document.getElementById("render-mode");
+      const cefMultithreaded = document.getElementById("cef-multithreaded");
+      const mainFps = document.getElementById("main-fps");
+      const popupFps = document.getElementById("popup-fps");
+      const saveStatus = document.getElementById("save-status");
+      let availability = { cef: false, ultralight: false, cpuRendering: true };
+
+      function showPage(name) {
+        for (const [key, page] of Object.entries(pages)) page.classList.toggle("active", key === name);
+        navButtons.forEach((button) => button.classList.toggle("active", button.dataset.page === name));
+      }
+
+      function updateControls() {
+        renderMode.querySelector('[value="cpu"]').disabled = !availability.cpuRendering;
+        const vrNote = availability.cpuRendering
+          ? ""
+          : " CPU rendering is unavailable for the current Skyrim VR overlay.";
+        document.getElementById("settings-notice").textContent =
+          `Rendering, threading, and frame-rate changes apply after restarting Skyrim.${vrNote}`;
+      }
+
+      function displayRouting(settings) {
+        const engineLabel = (value) => value === "cef" ? "CEF / Chromium" : "Ultralight";
+        document.getElementById("home-cef-engine").textContent = settings.activeEngines.cef ? "Available" : "Not built";
+        document.getElementById("home-ultralight-engine").textContent = settings.activeEngines.ultralight ? "Available" : "Not built";
+        document.getElementById("home-default-engine").textContent = engineLabel(settings.defaultEngine);
+        document.getElementById("settings-engine-status").textContent =
+          `${settings.activeEngines.ultralight ? "Ultralight" : ""}${settings.activeEngines.ultralight && settings.activeEngines.cef ? " + " : ""}${settings.activeEngines.cef ? "CEF / Chromium" : ""}` || "No browser backend active";
+        document.getElementById("home-render-mode").textContent = settings.renderMode === "cpu" ? "CPU software" : "GPU accelerated";
+      }
+
+      async function loadSettings() {
+        try {
+          const settings = await window.SkyWebView.request("skyultra.settings.get");
+          availability = settings.available;
+          renderMode.value = settings.renderMode;
+          cefMultithreaded.checked = settings.cefMultithreaded;
+          mainFps.value = String(settings.mainFps);
+          popupFps.value = String(settings.popupFps);
+          cefMultithreaded.disabled = !availability.cef;
+          updateControls();
+          displayRouting(settings);
+          saveStatus.textContent = settings.requiresRestart
+            ? "Saved profile · restart Skyrim to apply"
+            : "Ready";
+        } catch (error) {
+          saveStatus.textContent = `Settings unavailable: ${error.message}`;
+        }
+      }
+
+      navButtons.forEach((button) => button.addEventListener("click", () => showPage(button.dataset.page)));
+      document.querySelectorAll("[data-open-settings]").forEach((button) => button.addEventListener("click", () => showPage("settings")));
+      document.getElementById("settings-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        saveStatus.textContent = "Saving…";
+        try {
+          const settings = await window.SkyWebView.request("skyultra.settings.save", {
+            renderMode: renderMode.value,
+            cefMultithreaded: cefMultithreaded.checked,
+            mainFps: Number(mainFps.value),
+            popupFps: Number(popupFps.value),
+          });
+          displayRouting(settings);
+          saveStatus.textContent = "Settings saved · restart Skyrim to apply";
+        } catch (error) {
+          saveStatus.textContent = error.message;
+        }
+      });
+
+      document.addEventListener("DOMContentLoaded", loadSettings, { once: true });
+    })();
+  </script>
+</body>
+</html>

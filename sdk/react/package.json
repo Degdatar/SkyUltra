@@ -1,0 +1,33 @@
+{
+  "name": "@skyultra/react",
+  "version": "0.1.0",
+  "description": "React hooks for the SkyUltra TypeScript SDK.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@skyultra/sdk": ">=0.1.0 <0.2.0",
+    "react": ">=18.3.0 <20.0.0"
+  },
+  "devDependencies": {
+    "@skyultra/sdk": "file:../typescript",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.8.3"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

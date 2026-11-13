@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SkyUltra Ported WebView Sample</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at 50% 35%, rgba(20, 18, 14, 0.88), rgba(8, 8, 10, 0.94));
+        color: #f4ece1;
+      }
+      .card {
+        width: min(540px, 92vw);
+        padding: 24px 28px;
+        border: 1px solid rgba(232, 176, 89, 0.42);
+        border-radius: 10px;
+        background: rgba(16, 14, 12, 0.94);
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+      }
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #e8b059;
+      }
+      h1 {
+        margin: 6px 0 8px;
+        font-size: 24px;
+      }
+      p {
+        margin: 0 0 16px;
+        color: #bfb5a8;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+      .stat {
+        padding: 10px 12px;
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .stat small {
+        display: block;
+        font-size: 10px;
+        letter-spacing: 0.1em;
+        color: #9e9488;
+      }
+      .stat strong {
+        font-size: 18px;
+        color: #fff8ee;
+      }
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+      button {
+        padding: 8px 14px;
+        border-radius: 6px;
+        border: 1px solid rgba(232, 176, 89, 0.5);
+        background: rgba(232, 176, 89, 0.16);
+        color: #fbe5c2;
+        font-weight: 600;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="card" role="dialog" aria-labelledby="title">
+      <span class="eyebrow">SKYULTRA MIGRATION SAMPLE · BUILT-IN GAME DATA</span>
+      <h1 id="title">Connecting to SkyUltra…</h1>
+      <p id="subtitle">
+        Demonstrates porting callback-style PrismaUI / MageLight UI code onto SkyUltra’s explicit
+        <code>window.SkyWebView</code> request &amp; shared subscription contract.
+      </p>
+      <div class="stats">
+        <div class="stat"><small>HEALTH</small><strong id="hp">—</strong></div>
+        <div class="stat"><small>MAGICKA</small><strong id="mp">—</strong></div>
+        <div class="stat"><small>STAMINA</small><strong id="sp">—</strong></div>
+      </div>
+      <div class="actions">
+        <button id="refreshBtn" type="button">Refresh Snapshot</button>
+        <button id="closeBtn" type="button">Close (Esc)</button>
+      </div>
+    </section>
+    <script src="./SkyUltraBridge.js"></script>
+    <script>
+      (function () {
+        const bridge = window.SkyWebView;
+        const titleEl = document.getElementById("title");
+        const subtitleEl = document.getElementById("subtitle");
+        const hpEl = document.getElementById("hp");
+        const mpEl = document.getElementById("mp");
+        const spEl = document.getElementById("sp");
+        const controller = new AbortController();
+        let disposed = false;
+        let player = null;
+        let sequence = -1;
+        let stop = () => {};
+
+        function showError(error) {
+          if (!disposed) subtitleEl.textContent = String(error.message || error);
+        }
+
+        function renderPlayer(p) {
+          if (disposed || !p) return;
+          if (!p.available) {
+            titleEl.textContent = "Waiting for a loaded character…";
+            subtitleEl.textContent = "Open this page after loading a save. No preview data is presented as live game data.";
+            hpEl.textContent = mpEl.textContent = spEl.textContent = "—";
+            return;
+          }
+          titleEl.textContent = (p.playerName || "Dragonborn") + " · Level " + (p.level || 1);
+          subtitleEl.textContent = (p.location || "Skyrim") + " · Armor " + Math.round(p.armorRating || 0);
+          hpEl.textContent = Math.round((p.health && p.health.current) || 0) + " / " + Math.round((p.health && p.health.max) || 0);
+          mpEl.textContent = Math.round((p.magicka && p.magicka.current) || 0) + " / " + Math.round((p.magicka && p.magicka.max) || 0);
+          spEl.textContent = Math.round((p.stamina && p.stamina.current) || 0) + " / " + Math.round((p.stamina && p.stamina.max) || 0);
+        }
+
+        function applyUpdate(update) {
+          if (disposed || !update) return;
+          // An event can arrive before the initial subscription reply. Do not
+          // let an older reply replace a newer event's state.
+          if (typeof update.sequence === "number" && update.sequence < sequence) return;
+          if (typeof update.sequence === "number") sequence = update.sequence;
+          player = Object.assign({}, player || {}, update.delta || {}, { available: update.available === true });
+          renderPlayer(player);
+        }
+
+        async function boot() {
+          if (!bridge) {
+            titleEl.textContent = "Browser Preview Mode";
+            subtitleEl.textContent = "Install the page and SkyUltraBridge.js in SkyUltra to receive real game data.";
+            return;
+          }
+          stop = bridge.on("skyultra.game.update", applyUpdate);
+          await bridge.request("ui.pageReady", {}, { signal: controller.signal });
+          if (disposed) return;
+          const subscription = await bridge.request("game.subscribe", {
+            scope: "hud", topics: ["vitals"], intervalMs: 250
+          }, { signal: controller.signal });
+          if (!subscription.subscribed) throw new Error("The host did not accept the player subscription.");
+          applyUpdate(subscription.update);
+        }
+
+        document.getElementById("refreshBtn").addEventListener("click", function () {
+          if (bridge && !disposed) bridge.request("game.getPlayerSnapshot", { scope: "hud" }, { signal: controller.signal })
+            .then(snapshot => {
+              // A newer event may have arrived while this read was in flight.
+              if (disposed || (typeof snapshot.sequence === "number" && snapshot.sequence < sequence)) return;
+              if (typeof snapshot.sequence === "number") sequence = snapshot.sequence;
+              player = snapshot;
+              renderPlayer(player);
+            }).catch(showError);
+        });
+        document.getElementById("closeBtn").addEventListener("click", function () {
+          if (bridge && !disposed) bridge.request("ui.close", {}).catch(showError);
+        });
+        window.addEventListener("keydown", function (ev) {
+          if (ev.key === "Escape" && bridge && !disposed) {
+            ev.preventDefault();
+            bridge.request("ui.close", {}).catch(showError);
+          }
+        });
+
+        window.addEventListener("pagehide", function () {
+          disposed = true;
+          stop();
+          controller.abort();
+          if (bridge) void bridge.request("game.unsubscribe", {}).catch(() => {});
+        }, { once: true });
+        boot().catch(showError);
+      })();
+    </script>
+  </body>
+</html>
