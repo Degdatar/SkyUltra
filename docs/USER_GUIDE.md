@@ -36,6 +36,8 @@ All hotkeys support **1 to 3 input chords** and can be rebound in **Settings (`M
 | **Switch Modules (`01`–`09`)** | `1`–`9` (when not typing) | `LB` / `RB` or D-Pad | Laser pointer selection |
 | **Close Menu / Skip Splash** | `Escape` | `B` / `Back` | `Secondary Button` |
 
+SkyUltra's menu hotkey selects SkyUltra's own menu, even after another mod was open. Per-mod hotkeys select that mod's panels. Escape closes the current panels; opening SkyUltra afterward does not reopen the last mod. HUDs and pinned widgets keep their own visibility. A temporary Skyrim modal menu restores only the panels that were open before it interrupted them.
+
 Press **Space** outside a text field to focus the visible page's search. If the main menu page has no search, Space opens the command palette. **Enter** activates the focused button, slot, or tile. Text fields keep normal spaces, and popup/hotkey recording scopes keep their own input. These controls also apply to the web menus opened by the inventory, barter, magic, favorites, container, loot, pickpocket, and mannequin SWF launchers.
 
 Performance Lab keeps startup wall times (which include hidden prewarming, the title screen, and waiting for a loaded character) separate from the most recent visible opening. Use **Most recent opening → live-data callback** to measure opening latency; warm opens can use already cached player data. Page callbacks measure browser scheduling, not the native frame's presentation time.

@@ -13,6 +13,7 @@
 #    include "SkyUltra/ModManifest.h"
 #    include "SkyUltra/NativeAPI.h"
 #    include "SkyUltra/Papyrus.h"
+#    include "SkyUltra/PanelVisibility.h"
 #    include "SkyUltra/ViewManager.h"
 #    if defined(SKYULTRA_WITH_CEF)
 #        include "SkyUltra/CefBackend.h"
@@ -206,7 +207,7 @@ struct WidgetOverlayRecord {
     nlohmann::json custom_code = nlohmann::json::object();
 };
 std::unordered_map<SkyUltraModHandle, WidgetOverlayRecord> g_widget_overlays; // game thread only
-std::unordered_set<skyultra::ViewId> g_suspended_panel_views; // game thread only
+std::unordered_set<skyultra::ViewId> g_suspended_panel_views; // Temporary Skyrim modal restore only; game thread.
 struct GameDataSubscriptionRecord {
     std::vector<std::string> topics;
     bool compact{ false };
@@ -1935,7 +1936,46 @@ std::unordered_set<std::uint32_t> g_held_vr_buttons;
 std::unordered_map<std::uint64_t, std::uint32_t> g_button_repeat_steps;
 std::chrono::steady_clock::time_point g_last_hotkey_toggle_time{};
 
-void SetBrowserVisible(bool visible, const char* reason = "Shift+F6")
+enum class BrowserOpenTarget { MainMenu, CurrentPanels, RestoreSuspended };
+
+void ApplyBrowserPanelVisibility(skyultra::PanelVisibilityAction action,
+    std::span<const skyultra::ViewId> selected = {}, SkyUltraModHandle selected_mod = 0,
+    bool remember_for_modal = false)
+{
+    if (action != skyultra::PanelVisibilityAction::Restore) g_suspended_panel_views.clear();
+    ReleaseGamepadStickKeys();
+    for (const auto& snapshot : g_view_manager->OrderedViews()) {
+        const bool pinned = std::ranges::any_of(g_widget_overlays,
+            [&](const auto& entry) { return entry.second.manager_id == snapshot.id; });
+        const bool managed = !pinned && snapshot.config.layer != skyultra::ViewLayer::Hud &&
+            snapshot.id != g_window_test_view_id;
+        if (remember_for_modal && managed && snapshot.config.visible) g_suspended_panel_views.insert(snapshot.id);
+        const bool next_visible = skyultra::ResolvePanelVisibility(action,
+            {snapshot.id, snapshot.config.visible, managed, g_suspended_panel_views.contains(snapshot.id)}, selected);
+        // The built-in page receives its mode events before it is shown below.
+        if (next_visible && snapshot.id == g_menu_view_id) continue;
+        if (next_visible != snapshot.config.visible) {
+            (void)g_view_manager->SetVisible(snapshot.id, next_visible);
+            if (!next_visible) skyultra::CancelFrameworkSplash(snapshot.config.id);
+        }
+    }
+    if (action == skyultra::PanelVisibilityAction::Restore) g_suspended_panel_views.clear();
+    if (action == skyultra::PanelVisibilityAction::Select ||
+        (action == skyultra::PanelVisibilityAction::Hide && !remember_for_modal)) {
+        // A deferred creation must not reopen a panel after the user selected a
+        // different menu. Explicitly hidden creations never become restore entries.
+        const std::scoped_lock lock(g_native_views_mutex);
+        for (auto& [handle, record] : g_native_views) {
+            (void)handle;
+            if (record.pending_config && record.pending_config->layer != skyultra::ViewLayer::Hud &&
+                (selected_mod == 0 || record.mod_handle != selected_mod)) record.pending_config->visible = false;
+        }
+    }
+    for (auto& capture : g_mouse_capture) capture.reset();
+}
+
+void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
+    BrowserOpenTarget target = BrowserOpenTarget::MainMenu)
 {
     if (g_view_manager == nullptr) {
         return;
@@ -1951,19 +1991,30 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6")
     }
     g_held_keyboard_scans.clear();
     g_button_repeat_steps.clear();
-    if (visible) {
-        for (const auto id : g_suspended_panel_views) (void)g_view_manager->SetVisible(id, true);
-        g_suspended_panel_views.clear();
+    const bool restore_main_menu = visible && target == BrowserOpenTarget::RestoreSuspended &&
+        g_suspended_panel_views.contains(g_menu_view_id);
+    if (visible && target == BrowserOpenTarget::MainMenu) {
+        const std::array<skyultra::ViewId, 1> selected{g_menu_view_id};
+        ApplyBrowserPanelVisibility(skyultra::PanelVisibilityAction::Select, selected);
+    } else if (visible && target == BrowserOpenTarget::RestoreSuspended) {
+        ApplyBrowserPanelVisibility(skyultra::PanelVisibilityAction::Restore);
+    } else if (!visible) {
+        ApplyBrowserPanelVisibility(skyultra::PanelVisibilityAction::Hide, {}, 0,
+            target == BrowserOpenTarget::RestoreSuspended);
     }
     const auto ordered_views = g_view_manager->OrderedViews();
+    const auto* main_config = g_view_manager->Config(g_menu_view_id);
+    const bool show_main_menu = visible && (target == BrowserOpenTarget::MainMenu || restore_main_menu ||
+        (main_config && main_config->visible));
     const bool has_visible_mod_view = visible &&
         std::ranges::any_of(ordered_views, [](const auto& snapshot) {
             return snapshot.id != g_menu_view_id && snapshot.id != g_window_test_view_id &&
-                snapshot.config.visible && !std::ranges::any_of(g_widget_overlays,
+                snapshot.config.visible && !snapshot.config.click_through &&
+                snapshot.config.layer != skyultra::ViewLayer::Hud && !std::ranges::any_of(g_widget_overlays,
                     [&](const auto& entry) { return entry.second.manager_id == snapshot.id; });
         });
     if (visible) {
-        if (!has_visible_mod_view && !g_inventory_replacement_active && !g_barter_replacement_active &&
+        if (show_main_menu && !g_inventory_replacement_active && !g_barter_replacement_active &&
             !g_magic_replacement_active && !g_favorites_replacement_active &&
             !g_container_replacement_active && !g_mannequin_replacement_active &&
             !g_loot_replacement_active && !g_pickpocket_replacement_active &&
@@ -1977,7 +2028,7 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6")
                 }
             }
         }
-        if (!has_visible_mod_view && g_menu_view_id != 0) {
+        if (show_main_menu && g_menu_view_id != 0) {
             if (!skyultra::FrameworkSplashActive()) {
                 skyultra::BeginOverlayPageLoad(g_menu_view_id);
             }
@@ -2057,13 +2108,6 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6")
         g_virtual_keyboard_opened_menu = false;
         skyultra::CancelFrameworkSplash();
         ReleaseGamepadStickKeys();
-        for (const auto& snapshot : ordered_views) {
-            const bool pinned = std::ranges::any_of(g_widget_overlays, [&](const auto& item) { return item.second.manager_id == snapshot.id; });
-            if (snapshot.config.visible && !pinned && snapshot.id != g_menu_view_id && snapshot.id != g_window_test_view_id) {
-                g_suspended_panel_views.insert(snapshot.id);
-                (void)g_view_manager->SetVisible(snapshot.id, false);
-            }
-        }
         for (auto& capture : g_mouse_capture) {
             capture.reset();
         }
@@ -2464,7 +2508,10 @@ bool HasActiveInputScope()
 {
     const std::scoped_lock lock(g_native_views_mutex);
     return std::ranges::any_of(g_native_views, [](const auto& item) {
-        return item.second.input_scope_depth != 0;
+        const auto& record = item.second;
+        if (record.input_scope_depth == 0 || !record.manager_id || !g_view_manager) return false;
+        const auto* config = g_view_manager->Config(*record.manager_id);
+        return config && config->visible && !config->click_through && config->layer != skyultra::ViewLayer::Hud;
     });
 }
 
@@ -2585,8 +2632,9 @@ bool ToggleModViewsByHotkey(std::string_view mod_id)
             const std::scoped_lock views_lock(g_native_views_mutex);
             g_native_views.emplace(view_handle, std::move(record));
         }
-        if (g_menu_view_id != 0) (void)g_view_manager->SetVisible(g_menu_view_id, false);
-        SetBrowserVisible(true, "mod hotkey");
+        const std::array<skyultra::ViewId, 1> selected{created_id};
+        ApplyBrowserPanelVisibility(skyultra::PanelVisibilityAction::Select, selected, mod_handle);
+        SetBrowserVisible(true, "mod hotkey", BrowserOpenTarget::CurrentPanels);
         return true;
     }
     bool any_visible = false;
@@ -2594,16 +2642,14 @@ bool ToggleModViewsByHotkey(std::string_view mod_id)
         if (const auto* cfg = g_view_manager->Config(id); cfg && cfg->visible) any_visible = true;
     }
     const bool target_visible = !any_visible || g_browser_overlay_suppressed.load(std::memory_order_relaxed);
-    if (target_visible && g_menu_view_id != 0) {
-        (void)g_view_manager->SetVisible(g_menu_view_id, false);
-    }
+    if (target_visible) ApplyBrowserPanelVisibility(skyultra::PanelVisibilityAction::Select, mod_views, mod_handle);
     for (const auto id : mod_views) {
         (void)g_view_manager->SetVisible(id, target_visible);
         if (auto* view = g_view_manager->Find(id)) {
             (void)view->SendEventJson("skyultra.hotkey", nlohmann::json{{"modId", mod_id}, {"visible", target_visible}}.dump());
         }
     }
-    SetBrowserVisible(target_visible, "mod hotkey");
+    SetBrowserVisible(target_visible || HasVisibleInteractiveView(), "mod hotkey", BrowserOpenTarget::CurrentPanels);
     return true;
 }
 
@@ -2657,9 +2703,12 @@ public:
                                         (void)menu_view->SendEventJson("skyultra.barterMode",
                                             nlohmann::json{ { "active", false } }.dump());
                                     }
-                                    SyncSkyUltraWorldPause();
+                                    SetBrowserVisible(true, "configured hotkey");
                                 } else {
-                                    SetBrowserVisible(!HasVisibleInteractiveView(), "configured hotkey");
+                                    const auto* main = g_view_manager ? g_view_manager->Config(g_menu_view_id) : nullptr;
+                                    const bool main_visible = main && main->visible &&
+                                        !g_browser_overlay_suppressed.load(std::memory_order_relaxed);
+                                    SetBrowserVisible(!main_visible, "configured hotkey");
                                 }
                             }
                         }
@@ -3300,7 +3349,7 @@ public:
             restore_loot_replacement = g_restore_browser_after_menu && g_loot_replacement_active;
             restore_pickpocket_replacement = g_restore_browser_after_menu && g_pickpocket_replacement_active;
             if (g_restore_browser_after_menu) {
-                SetBrowserVisible(false, "Skyrim modal menu opened");
+                SetBrowserVisible(false, "Skyrim modal menu opened", BrowserOpenTarget::RestoreSuspended);
             }
         } else if (g_restore_browser_after_menu) {
             g_restore_browser_after_menu = false;
@@ -3326,7 +3375,7 @@ public:
                 restore_pickpocket_replacement = false;
                 OpenSkyUltraContainerVariantReplacement(variant);
             } else {
-                SetBrowserVisible(true, "Skyrim modal menu closed");
+                SetBrowserVisible(true, "Skyrim modal menu closed", BrowserOpenTarget::RestoreSuspended);
             }
         }
         PublishOverlayViews();
@@ -4589,6 +4638,7 @@ void CreateNativeApiViewOnGameThread(
         }
         config.bridge_event_queue = it->second.bridge_events;
         config.bridge_response_queue = it->second.bridge_responses;
+        if (it->second.pending_config) config.visible = it->second.pending_config->visible;
     }
 
     if (g_view_manager == nullptr || g_browser_runtime == nullptr) {
@@ -4596,7 +4646,11 @@ void CreateNativeApiViewOnGameThread(
         return;
     }
 
-    const bool suspend_on_create = g_browser_overlay_suppressed.load(std::memory_order_relaxed) &&
+    if (config.visible && !config.click_through && config.layer != skyultra::ViewLayer::Hud && !g_modal_menu_open) {
+        // An explicit native open reveals that view, without reviving other mods.
+        g_browser_overlay_suppressed.store(false, std::memory_order_relaxed);
+    }
+    const bool suspend_on_create = config.visible && g_browser_overlay_suppressed.load(std::memory_order_relaxed) &&
         !(config.layer == skyultra::ViewLayer::Hud && config.click_through);
     if (suspend_on_create) config.visible = false;
     const auto view_id = g_view_manager->Add(config, [&](skyultra::ViewId id) {
@@ -4630,10 +4684,12 @@ void CreateNativeApiViewOnGameThread(
         return;
     }
     if (suspend_on_create) {
-        g_suspended_panel_views.insert(view_id);
+        if (g_modal_menu_open) g_suspended_panel_views.insert(view_id);
         if (auto* view = g_view_manager->Find(view_id)) (void)view->SendEventJson("skyultra.visibility",R"({"visible":false})");
     }
     PublishOverlayViews();
+    SyncSkyUltraWorldPause();
+    PublishBrowserCursor(HasVisibleInteractiveView());
 }
 
 std::filesystem::path PathFromUtf8(std::string_view utf8)
@@ -6775,6 +6831,11 @@ SkyUltraResult SKYULTRA_CALL NativeApiSetVisible(SkyUltraViewHandle handle, std:
               if (const auto record = g_native_views.find(handle); record != g_native_views.end() && record->second.pending_config) record->second.pending_config->visible = visible != 0; }
             if (view_id && visible == 0) g_suspended_panel_views.erase(*view_id);
             if (view_id && g_view_manager != nullptr && g_view_manager->SetVisible(*view_id, visible != 0)) {
+                const auto* config = g_view_manager->Config(*view_id);
+                if (visible && config && !config->click_through && config->layer != skyultra::ViewLayer::Hud) {
+                    if (g_modal_menu_open) g_suspended_panel_views.insert(*view_id);
+                    else g_browser_overlay_suppressed.store(false, std::memory_order_relaxed);
+                }
                 if(visible && !g_browser_overlay_suppressed.load(std::memory_order_relaxed) && !REL::Module::IsVR() && g_view_manager->Config(*view_id) && !g_view_manager->Config(*view_id)->click_through && g_view_manager->Config(*view_id)->layer!=skyultra::ViewLayer::Hud){
                     std::string mod_id=g_view_manager->Config(*view_id)->id;
                     {const std::scoped_lock views_lock(g_native_views_mutex);if(const auto owner=g_native_views.find(handle);owner!=g_native_views.end()){
@@ -6786,6 +6847,8 @@ SkyUltraResult SKYULTRA_CALL NativeApiSetVisible(SkyUltraViewHandle handle, std:
                     sub->second.needs_catchup = true;
                 }
                 PublishOverlayViews();
+                SyncSkyUltraWorldPause();
+                PublishBrowserCursor(HasVisibleInteractiveView());
                 if (visible && !g_game_subscriptions.empty()) {
                     PumpGameDataSubscriptions(true);
                 }
