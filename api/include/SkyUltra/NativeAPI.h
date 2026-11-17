@@ -34,6 +34,8 @@ typedef enum SkyUltraResult {
     SKYULTRA_INTERNAL_ERROR = 5,
     SKYULTRA_BUFFER_TOO_SMALL = 6,
     SKYULTRA_QUEUE_FULL = 7,
+    SKYULTRA_RESOURCE_LIMIT = 8,
+    SKYULTRA_SUSPENDED = 9,
 } SkyUltraResult;
 
 typedef enum SkyUltraViewStateV1 {

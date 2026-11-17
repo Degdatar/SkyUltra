@@ -64,6 +64,10 @@ ViewId ViewManager::Add(ViewConfig config, const ViewFactory& create_view)
 
     config.opacity = std::clamp(config.opacity, 0.0F, 1.0F);
     config.scale = std::clamp(config.scale, 0.25F, 4.0F);
+    if (config.resource_budget && !config.resource_lease) {
+        config.resource_lease = config.resource_budget->ReserveView(config.size.width, config.size.height);
+        if (!config.resource_lease) return 0;
+    }
     if (config.max_fps != 0) {
         config.max_fps = std::clamp(config.max_fps, 1U,
             config.browser_engine == BrowserEngine::CEF ? 120U : 240U);
@@ -117,6 +121,11 @@ bool ViewManager::UpdateConfig(ViewId id, const ViewConfig& config)
     auto updated = config;
     updated.opacity = std::clamp(updated.opacity, 0.0F, 1.0F);
     updated.scale = std::clamp(updated.scale, 0.25F, 4.0F);
+    if (it->second.config.resource_lease) {
+        updated.resource_lease = it->second.config.resource_lease;
+        updated.resource_budget = it->second.config.resource_budget;
+        if (!updated.resource_lease->Resize(updated.size.width, updated.size.height)) return false;
+    }
     if (updated.max_fps != 0) {
         updated.max_fps = std::clamp(updated.max_fps, 1U,
             updated.browser_engine == BrowserEngine::CEF ? 120U : 240U);

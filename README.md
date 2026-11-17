@@ -34,6 +34,8 @@ Views can select CEF or Ultralight independently when the host includes both. Th
 
 Settings use `Data/SKSE/Plugins/SkyUltra.settings.json`; the INI is retired. CEF follows the display refresh by default with a 120 FPS maximum, and both engines honor lower per-view caps. The host accepts up to 1,024 pending native events per view with bounded, scheduled delivery and queue diagnostics. See [bridge delivery, performance and startup settings](docs/BRIDGE_DELIVERY.md) for limits, backpressure and engine constraints.
 
+Developer Studio can suspend, resume or unload a mod's browser pages. Per-mod budgets bound view counts, surface reservations and aggregate bridge buffers. CEF records renderer/context failures, performs bounded renderer recovery, and supports optional local crash dumps. See [runtime resilience and diagnostics](docs/RUNTIME_RESILIENCE.md) for behavior, limits and the explicit crash-reporting setup. These controls do not give every mod its own Chromium GPU process.
+
 ## Start developing
 
 Use [the SDK walkthrough](docs/SDK_GUIDE.md) to create a manifest and page without C++. Use [the native API guide](api/README.md) for SKSE plugins or [the Papyrus SDK](sdk/papyrus/README.md) for script-driven views. The page bridge is **`window.SkyWebView`**.

@@ -41,6 +41,8 @@ export interface Item {
   canCharge?: boolean;
   canDrop?: boolean;
   teachesSpell?: string;
+  /** Skyrim's saved read flag for books, notes and spell tomes; absent on other items. */
+  isRead?: boolean;
   favorite?: boolean;
   stolen?: boolean;
 }

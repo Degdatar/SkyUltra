@@ -89,6 +89,7 @@ SkyUltra treats **Skyrim VR** as a first-class platform:
 - Filter your inventory by category (Weapons, Armor, Potions, Ingredients, Ammo, Books, Keys, Misc), equipment state, or search query (`Space` shortcut).
 - **Persistent Overwrite Icon & Portrait Cache**: Item icons (`Data/SkyUltra/Cache/Items/`) and player/actor portraits (`Data/SkyUltra/Cache/Portraits/`) are saved to your MO2 `Overwrite` folder so icons and portraits load immediately on future game launches without waiting to re-render. Click the **Camera** button under the Player Inventory 3D stage at any time to capture a fresh head-and-shoulders bust portrait of your character and update the cached portrait across the HUD, Overview, and Character Sheet.
 - **Expanded Combat Stats Under Item Icons**: View **Heavy Armor**, **Light Armor**, **Clothing**, and **Shield** badges, **AR** armor ratings, weapon class labels, and **DMG** damage badges directly beneath each item icon across Player Inventory, Vendor Barter, Storage Containers, Corpse Looting, NPC Pickpocketing, and Mannequins.
+- **Already Read Seal**: Inventory book cards display a gold book-and-bookmark seal with a check mark only when Skyrim marks the item as read. This includes readable notes, letters, maps and spell tomes. The seal appears in grid and list views; hover the card for “Already read.” Unread items have no seal.
 - **Drag-and-Drop Equipping**: Drag any weapon, armor piece, or ammo card directly onto the 11 character equipment slots (or click **Equip** / **Unequip**).
 - **Storage Containers (`skyultra_container.swf`)**: Opens automatically for chests, safes, urns, barrels, sacks, and world storage containers. Displays **Gold (`0x0000000F`)** in both inventories, transfers items on click (with a quantity slider when stack count exceeds `5`), supports **Take All** and **Store All**, and provides two cycling header buttons: **Half Container** (default) $\rightarrow$ **Windowed** $\rightarrow$ **Full Screen** and **Live World** (default) $\leftrightarrow$ **Pause World**.
 - **Corpse & Monster Looting (`skyultra_loot.swf`)**: Opens automatically when looting dead NPCs, creatures, and monsters (`actor->IsDead()`). Supports **Take** and **Store** single-click transfers, **Take All** and **Store All** bulk actions, **Gold (`0x0000000F`)** in both inventories so gold can be looted or stored, and the two cycling header buttons (**Half Container** $\rightarrow$ **Windowed** $\rightarrow$ **Full Screen** and **Live World** $\leftrightarrow$ **Pause World**).
@@ -105,6 +106,11 @@ SkyUltra treats **Skyrim VR** as a first-class platform:
 - **Live HUD Code Editor**: Write or edit live **HTML, CSS, and JavaScript** with instant preview on a 16:9 stage, load built-in templates (*Sovereign Glass*, *Cyber Tactical*, *Arcane Radial Rings*, *Minimalist Soulslike*), click **Pin Live Code HUD to Skyrim** to wear your custom HUD in-game immediately, or click **Export as Mod** to generate a standalone SkyUltra mod package!
 
 ---
+
+### Module 08 // Developer Studio
+
+- **Mod runtime controls**: Suspend a registered mod to unload its browser pages and stop its scripts/subscriptions; Resume loads fresh pages while retaining native handles. Unload destroys those handles. Unsaved page state is lost; these controls last for the current game session.
+- **Resource and failure diagnostics**: Inspect per-mod view/surface reservations, shared event/reply budgets, renderer crashes, WebGL context loss and stalled bridge batches. SkyUltra's own menu cannot suspend itself. See [runtime resilience and optional local crash dumps](RUNTIME_RESILIENCE.md) for limits and setup; crash reporting requires explicit setup and a game restart.
 
 ## 6. Opening Video Splash Screen
 

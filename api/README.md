@@ -115,6 +115,8 @@ There are two permission checks: `permissions.pageRequests` in the manifest, and
 
 The `max_fps` field retains its existing behavior and ABI position: `0` selects the native API's 60 FPS default; positive values request a per-view cap. CEF clamps requests to 1–120 FPS, and Ultralight clamps positive requests to 1–240 FPS subject to its runtime edition's limit. `SKYULTRA_FPS_UNCAPPED` selects the backend default: display refresh within 120 FPS for CEF, or Ultralight's runtime default. It does not bypass CEF's host ceiling. No C function-table layout or API version changed.
 
+Views also share their registered mod's [resource budget](../docs/RUNTIME_RESILIENCE.md#resource-budgets): 16 reserved views, a 128 MiB primary-surface estimate, and separate aggregate event/reply lanes of 4,096 messages / 128 MiB each. Unregistered native views share legacy owner `0`. `SKYULTRA_RESOURCE_LIMIT` (`8`) rejects view admission; `SKYULTRA_SUSPENDED` (`9`) rejects opening/delivery while the user has suspended that mod. Suspend retains handles but unloads documents; Resume reloads them, so repeat the ready handshake/subscriptions. Unload destroys handles. Existing enum values, function tables and ABI versions remain unchanged.
+
 ## Source-only checks
 
 ```powershell

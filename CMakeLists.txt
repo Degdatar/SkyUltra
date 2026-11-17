@@ -148,11 +148,21 @@ if(SKYULTRA_BUILD_CEF)
     target_link_libraries(SkyUltraCefSubprocess PRIVATE libcef_dll_wrapper SkyUltraCEF ${CEF_STANDARD_LIBS})
     target_compile_features(SkyUltraCefSubprocess PRIVATE cxx_std_20)
     target_compile_definitions(SkyUltraCefSubprocess PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(SkyUltraCefSubprocess PRIVATE "$<$<CONFIG:Release>:/Zi>")
+    target_link_options(SkyUltraCefSubprocess PRIVATE "$<$<CONFIG:Release>:/DEBUG:FULL>")
+    add_custom_command(TARGET SkyUltraCefSubprocess POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/package/Diagnostics"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/Enable-CefCrashReports.ps1"
+            "${CMAKE_CURRENT_BINARY_DIR}/package/Diagnostics/Enable-CefCrashReports.ps1"
+        VERBATIM)
 
     set(SKYULTRA_CEF_PACKAGE_DIR "${CMAKE_CURRENT_BINARY_DIR}/package/Data/SKSE/Plugins/SkyUltra/CEF")
     set_target_properties(SkyUltraCefSubprocess PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${SKYULTRA_CEF_PACKAGE_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${SKYULTRA_CEF_PACKAGE_DIR}")
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${SKYULTRA_CEF_PACKAGE_DIR}"
+        PDB_OUTPUT_DIRECTORY "${SKYULTRA_CEF_PACKAGE_DIR}"
+        PDB_OUTPUT_DIRECTORY_RELEASE "${SKYULTRA_CEF_PACKAGE_DIR}")
     foreach(cef_binary IN LISTS CEF_BINARY_FILES)
         add_custom_command(TARGET SkyUltraCefSubprocess POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different

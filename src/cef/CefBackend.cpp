@@ -1,5 +1,7 @@
 #include "SkyUltra/CefBackend.h"
 #include "SkyUltra/ModManifest.h"
+#include "SkyUltra/CefRecoveryPolicy.h"
+#include "include/cef_crash_util.h"
 
 #include <windows.h>
 #include <d3d11_1.h>
@@ -48,6 +50,7 @@ using Microsoft::WRL::ComPtr;
 constexpr std::uint32_t kMaxCefWindowlessFrameRate = 120;
 constexpr char kEditableFocusMessage[] = "skyultra_editable_focus";
 constexpr char kBridgeBatchAckMessage[] = "skyultra_bridge_batch_ack";
+constexpr char kContextLossMessage[] = "skyultra_webgl_context_lost";
 
 constexpr bool IsFatalGpuResourceFailure(HRESULT reason) noexcept
 {
@@ -222,6 +225,7 @@ struct RuntimeState {
     std::uint64_t d3d_generation{};
     bool shared_texture_ready{};
     bool gpu_rendering{ true };
+    bool crash_reports_enabled{};
     std::atomic_bool gpu_suspended{};
     bool logged_shared_texture_ready{};
     bool logged_shared_texture_unavailable{};
@@ -311,10 +315,7 @@ public:
             // The per-view request handler still confines those reads to the
             // registered mod root.
             command_line->AppendSwitch("allow-file-access-from-files");
-            // OSR has no ordinary visible Chrome window. Keep its renderer at
-            // normal priority; WasHidden still stops rendering hidden views.
-            command_line->AppendSwitch("disable-renderer-backgrounding");
-            command_line->AppendSwitch("disable-backgrounding-occluded-windows");
+            // Honor Chromium background scheduling; visibility is controlled via WasHidden.
             // Keep Chromium's driver/feature selection. Forcing rasterization,
             // zero-copy and hardware overlays bypasses its compatibility choices
             // and adds GPU pressure alongside Skyrim on older display drivers.
@@ -360,6 +361,8 @@ struct BrowserState {
     std::shared_ptr<BridgeEventQueue::Batch> response_in_flight;
     std::string response_ack;
     std::chrono::steady_clock::time_point response_started{};
+    bool bridge_watchdog_scheduled{}; // CEF UI thread only; one timer per view.
+    std::string warned_bridge_ack, warned_response_ack;
     PageBridgeMessageCallback page_bridge_callback;
     std::vector<std::uint8_t> shadow;
     SizeU shadow_size{};
@@ -382,12 +385,65 @@ struct BrowserState {
     bool spare_browser{};           // Used only from CEF's UI thread.
     bool renderer_ready{};          // Used only from CEF's UI thread.
     std::string adopted_initial_url; // Used only from CEF's UI thread.
+    BrowserHealth health; // Protected by mutex.
+    CefRecoveryPolicy recovery_policy; // CEF UI thread only.
+    std::uint64_t recovery_generation{};
+    std::string recovery_url;
+    std::chrono::steady_clock::time_point last_context_loss{};
     std::atomic_bool creation_failed{};
     std::atomic_bool closed{};
     std::chrono::steady_clock::time_point requested_at{ std::chrono::steady_clock::now() };
 };
 
+void ClearCefDocumentState(const std::shared_ptr<BrowserState>& state)
+{
+    CEF_REQUIRE_UI_THREAD();
+    ++state->recovery_generation;
+    state->bridge_in_flight.reset(); state->bridge_ack.clear();
+    state->response_in_flight.reset(); state->response_ack.clear();
+    state->main_frame_ready = false;
+    const std::scoped_lock lock(state->mutex);
+    state->pending_input.clear(); state->held_mouse_modifiers = 0;
+    state->gpu_frame.reset(); state->gpu_frame_pool = {}; state->next_gpu_pool_slot = 0;
+    state->frames.clear(); state->shadow.clear(); state->shadow_size = {};
+}
+
 void ScheduleCefBridgeDrain(const std::shared_ptr<BrowserState>& state);
+void ScheduleCefBridgeWatchdog(const std::shared_ptr<BrowserState>& state)
+{
+    CEF_REQUIRE_UI_THREAD();
+    if (state->bridge_watchdog_scheduled || state->close_requested) return;
+    const auto now = std::chrono::steady_clock::now();
+    std::int64_t delay = 10'000;
+    bool pending{};
+    const auto consider = [&](const auto& flight, const auto& ack, const auto& warned, const auto& started) {
+        if (!flight || ack == warned) return;
+        pending = true;
+        delay = std::min(delay, std::max<std::int64_t>(1, 10'000 -
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - started).count()));
+    };
+    consider(state->bridge_in_flight, state->bridge_ack, state->warned_bridge_ack, state->bridge_started);
+    consider(state->response_in_flight, state->response_ack, state->warned_response_ack, state->response_started);
+    if (!pending) return;
+    state->bridge_watchdog_scheduled = true;
+    if (!CefPostDelayedTask(TID_UI, new LambdaTask([weak = std::weak_ptr<BrowserState>(state)] {
+        const auto current = weak.lock();
+        if (!current) return;
+        current->bridge_watchdog_scheduled = false;
+        if (current->close_requested || current->closed.load() || current->runtime->stopping.load()) return;
+        const auto inspect = [&](const auto& flight, const auto& ack, auto& warned, const auto& started) {
+            if (!flight || ack == warned || std::chrono::steady_clock::now() - started < std::chrono::seconds(10)) return;
+            warned = ack;
+            { const std::scoped_lock lock(current->mutex); ++current->health.stalled_batches;
+              current->health.last_failure = "Bridge acknowledgement exceeded 10 seconds."; }
+            if (current->runtime->log_info) current->runtime->log_info("CEF stalled bridge batch on view " + std::to_string(current->Id()) +
+                "; accepted commands were not replayed. Suspend or reload the mod in Developer Studio.");
+        };
+        inspect(current->bridge_in_flight, current->bridge_ack, current->warned_bridge_ack, current->bridge_started);
+        inspect(current->response_in_flight, current->response_ack, current->warned_response_ack, current->response_started);
+        ScheduleCefBridgeWatchdog(current);
+    }), delay)) state->bridge_watchdog_scheduled = false;
+}
 void DrainCefBridge(const std::shared_ptr<BrowserState>& state)
 {
     CEF_REQUIRE_UI_THREAD();
@@ -407,6 +463,7 @@ void DrainCefBridge(const std::shared_ptr<BrowserState>& state)
         flight = batch;
         (responses ? state->response_started : state->bridge_started) = std::chrono::steady_clock::now();
         frame->ExecuteJavaScript(BuildBridgeEventBatchScript(*batch, ack, responses), frame->GetURL(), 1);
+        ScheduleCefBridgeWatchdog(state);
     };
     submit(true);
     submit(false);
@@ -811,6 +868,18 @@ public:
         CefProcessId source_process, CefRefPtr<CefProcessMessage> message) override
     {
         if (source_process != PID_RENDERER || !message) return false;
+        if (message->GetName().ToString() == kContextLossMessage) {
+            if (!frame || !frame->IsMain()) return true;
+            const auto now = std::chrono::steady_clock::now();
+            if (now - state_->last_context_loss < std::chrono::seconds(1)) return true;
+            state_->last_context_loss = now;
+            { const std::scoped_lock lock(state_->mutex); ++state_->health.context_losses;
+              state_->health.last_failure = "WebGL context lost; host texture pool discarded.";
+              state_->gpu_frame_pool = {}; state_->next_gpu_pool_slot = 0; }
+            if (state_->runtime->log_info) state_->runtime->log_info("CEF WebGL context loss on view " + std::to_string(state_->Id()) +
+                ". This is a context-loss signal, not proof of a GPU-process crash.");
+            return true;
+        }
         if (message->GetName().ToString() == kBridgeBatchAckMessage) {
             const auto arguments = message->GetArgumentList();
             if (frame && frame->IsMain() && arguments && arguments->GetSize() == 1 &&
@@ -838,11 +907,9 @@ public:
     {
         CEF_REQUIRE_UI_THREAD();
         if (frame && frame->IsMain()) {
-            state_->response_in_flight.reset();
-            state_->response_ack.clear();
-            state_->bridge_in_flight.reset();
-            state_->bridge_ack.clear();
-            state_->main_frame_ready = false;
+            ClearCefDocumentState(state_);
+            const auto url = frame->GetURL().ToString();
+            if (!url.empty() && !url.starts_with("chrome-error:")) state_->recovery_url = url;
             state_->app_shell_ready=false;state_->first_prime_paint_at={};
             LogStartupStage("navigation started");
             if (state_->runtime->log_info) {
@@ -869,13 +936,34 @@ public:
     {
         CEF_REQUIRE_UI_THREAD();
         state_->renderer_ready = false;
-        if (state_->runtime->log_info) {
-            state_->runtime->log_info("CEF renderer terminated for view " +
-                std::to_string(state_->id) + " (browser " +
-                std::to_string(browser ? browser->GetIdentifier() : 0) +
-                ", status " + std::to_string(static_cast<int>(status)) +
-                ", error " + std::to_string(error_code) + "): " +
-                error_string.ToString());
+        ClearCefDocumentState(state_);
+        if (state_->close_requested || state_->runtime->stopping.load()) return;
+        const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+        const auto delay = state_->recovery_policy.NextDelayMs(now);
+        { const std::scoped_lock lock(state_->mutex); ++state_->health.renderer_crashes;
+          state_->health.last_failure = "Renderer terminated: " + std::to_string(error_code) + " " + error_string.ToString();
+          state_->health.recovering = delay != 0 && browser && !state_->recovery_url.empty();
+          state_->health.recovery_blocked = !state_->health.recovering;
+          if (delay) ++state_->health.recovery_attempts; }
+        if (state_->runtime->log_info) state_->runtime->log_info("CEF renderer terminated for view " + std::to_string(state_->Id()) +
+            ", status " + std::to_string(static_cast<int>(status)) + ", error " + std::to_string(error_code) +
+            (delay ? "; retry in " + std::to_string(delay) + " ms." : "; automatic recovery stopped after repeated failures."));
+        if (!delay || !browser || state_->recovery_url.empty()) return;
+        const auto generation = state_->recovery_generation;
+        const auto url = state_->recovery_url;
+        if (!CefPostDelayedTask(TID_UI, new LambdaTask([weak = std::weak_ptr<BrowserState>(state_), generation, url] {
+            const auto current = weak.lock();
+            if (!current || current->close_requested || current->closed.load() || current->recovery_generation != generation ||
+                current->runtime->stopping.load() || current->runtime->gpu_suspended.load() || !current->browser) return;
+            { const std::scoped_lock lock(current->mutex);
+              if (current->config.resource_budget && current->config.resource_budget->IsSuspended()) return; }
+            if (const auto frame = current->browser->GetMainFrame()) frame->LoadURL(url);
+        }), delay)) {
+            const std::scoped_lock lock(state_->mutex);
+            state_->health.recovering = false;
+            state_->health.recovery_blocked = true;
+            state_->health.last_failure += "; recovery task could not be scheduled";
         }
     }
 
@@ -886,6 +974,7 @@ public:
             return;
         }
         state_->main_frame_ready = true;
+        { const std::scoped_lock lock(state_->mutex); state_->health.recovering = false; state_->health.recovery_blocked = false; }
         LogStartupStage("navigation finished");
         if (state_->runtime->log_info) {
             state_->runtime->log_info("CEF load finished for view " +
@@ -1283,11 +1372,7 @@ public:
         CEF_REQUIRE_UI_THREAD();
         state_->browser = nullptr;
         state_->closed.store(true, std::memory_order_release);
-        state_->main_frame_ready = false;
-        state_->response_in_flight.reset();
-        state_->response_ack.clear();
-        state_->bridge_in_flight.reset();
-        state_->bridge_ack.clear();
+        ClearCefDocumentState(state_);
 
         {
             const std::scoped_lock lock(state_->runtime->mutex);
@@ -1423,6 +1508,10 @@ public:
 
     ~CefView() override { Close(); }
 
+    [[nodiscard]] BrowserHealth Health() const override {
+        const std::scoped_lock lock(state_->mutex);
+        auto health = state_->health; health.crash_reports_enabled = state_->runtime->crash_reports_enabled; return health;
+    }
     [[nodiscard]] ViewId Id() const noexcept override { return state_->id; }
     [[nodiscard]] std::shared_ptr<BridgeEventQueue> BridgeEvents() const override {
         const std::scoped_lock lock(state_->mutex); return state_->config.bridge_event_queue;
@@ -1855,6 +1944,12 @@ bool CefRuntime::Initialize(std::string& error)
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - initialize_start).count();
         state_->log_info("CEF process/context initialization took " + std::to_string(elapsed) + " ms.");
+    }
+    state_->crash_reports_enabled = CefCrashReportingEnabled();
+    if (state_->log_info) state_->log_info(std::string("CEF crash reporting enabled=") + (state_->crash_reports_enabled ? "true (configuration beside the game executable)." :
+        "false. Optional local capture: tools/Enable-CefCrashReports.ps1; requires game restart."));
+    if (state_->crash_reports_enabled) {
+        CefSetCrashKeyValue("skyultra-process", "browser"); CefSetCrashKeyValue("skyultra-operation", "initialized");
     }
     state_->application_thread = std::this_thread::get_id();
     state_->stopping.store(false);

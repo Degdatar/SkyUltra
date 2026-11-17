@@ -11,6 +11,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include "SkyUltra/ModResourceBudget.h"
 
 namespace skyultra {
 
@@ -31,7 +32,7 @@ public:
         return replaced_bytes <= used && bytes <= byte_limit && used - replaced_bytes <= byte_limit - bytes &&
             (replacing || count < (control ? kMaxControlEvents : kMaxPendingEvents));
     }
-    enum class Result { Accepted, Full, Closed };
+    enum class Result { Accepted, Full, Closed, Suspended };
     struct Event {
         std::string name;
         std::string payload_json;
@@ -55,6 +56,9 @@ private:
         bool controls_enabled{true};
         Stats totals;
         std::function<void()> wake;
+        std::shared_ptr<ModResourceBudget> budget;
+        bool reply_budget{};
+        ~State() { if (budget) budget->ReleaseMessages(reply_budget, regular_count, regular_bytes); }
     };
     std::shared_ptr<State> state_{std::make_shared<State>()};
     static bool IsControl(std::string_view name) noexcept {
@@ -84,12 +88,20 @@ public:
             for (const auto& event : events) {
                 if (event.control) { --owner->control_count; owner->control_bytes -= event.Bytes(); }
                 else { --owner->regular_count; owner->regular_bytes -= event.Bytes(); }
+                if (!event.control && owner->budget) owner->budget->ReleaseMessages(owner->reply_budget, 1, event.Bytes());
             }
             owner->in_flight -= events.size();
             if (executed) owner->totals.delivered += events.size();
             else owner->totals.cancelled += events.size();
         }
     };
+    [[nodiscard]] bool SetBudget(std::shared_ptr<ModResourceBudget> budget, bool replies = false) {
+        const std::scoped_lock lock(state_->mutex);
+        if (state_->budget) return state_->budget == budget && state_->reply_budget == replies;
+        if (budget->ReserveMessages(replies, state_->regular_count, state_->regular_bytes) != ModResourceBudget::Admission::Accepted) return false;
+        state_->budget = std::move(budget); state_->reply_budget = replies;
+        return true;
+    }
     // Moving a view between engines invalidates the previous consumer. Its late
     // destructor cannot close the new consumer's mailbox or clear its wakeup.
     [[nodiscard]] std::uint64_t Attach(std::function<void()> wake) {
@@ -123,6 +135,16 @@ public:
                 ++state_->totals.rejected;
                 return Result::Full;
             }
+            bool reserved{};
+            if (!control && state_->budget) {
+                const auto admission = state_->budget->ReserveMessages(state_->reply_budget, 1, bytes);
+                if (admission != ModResourceBudget::Admission::Accepted) {
+                    ++state_->totals.rejected;
+                    return admission == ModResourceBudget::Admission::Suspended ? Result::Suspended : Result::Full;
+                }
+                reserved = true;
+            }
+            try {
             wake = state_->wake; // Any allocating copy fails before ownership changes.
             Event event{std::string(name), std::string(payload), Clock::now(), control};
             if (previous != queue.end()) {
@@ -133,6 +155,10 @@ public:
                 queue.push_back(std::move(event));
                 ++count;
                 used += bytes;
+            }
+            } catch (...) {
+                if (reserved) state_->budget->ReleaseMessages(state_->reply_budget, 1, bytes);
+                throw;
             }
             ++state_->totals.accepted;
             state_->totals.peak_pending = std::max(state_->totals.peak_pending,
@@ -148,18 +174,19 @@ public:
     [[nodiscard]] bool Pending(std::uint64_t consumer) const {
         const std::scoped_lock lock(state_->mutex);
         return !state_->closed && consumer != 0 && consumer == state_->consumer &&
+            (!state_->budget || !state_->budget->IsSuspended()) &&
             (!state_->controls.empty() || !state_->events.empty());
     }
     [[nodiscard]] std::shared_ptr<Batch> Take(std::uint64_t consumer) {
         {
             const std::scoped_lock lock(state_->mutex);
-            if (state_->closed || consumer == 0 || consumer != state_->consumer ||
+            if (state_->closed || (state_->budget && state_->budget->IsSuspended()) || consumer == 0 || consumer != state_->consumer ||
                 (state_->controls.empty() && state_->events.empty())) return {};
         }
         auto batch = std::make_shared<Batch>();
         batch->events.reserve(kBatchEvents);
         const std::scoped_lock lock(state_->mutex);
-        if (state_->closed || consumer == 0 || consumer != state_->consumer ||
+        if (state_->closed || (state_->budget && state_->budget->IsSuspended()) || consumer == 0 || consumer != state_->consumer ||
             (state_->controls.empty() && state_->events.empty())) return {};
         batch->owner = state_;
         std::size_t bytes{};
@@ -198,7 +225,10 @@ public:
         const std::scoped_lock lock(state_->mutex);
         state_->closed = true;
         const auto discard = [&](std::deque<Event>& queue, std::size_t& count, std::size_t& bytes) {
-            for (const auto& event : queue) { --count; bytes -= event.Bytes(); ++state_->totals.cancelled; }
+            for (const auto& event : queue) {
+                --count; bytes -= event.Bytes(); ++state_->totals.cancelled;
+                if (!event.control && state_->budget) state_->budget->ReleaseMessages(state_->reply_budget, 1, event.Bytes());
+            }
             queue.clear();
         };
         discard(state_->events, state_->regular_count, state_->regular_bytes);

@@ -4,6 +4,8 @@
 
 [Bridge delivery and runtime settings](../docs/BRIDGE_DELIVERY.md) explains native queue capacity/backpressure, the per-view diagnostics, browser frame pacing, the 1 GB package warning and JSON-only startup configuration.
 
+[Runtime resilience](../docs/RUNTIME_RESILIENCE.md) covers Developer Studio's suspend/resume/unload controls, shared per-mod resource budgets, CEF recovery counters and optional local crash reporting. The privileged `manageSkyUltraModRuntime` helper is available from `@skyultra/sdk/devtools`; ordinary mod pages cannot use it to control other mods.
+
 Develop a web application with Skyrim as its runtime. C++ is optional. The core
 bridge is framework-neutral; use vanilla JavaScript, TypeScript, React, Vue or
 Svelte with your own HTML and CSS. SkyUltra's components, themes, menu and cursor

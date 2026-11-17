@@ -1,5 +1,5 @@
 import * as React from "react";
-export type IconName = "archive" | "overview" | "actors" | "inventory" | "components" | "performance" | "search" | "arrow" | "check" | "chevron" | "heart" | "shield" | "rune" | "gold" | "close" | "grid" | "list" | "sword" | "flame" | "book" | "target" | "rotate" | "plus" | "pause" | "play" | "widgets" | "help" | "compass" | "clock" | "pin" | "keyboard" | "bell" | "flask" | "camera" | "download" | "stolen";
+export type IconName = "archive" | "overview" | "actors" | "inventory" | "components" | "performance" | "search" | "arrow" | "check" | "chevron" | "heart" | "shield" | "rune" | "gold" | "close" | "grid" | "list" | "sword" | "flame" | "book" | "bookRead" | "target" | "rotate" | "plus" | "pause" | "play" | "widgets" | "help" | "compass" | "clock" | "pin" | "keyboard" | "bell" | "flask" | "camera" | "download" | "stolen";
 const paths: Record<IconName, React.ReactNode> = {
   stolen: <><path d="M18 11V6a1.5 1.5 0 0 0-3 0v4M15 10V4.5a1.5 1.5 0 0 0-3 0V10M12 9.5V3.5a1.5 1.5 0 0 0-3 0V10M9 10V5.5a1.5 1.5 0 0 0-3 0V14"/><path d="M6 12.5 4.3 11a1.5 1.5 0 0 0-2.1 2.1l4.1 5.2A6 6 0 0 0 11 20.5h2a5 5 0 0 0 5-5V11"/><circle cx="12" cy="15.5" r="1.8"/></>,
   camera: <><path d="M3 7h4l2-3h6l2 3h4v13H3z"/><circle cx="12" cy="13" r="4"/></>,
@@ -28,6 +28,7 @@ const paths: Record<IconName, React.ReactNode> = {
   sword: <path d="m4 20 4-4M6 14l4 4M8 16 20 4v6L10 18M14 4l6 6" />,
   flame: <path d="M12 2c1 6-5 5-5 10 0 2 1 3 1 3-3-1-3-4-3-4-5 13 17 14 15 1-1-4-4-5-5-7 0 4-1 4-1 4s1-5-2-7Z" />,
   book: <path d="M12 5c-4-3-8-2-10-1v15c4-2 7-1 10 1 3-2 6-3 10-1V4c-2-1-6-2-10 1Zm0 0v15" />,
+  bookRead: <><path d="M9 7.5c-2.1-.7-4.2-.7-6 .1V19c3.1-1.1 6.1-.6 9 1.5 2.9-2.1 5.9-2.6 9-1.5V7.6c-1.8-.8-3.9-.8-6-.1M12 10v10.5M5.5 11.5l3 .6M5.5 14.5l3 .6" /><path d="M9.5 3.5h5V9L12 7.4 9.5 9Z" fill="currentColor" fillOpacity=".18" /><path d="m14.5 13 1.7 1.7 3-3.4" strokeWidth="1.7" /></>,
   target: <><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="3" /><path d="M12 1v4M12 19v4M1 12h4M19 12h4" /></>,
   rotate: <path d="M20 7V2l-4 4M20 7a9 9 0 1 0 1 9" />, plus: <path d="M12 4v16M4 12h16" />, pause: <path d="M7 4v16M17 4v16" />, play: <path d="m7 3 14 9-14 9z" />,
 };

@@ -161,6 +161,8 @@ std::shared_ptr<skyultra::BridgeEventQueue> NativeEventsForView(skyultra::ViewId
 struct NativeApiViewRecord {
     std::shared_ptr<skyultra::BridgeEventQueue> bridge_events{std::make_shared<skyultra::BridgeEventQueue>()};
     std::shared_ptr<skyultra::BridgeEventQueue> bridge_responses{std::make_shared<skyultra::BridgeEventQueue>(false)};
+    std::shared_ptr<skyultra::ModResourceBudget::ViewLease> resource_lease;
+    bool developer_suspended{};
     SkyUltraViewStateV1 state{ SKYULTRA_VIEW_PENDING };
     std::optional<skyultra::ViewId> manager_id;
     SkyUltraModHandle mod_handle{};
@@ -192,6 +194,27 @@ std::mutex g_native_views_mutex;
 std::unordered_map<SkyUltraViewHandle, NativeApiViewRecord> g_native_views;
 std::mutex g_native_mods_mutex;
 std::unordered_map<SkyUltraModHandle, NativeApiModRecord> g_native_mods;
+std::mutex g_mod_budgets_mutex;
+std::unordered_map<SkyUltraModHandle, std::shared_ptr<skyultra::ModResourceBudget>> g_mod_budgets;
+
+std::shared_ptr<skyultra::ModResourceBudget> ModBudget(SkyUltraModHandle owner)
+{
+    const std::scoped_lock lock(g_mod_budgets_mutex);
+    auto& budget = g_mod_budgets[owner];
+    if (!budget) budget = std::make_shared<skyultra::ModResourceBudget>();
+    return budget;
+}
+
+bool BindViewBudget(NativeApiViewRecord& record, skyultra::ViewConfig& config)
+{
+    const auto budget = ModBudget(record.mod_handle);
+    if (!record.resource_lease) record.resource_lease = config.resource_lease ? config.resource_lease :
+        budget->ReserveView(config.size.width, config.size.height);
+    if (!record.resource_lease || !record.bridge_events->SetBudget(budget) ||
+        !record.bridge_responses->SetBudget(budget, true)) return false;
+    config.resource_budget = budget; config.resource_lease = record.resource_lease;
+    return true;
+}
 struct WidgetOverlayRecord {
     SkyUltraViewHandle view{};
     std::vector<std::string> widgets;
@@ -268,6 +291,7 @@ SkyUltraResult SKYULTRA_CALL NativeApiCompletePageRequest(
     const char* error_utf8, std::uint32_t error_length);
 SkyUltraResult SKYULTRA_CALL NativeApiReloadView(SkyUltraViewHandle handle);
 SkyUltraResult SKYULTRA_CALL NativeApiDestroyView(SkyUltraViewHandle handle);
+
 bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMessage& message);
 void StartModHotReloadWatcher();
 std::optional<skyultra::ViewId> NativeManagerViewId(SkyUltraViewHandle handle);
@@ -2612,6 +2636,9 @@ bool ToggleModViewsByHotkey(std::string_view mod_id)
         policy.asset_access_enabled = manifest->asset_access_enabled;
         policy.network_hosts = manifest->network_hosts;
         config.mod_content_policy = std::move(policy);
+        config.resource_budget = ModBudget(mod_handle);
+        config.resource_lease = config.resource_budget->ReserveView(config.size.width, config.size.height);
+        if (!config.resource_lease) return false;
         const auto entry_url = LocalFileUrl(manifest->entry_file);
         const auto created_id = g_view_manager->Add(config, [&](skyultra::ViewId id) {
             return g_browser_runtime->CreateView(id, config, entry_url);
@@ -2624,6 +2651,7 @@ bool ToggleModViewsByHotkey(std::string_view mod_id)
         record.bridge_events = NativeEventsForView(created_id);
         record.bridge_responses = NativeEventsForView(created_id, true);
         record.mod_handle = mod_handle;
+        if (!BindViewBudget(record, config)) { (void)g_view_manager->Remove(created_id); return false; }
         record.initial_url = entry_url;
         record.javascript_enabled = true;
         record.allowed_page_request_methods = manifest->page_request_methods;
@@ -2637,6 +2665,7 @@ bool ToggleModViewsByHotkey(std::string_view mod_id)
         SetBrowserVisible(true, "mod hotkey", BrowserOpenTarget::CurrentPanels);
         return true;
     }
+    if (ModBudget(mod_handle)->Snapshot().suspended) return false;
     bool any_visible = false;
     for (const auto id : mod_views) {
         if (const auto* cfg = g_view_manager->Config(id); cfg && cfg->visible) any_visible = true;
@@ -3886,17 +3915,21 @@ void StartBrowser()
     menu_policy.root_directory=menu_manifest->root_directory;menu_policy.entry_file=menu_manifest->entry_file;
     menu_policy.asset_access_enabled=true;config.mod_content_policy=std::move(menu_policy);
     const auto menu_url=LocalFileUrl(menu_manifest->entry_file);
+    const auto menu_mod=g_next_native_mod_handle.fetch_add(1);
+    config.resource_budget = ModBudget(menu_mod);
+    config.resource_lease = config.resource_budget->ReserveView(config.size.width, config.size.height);
     g_menu_view_id=g_view_manager->Add(config,[&](skyultra::ViewId id){return g_browser_runtime->CreateView(id,config,menu_url);});
     if(!g_menu_view_id){SKSE::log::warn("SkyUltra could not create the built-in menu; other mods remain available.");}
     else {
-    const auto menu_mod=g_next_native_mod_handle.fetch_add(1);
     const auto menu_handle=g_next_native_view_handle.fetch_add(1);
     NativeApiViewRecord record;
     record.state=SKYULTRA_VIEW_READY;record.manager_id=g_menu_view_id;record.mod_handle=menu_mod;
     record.bridge_events = NativeEventsForView(g_menu_view_id);
     record.bridge_responses = NativeEventsForView(g_menu_view_id, true);
+    (void)BindViewBudget(record, config);
     record.initial_url=menu_url;record.javascript_enabled=true;record.wait_for_page_ready=true;
     menu_manifest->page_request_methods.emplace("game.itemAction");
+    menu_manifest->page_request_methods.emplace("ui.manageModRuntime");
     for (const auto* method : { "game.getSpells", "game.equipSpell", "game.renameSpell", "game.deleteSpell", "game.getFavorites", "game.setFavorite", "game.getContainerSnapshot", "game.containerTransfer" }) menu_manifest->page_request_methods.emplace(method);
     record.allowed_page_request_methods=menu_manifest->page_request_methods;
     record.browser_engine=static_cast<BrowserRuntimeRouter*>(g_browser_runtime.get())->ResolvedEngine(config.browser_engine);
@@ -4210,7 +4243,7 @@ bool IsHostUiRequest(std::string_view name) noexcept
 {
     return name == "game.getPlayerSnapshot" || name == "game.subscribe" || name == "game.unsubscribe" || name == "game.getInventory" || name == "game.equipItem" || name == "game.unequipItem" || name == "game.itemAction" || name == "game.getBarterSnapshot" || name == "game.barterTransaction" || name == "game.getContainerSnapshot" || name == "game.containerTransfer" || name == "game.getSpells" || name == "game.equipSpell" || name == "game.renameSpell" || name == "game.deleteSpell" || name == "game.getFavorites" || name == "game.setFavorite" || name == "game.getNearbyNpcs" || name == "game.searchNpcs" ||
         name == "ui.getSplashStatus" || name == "ui.replaySplash" || name == "ui.setCursor" || name == "ui.close" || name == "ui.getSettings" || name == "ui.updateSettings" || name == "ui.pageReady" || name == "ui.configureWidgets" || name == "ui.setInputScope" || name == "ui.getPerformanceSnapshot" ||
-        name == "ui.getDeveloperSnapshot" || name == "ui.reloadModViews" || name == "ui.exportHudMod" || name == "ui.manageDiagnosticSample" ||
+        name == "ui.getDeveloperSnapshot" || name == "ui.manageModRuntime" || name == "ui.reloadModViews" || name == "ui.exportHudMod" || name == "ui.manageDiagnosticSample" ||
         name == "ui.playSound" || name == "ui.projectWorldAnchors" || name == "ui.setSpatialPlacement" || name == "ui.toggleDomInspector" || name == "ui.interopCall";
 }
 
@@ -4636,6 +4669,13 @@ void CreateNativeApiViewOnGameThread(
         if (it == g_native_views.end() || it->second.state == SKYULTRA_VIEW_CLOSING) {
             return;
         }
+        if (it->second.developer_suspended || it->second.state == SKYULTRA_VIEW_FAILED) return;
+        if (it->second.manager_id && g_view_manager && g_view_manager->Find(*it->second.manager_id)) return;
+        if (!BindViewBudget(it->second, config)) {
+            it->second.state = SKYULTRA_VIEW_FAILED;
+            it->second.bridge_events->Close(); it->second.bridge_responses->Close();
+            return;
+        }
         config.bridge_event_queue = it->second.bridge_events;
         config.bridge_response_queue = it->second.bridge_responses;
         if (it->second.pending_config) config.visible = it->second.pending_config->visible;
@@ -4666,6 +4706,11 @@ void CreateNativeApiViewOnGameThread(
                 std::optional<skyultra::ViewId>(view_id);
             it->second.browser_engine = actual_engine;
             it->second.pending_config.reset();
+            if (auto widget = g_widget_overlays.find(it->second.mod_handle);
+                widget != g_widget_overlays.end() && widget->second.view == handle) {
+                widget->second.manager_id = view_id;
+                widget->second.ready = false;
+            }
             if (view_id != 0 && it->second.wait_for_page_ready && !config.transparent) {
                 skyultra::BeginOverlayPageLoad(view_id);
             }
@@ -4764,6 +4809,16 @@ void CollectHtmlMissingAssets(
     scan_attr("href='");
 }
 
+nlohmann::json ModBudgetJson(const std::shared_ptr<skyultra::ModResourceBudget>& budget)
+{
+    const auto stats = budget->Snapshot();
+    return {{"maxViews", skyultra::ModResourceBudget::kMaxViews}, {"views", stats.views},
+        {"surfaceByteLimit", skyultra::ModResourceBudget::kMaxSurfaceBytes}, {"reservedSurfaceBytes", stats.surface_bytes},
+        {"messageLimit", skyultra::ModResourceBudget::kMaxMessages}, {"messageByteLimit", skyultra::ModResourceBudget::kMaxMessageBytes},
+        {"eventCount", stats.messages[0]}, {"eventBytes", stats.bytes[0]}, {"replyCount", stats.messages[1]},
+        {"replyBytes", stats.bytes[1]}, {"rejected", stats.rejected}, {"suspended", stats.suspended}};
+}
+
 std::string BuildDeveloperSnapshotJson()
 {
     PROCESS_MEMORY_COUNTERS_EX pmc{};
@@ -4814,12 +4869,14 @@ std::string BuildDeveloperSnapshotJson()
 
     std::unordered_map<SkyUltraModHandle, skyultra::ModManifest> registered_by_handle;
     std::unordered_map<std::string, skyultra::ModManifest> registered_by_id;
+    std::unordered_map<std::string, nlohmann::json> registered_resources;
     {
         const std::scoped_lock lock(g_native_mods_mutex);
         for (const auto& [m_handle, m_rec] : g_native_mods) {
             registered_by_handle.emplace(m_handle, m_rec.manifest);
             if (!m_rec.manifest.id.empty()) {
                 registered_by_id.emplace(m_rec.manifest.id, m_rec.manifest);
+                registered_resources.emplace(m_rec.manifest.id, ModBudgetJson(ModBudget(m_handle)));
             }
         }
     }
@@ -4858,13 +4915,23 @@ std::string BuildDeveloperSnapshotJson()
             { "modId", mod_id },
             { "engine", v.engine == skyultra::BrowserEngine::CEF ? "cef" : "ultralight" },
             { "layer", cfg.layer == skyultra::ViewLayer::Hud ? "hud" : "panel" },
-            { "visible", cfg.visible },
+            { "visible", cfg.visible && !ModBudget(v.mod_handle)->IsSuspended() },
             { "transparent", cfg.transparent },
             { "clickThrough", cfg.click_through },
             { "modal", cfg.modal },
             { "width", cfg.size.width },
             { "height", cfg.size.height },
             { "fpsLimit", cfg.max_fps },
+            { "suspended", ModBudget(v.mod_handle)->IsSuspended() },
+            { "resources", ModBudgetJson(ModBudget(v.mod_handle)) },
+            { "recovery", [&] {
+                const auto* backend = v.manager_id && g_view_manager ? g_view_manager->Find(*v.manager_id) : nullptr;
+                const auto h = backend ? backend->Health() : skyultra::BrowserHealth{};
+                return nlohmann::json{{"rendererCrashes",h.renderer_crashes},{"contextLosses",h.context_losses},
+                    {"recoveryAttempts",h.recovery_attempts},{"stalledBatches",h.stalled_batches},
+                    {"recovering",h.recovering},{"recoveryBlocked",h.recovery_blocked},
+                    {"crashReportsEnabled",h.crash_reports_enabled},{"lastFailure",h.last_failure}};
+              }() },
             { "eventQueue", queue_json(v.event_queue) },
             { "responseQueue", queue_json(v.response_queue) },
             { "inputScopeDepth", v.input_scope_depth },
@@ -4977,6 +5044,7 @@ std::string BuildDeveloperSnapshotJson()
             { "hotReloadCount", st.hot_reloads },
             { "findings", nlohmann::json::array() }
         };
+        if (const auto resources = registered_resources.find(id); resources != registered_resources.end()) item["resources"] = resources->second;
         if (!manifest_error.empty()) {
             item["manifestError"] = manifest_error;
         }
@@ -5921,6 +5989,77 @@ std::string HandleLegacyInteropCallJson(SkyUltraViewHandle handle, skyultra::Vie
     }.dump();
 }
 
+std::string HandleModRuntimeControl(const nlohmann::json& input)
+{
+    const auto rejected = [](std::string message) { return nlohmann::json{{"accepted",false},{"message",std::move(message)}}.dump(); };
+    if (!input.is_object() || !input.contains("modId") || !input["modId"].is_string() ||
+        !input.contains("action") || !input["action"].is_string()) return rejected("Expected modId and action.");
+    const auto id = input["modId"].get<std::string>();
+    const auto operation = input["action"].get<std::string>();
+    if (id == "skyultra.menu") return rejected("The host menu cannot suspend or unload itself.");
+    if (operation != "suspend" && operation != "resume" && operation != "unload") return rejected("Unsupported runtime action.");
+    SkyUltraModHandle owner{};
+    { const std::scoped_lock lock(g_native_mods_mutex); const auto found = g_native_mod_handles_by_id.find(id);
+      if (found == g_native_mod_handles_by_id.end()) return rejected("Mod is not registered."); owner = found->second; }
+    const auto budget = ModBudget(owner);
+    budget->SetSuspended(operation != "resume");
+    std::vector<SkyUltraViewHandle> handles;
+    { const std::scoped_lock lock(g_native_views_mutex); for (const auto& [handle, record] : g_native_views)
+        if (record.mod_handle == owner && record.state != SKYULTRA_VIEW_CLOSING) handles.push_back(handle); }
+    std::size_t changed{};
+    for (const auto handle : handles) {
+        if (operation == "unload") { if (NativeApiDestroyView(handle) == SKYULTRA_OK) ++changed; continue; }
+        if (operation == "resume") {
+            std::optional<skyultra::ViewConfig> config; std::string url;
+            { const std::scoped_lock lock(g_native_views_mutex); const auto found = g_native_views.find(handle);
+              if (found == g_native_views.end() || !found->second.developer_suspended || !found->second.pending_config) continue;
+              found->second.developer_suspended = false; config = found->second.pending_config; url = found->second.initial_url; }
+            if (config->browser_engine == skyultra::BrowserEngine::CEF) {
+                auto* router = dynamic_cast<BrowserRuntimeRouter*>(g_browser_runtime.get());
+                if (!router || !router->InitializeCef(skyultra::BrowserEngine::CEF,
+                    [handle, config = *config, url = std::move(url)](bool ready, std::string error) mutable {
+                        if (!ready) {
+                            SKSE::log::error("SkyUltra could not resume CEF view {}: {}", handle, error);
+                            SetNativeApiViewFailed(handle); return;
+                        }
+                        if (!QueueNativeApiTask([handle, config = std::move(config), url = std::move(url)]() mutable {
+                            CreateNativeApiViewOnGameThread(handle, std::move(config), std::move(url));
+                        })) SetNativeApiViewFailed(handle);
+                    })) SetNativeApiViewFailed(handle);
+            } else CreateNativeApiViewOnGameThread(handle, *config, std::move(url));
+            ++changed; continue;
+        }
+        std::optional<skyultra::ViewId> manager_id;
+        std::vector<std::pair<std::string, NativeApiViewRecord::PendingPageRequest>> cancelled;
+        { const std::scoped_lock lock(g_native_views_mutex); const auto found = g_native_views.find(handle);
+          if (found == g_native_views.end() || found->second.developer_suspended) continue;
+          auto& record = found->second; manager_id = record.manager_id;
+          if (manager_id && g_view_manager) if (const auto* config = g_view_manager->Config(*manager_id)) record.pending_config = *config;
+          record.manager_id.reset(); record.developer_suspended = true; record.input_scope_depth = 0; record.state = SKYULTRA_VIEW_PENDING;
+          for (auto& request : record.pending_page_requests) cancelled.push_back(request);
+          record.pending_page_requests.clear(); }
+        if (manager_id && g_view_manager) {
+            if (const auto* config = g_view_manager->Config(*manager_id)) { skyultra::CancelFrameworkSplash(config->id); skyultra::CancelOverlaySplash(config->id); }
+            skyultra::RemoveActorPreview(*manager_id); skyultra::CancelOverlayPageLoad(*manager_id);
+            g_suspended_panel_views.erase(*manager_id); (void)g_view_manager->Remove(*manager_id);
+        }
+        g_game_subscriptions.erase(handle);
+        for (const auto& [request_id, request] : cancelled) {
+            if (request.callback) {
+                try { request.callback(request.user_data, handle, request_id.data(), static_cast<std::uint32_t>(request_id.size()),
+                    nullptr,0,nullptr,0,SKYULTRA_PAGE_REQUEST_CANCELLED_V2); } catch (...) { SKSE::log::warn("Suspended mod request cancellation callback threw."); }
+            } else if (skyultra::IsPapyrusView(handle)) (void)skyultra::DispatchPapyrusPageRequest(handle,request_id,{},{},true);
+        }
+        ++changed;
+    }
+    g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+    PublishOverlayViews(); SyncSkyUltraWorldPause(); PublishBrowserCursor(HasVisibleInteractiveView());
+    return nlohmann::json{{"accepted",true},{"modId",id},{"action",operation},{"affectedViews",changed},
+        {"message",operation == "suspend" ? "Mod pages unloaded temporarily. Resume reloads fresh documents; native handles are retained." :
+            operation == "unload" ? "Mod views queued for destruction. Resume re-enables new views; old native handles are invalid." : "Mod re-enabled; suspended pages queued for reload."}}.dump();
+}
+
+
 bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMessage& message)
 {
     const auto reply = [&](const std::string& payload) {
@@ -5959,6 +6098,10 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
         if (message.view_id != g_menu_view_id) { reject_non_menu(); return true; }
         reply(BuildDeveloperSnapshotJson());
         return true;
+    }
+    if (message.name == "ui.manageModRuntime") {
+        if (message.view_id != g_menu_view_id) { reject_non_menu(); return true; }
+        reply(HandleModRuntimeControl(nlohmann::json::parse(message.payload_json, nullptr, false))); return true;
     }
     if (message.name == "ui.reloadModViews") {
         if (message.view_id != g_menu_view_id) { reject_non_menu(); return true; }
@@ -6527,6 +6670,8 @@ SkyUltraResult NativeApiCreateViewForMod(
         const std::scoped_lock lock(g_native_views_mutex);
         auto record = NativeApiViewRecord{};
         record.mod_handle = mod_handle;
+        if (ModBudget(mod_handle)->Snapshot().suspended) return SKYULTRA_SUSPENDED;
+        if (!BindViewBudget(record, config)) return SKYULTRA_RESOURCE_LIMIT;
         record.initial_url = initial_url;
         record.javascript_enabled = config.enable_javascript;
         record.pending_config = config;
@@ -6825,7 +6970,11 @@ SkyUltraResult SKYULTRA_CALL NativeApiSetVisible(SkyUltraViewHandle handle, std:
     if (!NativeHandleAcceptsCommands(handle)) {
         return SKYULTRA_NOT_FOUND;
     }
+    { const std::scoped_lock lock(g_native_views_mutex); const auto record = g_native_views.find(handle);
+      if (record != g_native_views.end() && ModBudget(record->second.mod_handle)->IsSuspended()) return SKYULTRA_SUSPENDED; }
     if (!QueueNativeApiTask([handle, visible] {
+            { const std::scoped_lock lock(g_native_views_mutex); const auto record = g_native_views.find(handle);
+              if (record != g_native_views.end() && record->second.developer_suspended) return; }
             const auto view_id = NativeManagerViewId(handle);
             { const std::scoped_lock lock(g_native_views_mutex);
               if (const auto record = g_native_views.find(handle); record != g_native_views.end() && record->second.pending_config) record->second.pending_config->visible = visible != 0; }
@@ -7022,6 +7171,7 @@ SkyUltraResult SKYULTRA_CALL NativeApiSendEventJson(
         case skyultra::BridgeEventQueue::Result::Accepted: return SKYULTRA_OK;
         case skyultra::BridgeEventQueue::Result::Full: return SKYULTRA_QUEUE_FULL;
         case skyultra::BridgeEventQueue::Result::Closed: return SKYULTRA_NOT_FOUND;
+        case skyultra::BridgeEventQueue::Result::Suspended: return SKYULTRA_SUSPENDED;
         }
     } catch (...) { return SKYULTRA_INTERNAL_ERROR; }
     return SKYULTRA_INTERNAL_ERROR;
@@ -7203,6 +7353,7 @@ SkyUltraResult SKYULTRA_CALL NativeApiCompletePageRequest(
     }
     if (internal_error) return SKYULTRA_INTERNAL_ERROR;
     if (accepted == skyultra::BridgeEventQueue::Result::Accepted) return SKYULTRA_OK;
+    if (accepted == skyultra::BridgeEventQueue::Result::Suspended) return SKYULTRA_SUSPENDED;
     return accepted == skyultra::BridgeEventQueue::Result::Full ? SKYULTRA_QUEUE_FULL : SKYULTRA_NOT_FOUND;
 }
 

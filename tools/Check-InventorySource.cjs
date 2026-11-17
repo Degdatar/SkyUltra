@@ -32,9 +32,11 @@ async function contracts(){
  await game.inventory({query:'sword',equipment:'carried',offset:1088,limit:64,sort:'value',category:'weapon'},{signal});
  assert.equal(calls.at(-1)[1].offset,1088);assert.equal(calls.at(-1)[1].query,'sword');checks+=2;
  for(const options of [{offset:-1},{offset:1.1},{offset:Infinity},{limit:0},{limit:65},{sort:'script'},{equipment:'whatever'},{query:'x'.repeat(257)}]){assert.throws(()=>game.inventory(options),/options/);checks++;}
- for(const file of ['apps/skyultra-menu/public/manifest.json','samples/ui-kit-test-mod/public/manifest.json']){
+ const inventoryDemoMethods=sdk.skyUltraInventoryMethods.filter(method=>method!=='game.getContainerSnapshot'&&method!=='game.containerTransfer');
+ // The inventory demo does not expose container transfers; retain its narrower permissions.
+ for(const [file,methods] of [['apps/skyultra-menu/public/manifest.json',sdk.skyUltraInventoryMethods],['samples/ui-kit-test-mod/public/manifest.json',inventoryDemoMethods]]){
   const manifest=JSON.parse(fs.readFileSync(path.join(root,file),'utf8'));
-  for(const method of sdk.skyUltraInventoryMethods){assert.ok(manifest.permissions.pageRequests.includes(method));checks++;}
+  for(const method of methods){assert.ok(manifest.permissions.pageRequests.includes(method),file+' must grant '+method);checks++;}
  }
 }
 async function queueChecks(){
@@ -50,10 +52,10 @@ async function queueChecks(){
  assert.equal((await queue.request('1',b.signal)).dataUrl,'data:image/png;base64,first');assert.equal(loads.length,2);checks+=2;
  const invalid=createItemThumbnailQueue(async()=>({available:true,dataUrl:'https://remote/image.png'}));
  assert.equal((await invalid.request('1',b.signal)).available,false);checks++;
- let count=0;const bounded=createItemThumbnailQueue(async id=>{count++;return {available:true,dataUrl:'data:image/png;base64,'+id};});
- for(let i=0;i<130;i++)await bounded.request(String(i),b.signal);
- await bounded.request('129',b.signal);assert.equal(count,130);checks++;
- await bounded.request('0',b.signal);assert.equal(count,131);checks++;
+ let count=0;const retained=createItemThumbnailQueue(async id=>{count++;return {available:true,dataUrl:'data:image/png;base64,'+id};});
+ for(let i=0;i<130;i++)await retained.request(String(i),b.signal);
+ await retained.request('129',b.signal);assert.equal(count,130);checks++;
+ await retained.request('0',b.signal);assert.equal(count,130,'Earlier captures remain cached beyond the former 128-item limit');checks++;
  let attempts=0;const retry=createItemThumbnailQueue(async()=>++attempts===1?{available:false,message:'Model captures are busy.'}:{available:true,dataUrl:'data:image/png;base64,ok'});
  await retry.request('1',b.signal);assert.equal((await retry.request('1',b.signal)).available,true);checks++;
  // Regression check: aborting waiter1 mid-flight must NOT poison cache for concurrent waiter2 (PlayerPortrait race)
@@ -93,22 +95,36 @@ async function pageChecks(){
   useState(value){const i=cursor++;slots[i]??={value};return [slots[i].value,next=>{const previous=slots[i].value;slots[i].value=typeof next==='function'?next(previous):next;dirty||=!Object.is(previous,slots[i].value);}];},
   useEffect(fn,deps){const index=cursor++;if(!same(slots[index]?.deps,deps))effects.push({index,fn,deps});},
  };
- const window={innerWidth:1280,innerHeight:800,setTimeout(fn){timers.set(++timerId,fn);return timerId;},clearTimeout(id){timers.delete(id);},setInterval(){return -1;},clearInterval(){}};
+ const window={innerWidth:1280,innerHeight:800,setTimeout(fn){timers.set(++timerId,fn);return timerId;},clearTimeout(id){timers.delete(id);},setInterval(){return -1;},clearInterval(){},addEventListener(){},removeEventListener(){}};
  const document={hidden:false,elementFromPoint:()=>target?{closest:()=>({dataset:{equipSlot:target}})}:null,addEventListener(){},removeEventListener(){}};
  const item={id:'123',name:'Test Sword',category:'weapon',equipSlots:['mainHand','offHand'],count:1,value:10,weight:4,equipped:false};
  const helmet={...item,id:'124',name:'Test Hood',category:'armor',equipSlots:['head'],enchanted:true,enchantmentName:'Peerless Magicka',enchantmentCharge:80,enchantments:[{name:'Fortify Magicka',description:'Increases your Magicka by 60 points.',magnitude:60,duration:0}]};
- let snapshot={available:true,playerName:'Player',level:10,gold:50,armorRating:10,equipment:{head:null,body:null,hands:null,feet:null,mainHand:null,offHand:null},inventory:[item,helmet],inventoryTypeCount:1163,inventoryTruncated:true};
+ const book={id:'125',name:'Unread Book',category:'book',useAction:'read',count:1,value:5,weight:1,equipped:false,isRead:false};
+ const note={...book,id:'126',name:'Read Note',isRead:true};
+ const tome={...book,id:'127',name:'Read Spell Tome',useAction:'learn',teachesSpell:'Flames',isRead:true};
+ const unreadTome={...tome,id:'128',name:'Unread Spell Tome',isRead:false};
+ const legacyBook={...book,id:'129',name:'Book Without Read State',isRead:undefined};
+ const firstPageItems=[item,helmet,book,note,tome,unreadTome,legacyBook];
+ let bookWasRead=false,allowRead=false;
+ const currentItems=()=>firstPageItems.map(entry=>entry.id===book.id?{...entry,isRead:bookWasRead}:entry);
+ let snapshot={available:true,playerName:'Player',level:10,gold:50,armorRating:10,equipment:{head:null,body:null,hands:null,feet:null,mainHand:null,offHand:null},inventory:currentItems(),inventoryTypeCount:1163,inventoryTruncated:true};
  const native=[];
  const api={on:()=>()=>{},getVisibility:()=>({visible:true}),async request(method,params){native.push({method,params});
-  if(method==='game.getInventory')return {available:true,results:params.offset?Array.from({length:64},(_,i)=>({...item,id:String(i+500),name:'Page 2 item '+i})): [item,helmet],totalTypes:1163,totalMatches:1163,categories:['armor','weapon'],offset:params.offset};
+  if(method==='game.getInventory')return {available:true,results:params.offset?Array.from({length:64},(_,i)=>({...item,id:String(i+500),name:'Page 2 item '+i})):currentItems(),totalTypes:1163,totalMatches:1163,categories:['armor','weapon','book'],offset:params.offset};
+  if(method==='game.itemAction'&&params.formId===book.id&&params.action==='read'){
+   if(!allowRead)return {accepted:false,message:'Reading is unavailable.'};
+   bookWasRead=true;snapshot={...snapshot,inventory:currentItems()};
+   return {accepted:true,bookTitle:book.name,bookText:'The inscription has been read.',bookStyle:'note'};
+  }
   if(method==='game.equipItem'){snapshot={...snapshot,equipment:{...snapshot.equipment,[params.slot]:item}};return {accepted:true,slot:params.slot};}
   if(method==='game.unequipItem'){snapshot={...snapshot,equipment:{...snapshot.equipment,[params.slot]:null}};return {accepted:true,slot:params.slot};}
   if(method==='game.getPlayerSnapshot')return snapshot;
   throw Error(method);
  }};
- const panel=moduleSource('sdk/ui/src/field/EquipmentPanel.tsx',{'react':React,'@skyultra/sdk':{},'./ActorStage.js':{ModelStage:'ModelStage'},'./itemThumbnails.js':{actorThumbnailQueue:()=>({set(){}}),PLAYER_PORTRAIT_QUEUE_KEY:'0x00000014:0x00000007'},'./ItemThumbnail.js':{ItemThumbnail:'Thumbnail'},'./EquipmentGlyph.js':{EquipmentGlyph:'EquipmentGlyph'},'./icons.js':{Icon:'Icon'},'./model.js':{formId:String}});
+ const panel=moduleSource('sdk/ui/src/field/EquipmentPanel.tsx',{'react':React,'@skyultra/sdk':{},'./ActorStage.js':{ModelStage:'ModelStage'},'./itemThumbnails.js':{actorThumbnailQueue:()=>({set(){}}),PLAYER_PORTRAIT_QUEUE_KEY:'0x00000014:0x00000007'},'./ItemThumbnail.js':{ItemThumbnail:'Thumbnail'},'./EquipmentGlyph.js':{EquipmentGlyph:'EquipmentGlyph'},'./spellArt.js':{HeartIcon:'HeartIcon'},'./icons.js':{Icon:'Icon'},'./model.js':{formId:String}});
  const dragPosition=moduleSource('sdk/ui/src/field/itemDrag.ts',{});
- const page=moduleSource('sdk/ui/src/field/InventoryPage.tsx',{'react':React,'@skyultra/sdk':sdk,'./ItemStage.js':{ItemStage:'ItemStage'},'./ItemThumbnail.js':{ItemThumbnail:'Thumbnail',ItemImage:'ItemImage'},'./itemDrag.js':dragPosition,'./EquipmentPanel.js':{...panel,EquipmentPanel:'EquipmentPanel'},'../core.js':{SkyChoice:'Choice',SkyDataList:'DataList',SkySegmentedControl:'Segments'},'./icons.js':{Icon:'Icon',itemIcon:()=> 'inventory'},'./pieces.js':{Empty:'Empty'},'./model.js':{formId:String}},{window,document,AbortController});
+ const thumbnailModule=moduleSource('sdk/ui/src/field/itemThumbnails.ts',{'@skyultra/sdk':sdk});
+ const page=moduleSource('sdk/ui/src/field/InventoryPage.tsx',{'react':React,'@skyultra/sdk':sdk,'./ItemStage.js':{ItemStage:'ItemStage'},'./ItemThumbnail.js':{ItemThumbnail:'Thumbnail',ItemImage:'ItemImage'},'./itemDrag.js':dragPosition,'./itemThumbnails.js':thumbnailModule,'./EquipmentPanel.js':{...panel,EquipmentPanel:'EquipmentPanel'},'../core.js':{SkyChoice:'Choice',SkyDataList:'DataList',SkySegmentedControl:'Segments'},'./icons.js':{Icon:'Icon',itemIcon:()=> 'inventory'},'./pieces.js':{Empty:'Empty'},'./model.js':{formId:String}},{window,document,AbortController});
  const props={player:snapshot,bridge:api,obscured:false};
  function render(){dirty=false;cursor=0;tree=page.default(props);const changes=effects.splice(0);for(const change of changes)slots[change.index]?.cleanup?.();for(const {index,fn,deps} of changes)slots[index]={deps,cleanup:fn()};}
  async function settle(){for(let i=0;i<20;i++){await Promise.resolve();if(dirty)render();}}
@@ -119,6 +135,25 @@ async function pageChecks(){
  const pointer={setPointerCapture(id){captured=id;},hasPointerCapture:id=>id===captured,releasePointerCapture(){captured=undefined;},querySelector:()=>({getAttribute:()=>thumbnailSrc})};
  const event=(x=0,y=0)=>({pointerId:1,button:0,clientX:x,clientY:y,currentTarget:pointer,preventDefault(){}});
  render();await settle();await flush();
+ const cardFor=name=>find(node=>node.type==='button'&&node.props.className?.includes('item-tile')&&node.props.title.startsWith(name));
+ const readSeals=card=>findAll(card,node=>node.props.className==='item-tile__read-seal');
+ for(const unread of [item,helmet,book,unreadTome,legacyBook]){assert.equal(readSeals(cardFor(unread.name)).length,0);checks++;}
+ for(const read of [note,tome]){
+  const seal=readSeals(cardFor(read.name));assert.equal(seal.length,1);assert.equal(seal[0].props['aria-label'],'Already read');
+  assert.ok(findAll(seal,node=>node.type==='Icon'&&node.props.name==='bookRead').length===1);checks+=3;
+ }
+ // Only the native confirmation and refreshed read flag can add the marker.
+ find(node=>node.type===panel.EquipmentSelection).props.onItemAction(book,'read',1);await settle();await flush();
+ assert.equal(readSeals(cardFor(book.name)).length,0);checks++;
+ allowRead=true;
+ find(node=>node.type===panel.EquipmentSelection).props.onItemAction(book,'read',1);await settle();await flush();
+ assert.equal(readSeals(cardFor(book.name)).length,1);checks++;
+ find(node=>node.props.role==='dialog'&&node.props.className?.includes('inventory-book-modal')).props.onClick();await settle();
+ find(node=>node.type==='Segments'&&node.props.label==='Inventory layout').props.onValueChange('list');render();await settle();
+ assert.ok(find(node=>node.props.className==='inventory-results inventory-results--list'));checks++;
+ for(const read of [book,note,tome]){assert.equal(readSeals(cardFor(read.name)).length,1);checks++;}
+ assert.equal(readSeals(cardFor(unreadTome.name)).length,0);checks++;
+ find(node=>node.type==='Segments'&&node.props.label==='Inventory layout').props.onValueChange('grid');render();await settle();
  assert.ok(find(node=>node.type==='EquipmentPanel'));checks++;
  const workspace=find(node=>node.props.className==='inventory-outfit-workbench');
  const columns=workspace.props.children.flat().filter(value=>value&&typeof value==='object');
@@ -145,7 +180,7 @@ async function pageChecks(){
  tile().props.onPointerDown(event());target='mainHand';tile().props.onPointerMove(event(10,10));render();tile().props.onPointerCancel(event(10,10));await settle();assert.equal(native.filter(call=>call.method==='game.equipItem').length,1);checks++;
  find(node=>node.type==='button'&&node.props.children?.includes('Next')).props.onClick();render();await settle();await flush();
  assert.equal(findAll(tree,node=>node.type==='button'&&node.props.className?.includes('item-tile')).length,64);checks++;
- assert.equal(native.filter(call=>call.method==='game.getInventory').at(-1).params.offset,2);checks++;
+ assert.equal(native.filter(call=>call.method==='game.getInventory').at(-1).params.offset,firstPageItems.length);checks++;
  // The category rail and selected-item shortcut use the same inventory state.
  const rail=find(node=>node.props['aria-label']==='Inventory categories');
  const armor=rail.props.children.flat(Infinity).find(node=>node?.type==='button'&&node.props.title==='Armor');
@@ -188,7 +223,7 @@ async function pageChecks(){
  checks+=19;
 
  // Verify BarterPage has no EquipmentPanel, renders bottom Vendor/Player switcher tabs, and shows quantity slider when count > 5.
- const barterPage=moduleSource('sdk/ui/src/field/BarterPage.tsx',{'react':React,'@skyultra/sdk':sdk,'./ItemThumbnail.js':{ItemThumbnail:'Thumbnail'},'../core.js':{SkyChoice:'Choice',SkySegmentedControl:'Segments'},'./icons.js':{Icon:'Icon',itemIcon:()=> 'inventory'},'./pieces.js':{Empty:'Empty'},'./model.js':{formId:String}},{window,document,AbortController});
+ const barterPage=moduleSource('sdk/ui/src/field/BarterPage.tsx',{'react':React,'@skyultra/sdk':sdk,'./EquipmentPanel.js':panel,'./ItemThumbnail.js':{ItemThumbnail:'Thumbnail'},'../core.js':{SkyChoice:'Choice',SkySegmentedControl:'Segments'},'./icons.js':{Icon:'Icon',itemIcon:()=> 'inventory'},'./pieces.js':{Empty:'Empty'},'./model.js':{formId:String}},{window,document,AbortController});
  const barterStackItem={id:'777',name:'Iron Arrow',category:'ammo',count:25,value:3,weight:0.1,equipped:false};
  const barterTree=barterPage.default({player:{...snapshot,inventory:[barterStackItem]},bridge:api,obscured:false,displayMode:'half',pauseWorld:false});
  assert.ok(!findAll(barterTree,node=>node.type==='EquipmentPanel').length);

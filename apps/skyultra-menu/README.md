@@ -54,6 +54,8 @@ volume and replay choices are settings. Advanced startup options use the same
 JSON file's `runtime` object and apply after restarting Skyrim. The INI is no
 longer read or shipped. See [runtime settings and bridge delivery](../../docs/BRIDGE_DELIVERY.md).
 
+Developer Studio now exposes runtime suspension/resumption, unloading, aggregate mod resource usage and CEF recovery information. Suspension unloads documents and Resume loads fresh ones while retaining native handles. See [runtime resilience](../../docs/RUNTIME_RESILIENCE.md), including the optional local-only crash reporter setup; no game-root configuration is installed by the menu build.
+
 The built-in app installs `installSkyUltraCompetitorShims` during its lifecycle.
 Independent mod pages explicitly install their own shims before legacy scripts.
 See the [SDK walkthrough](../../docs/SDK_GUIDE.md), [native API](../../api/README.md),

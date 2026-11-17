@@ -37,7 +37,6 @@ function itemSubtitle(item: Item): string {
 }
 
 export default function FavoritesPage({
-  player,
   bridge,
   obscured = false,
   displayMode = 'half',

@@ -120,6 +120,12 @@ struct GpuFrame {
     std::shared_ptr<void> lifetime;
 };
 
+struct BrowserHealth {
+    std::uint32_t renderer_crashes{}, context_losses{}, recovery_attempts{}, stalled_batches{};
+    bool recovering{}, recovery_blocked{}, crash_reports_enabled{};
+    std::string last_failure;
+};
+
 class IWebView {
 public:
     virtual ~IWebView() = default;
@@ -127,6 +133,7 @@ public:
     [[nodiscard]] virtual ViewId Id() const noexcept = 0;
     [[nodiscard]] virtual std::shared_ptr<BridgeEventQueue> BridgeEvents() const { return {}; }
     [[nodiscard]] virtual std::shared_ptr<BridgeEventQueue> BridgeResponses() const { return {}; }
+    [[nodiscard]] virtual BrowserHealth Health() const { return {}; }
     virtual void Navigate(std::string_view url) = 0;
     virtual void Resize(SizeU size) = 0;
     virtual void SetScale(float scale) = 0;

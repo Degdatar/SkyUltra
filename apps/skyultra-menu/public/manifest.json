@@ -59,7 +59,8 @@
       "ui.projectWorldAnchors",
       "ui.setSpatialPlacement",
       "ui.toggleDomInspector",
-      "ui.interopCall"
+      "ui.interopCall",
+      "ui.manageModRuntime"
     ]
   }
 }

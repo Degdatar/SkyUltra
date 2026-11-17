@@ -92,7 +92,7 @@ export default function MannequinPage({
   const [actionMessage, setActionMessage] = useState('');
   const [dragging, setDragging] = useState<Item | null>(null);
   const [hoverSlot, setHoverSlot] = useState('');
-  const [revision, setRevision] = useState(0);
+  const [revision] = useState(0);
   const locked = useRef(false);
   const action = useRef<AbortController | null>(null);
   const drag = useRef<Drag | null>(null);

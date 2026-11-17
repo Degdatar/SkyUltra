@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include "SkyUltra/ModResourceBudget.h"
 
 namespace skyultra {
 
@@ -77,6 +78,8 @@ struct ViewConfig {
     std::string id;
     std::shared_ptr<BridgeEventQueue> bridge_event_queue;
     std::shared_ptr<BridgeEventQueue> bridge_response_queue;
+    std::shared_ptr<ModResourceBudget> resource_budget;
+    std::shared_ptr<ModResourceBudget::ViewLease> resource_lease;
     std::optional<ModContentPolicy> mod_content_policy;
     BrowserEngine browser_engine{ BrowserEngine::Ultralight };
     SizeU size{ 1280, 720 };

@@ -12,6 +12,8 @@ SkyUltra owns accepted native messages before a browser is ready and schedules t
 
 Count and byte limits include in-flight messages. They bound owned payloads, rather than total process memory: JavaScript strings, parsed objects and browser resources use additional memory. A single event larger than the batch byte target can travel alone, subject to the API's 1 MiB JSON payload limit. Page-to-native requests retain their existing 64 KiB envelope limit.
 
+The per-view limits additionally share [per-mod resource budgets](RUNTIME_RESILIENCE.md#resource-budgets): separate aggregate event/reply lanes of 4,096 messages / 128 MiB each, 16 reserved views and a 128 MiB primary-surface estimate. `SKYULTRA_RESOURCE_LIMIT` (`8`) reports view admission failure; `SKYULTRA_SUSPENDED` (`9`) reports an owner disabled through Developer Studio. Reserved controls retain their per-view lane.
+
 Only SkyUltra's complete visibility and menu-mode state events use the reserved lane: `skyultra.visibility`, `skyultra.inventoryMode`, `skyultra.barterMode`, `skyultra.containerMode`, `skyultra.magicMode`, `skyultra.favoritesMode`, `skyultra.mannequinMode`, `skyultra.lootMode` and `skyultra.pickpocketMode`. Custom commands, chunks, deltas and input tokens are never coalesced. The reserved lane can overtake ordinary events; FIFO ordering applies within the ordinary channel.
 
 The native API reports acceptance directly:

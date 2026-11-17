@@ -559,6 +559,7 @@ Json PlayerItemJson(
     } else if (form->Is(RE::FormType::Ingredient)) {
         item["useAction"] = "eat";
     } else if (auto* book = form->As<RE::TESObjectBOOK>(); book != nullptr) {
+        item["isRead"] = book->IsRead();
         if (book->TeachesSpell()) {
             item["useAction"] = "learn";
             if (const auto* spell = book->GetSpell(); spell != nullptr) {

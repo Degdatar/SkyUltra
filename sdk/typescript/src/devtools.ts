@@ -5,6 +5,7 @@ export const skyUltraDevToolsMethods = [
   'ui.reloadModViews',
   'ui.exportHudMod',
   'ui.manageDiagnosticSample',
+  'ui.manageModRuntime',
 ] as const;
 
 export type SkyUltraDevToolsMethod = (typeof skyUltraDevToolsMethods)[number];
@@ -53,6 +54,12 @@ export interface SkyUltraDeveloperViewRecord {
   initialUrl: string;
   eventQueue?: SkyUltraBridgeQueueStats;
   responseQueue?: SkyUltraBridgeQueueStats;
+  resources?: SkyUltraDeveloperModRecord['resources'];
+  suspended?: boolean;
+  recovery?: {
+    rendererCrashes: number; contextLosses: number; recoveryAttempts: number; stalledBatches: number;
+    recovering: boolean; recoveryBlocked: boolean; crashReportsEnabled: boolean; lastFailure: string;
+  };
 }
 
 export interface SkyUltraDeveloperBridgeEntry {
@@ -93,6 +100,11 @@ export interface SkyUltraDeveloperModRecord {
   deniedPermissionCount: number;
   hotReloadCount: number;
   findings: SkyUltraDiagnosticFinding[];
+  resources?: {
+    maxViews: number; views: number; surfaceByteLimit: number; reservedSurfaceBytes: number;
+    messageLimit: number; messageByteLimit: number; eventCount: number; eventBytes: number;
+    replyCount: number; replyBytes: number; rejected: number; suspended: boolean;
+  };
 }
 
 export interface SkyUltraDeveloperSnapshot {
@@ -118,6 +130,20 @@ export interface SkyUltraReloadModResult {
   reloadedViewCount: number;
   hotReloadEnabled: boolean;
   message?: string;
+}
+
+export const skyUltraModRuntimeActions = ['suspend', 'resume', 'unload'] as const;
+export type SkyUltraModRuntimeAction = typeof skyUltraModRuntimeActions[number];
+export interface SkyUltraModRuntimeResult {
+  accepted: boolean; modId?: string; action?: SkyUltraModRuntimeAction; affectedViews?: number; message?: string;
+}
+export function manageSkyUltraModRuntime(
+  modId: string, action: SkyUltraModRuntimeAction,
+  bridge: SkyWebViewAPI = getSkyWebView(), options?: SkyUltraRequestOptions,
+): Promise<SkyUltraModRuntimeResult> {
+  if (typeof modId !== 'string' || !modId.trim()) throw new TypeError('Expected a mod ID.');
+  if (!skyUltraModRuntimeActions.includes(action)) throw new TypeError('Unsupported mod runtime action.');
+  return bridge.request<SkyUltraModRuntimeResult>('ui.manageModRuntime', { modId: modId.trim(), action }, options);
 }
 
 export interface SkyUltraDiagnosticSampleResult {

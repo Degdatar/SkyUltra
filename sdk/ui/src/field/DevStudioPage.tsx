@@ -9,6 +9,8 @@ import {
   diagnoseCoexistenceAndLayering,
   diagnoseSkyUltraModRecord,
   manageSkyUltraDiagnosticSample,
+  manageSkyUltraModRuntime,
+  type SkyUltraModRuntimeAction,
   playSkyUltraSound,
   projectSkyUltraWorldAnchors,
   readSkyUltraDeveloperSnapshot,
@@ -547,6 +549,28 @@ export default function DevStudioPage({
     return doctorMod.findings.filter((f) => f.severity === doctorSeverity);
   }, [doctorMod, doctorSeverity]);
 
+  const handleRuntime = async (modId: string, action: SkyUltraModRuntimeAction): Promise<void> => {
+    if (busy || !native) return;
+    setBusy(true);
+    try {
+      const result = await manageSkyUltraModRuntime(modId, action, bridge);
+      setStatusNote(result.message ?? (result.accepted ? 'Mod runtime updated.' : 'Mod runtime action declined.'));
+      await refreshSnapshot();
+    } catch (error) { setStatusNote(error instanceof Error ? error.message : String(error)); }
+    finally { setBusy(false); }
+  };
+  const runtimeButtons = (modId: string, suspended = false): React.JSX.Element | null =>
+    !modId || modId === 'skyultra.menu' ? null : <>
+      <button type="button" className="char-stage-btn" disabled={busy || !native}
+        title="Suspend unloads the mod's pages. Resume reloads fresh documents and retains native handles."
+        onClick={() => void handleRuntime(modId, suspended ? 'resume' : 'suspend')}>
+        <Icon name={suspended ? 'play' : 'pause'} size={13} /> {suspended ? 'Resume mod' : 'Suspend mod'}
+      </button>
+      <button type="button" className="char-stage-btn" disabled={busy || !native}
+        title="Unload destroys every view and native handle for this mod. Resume re-enables future creation."
+        onClick={() => void handleRuntime(modId, 'unload')}><Icon name="close" size={13} /> Unload mod</button>
+    </>;
+
   const handleReloadMod = async (modId?: string, toggleWatcher?: boolean): Promise<void> => {
     if (busy) return;
     if (!native) {
@@ -791,6 +815,7 @@ export default function DevStudioPage({
                       >
                         <Icon name="rotate" size={13} /> Reload View
                       </button>
+                      {runtimeButtons(view.modId, view.suspended)}
                     </div>
                   </div>
                   <div className="dev-metrics-row">
@@ -806,7 +831,7 @@ export default function DevStudioPage({
                     </span>
                     <span>
                       <small>FPS CAP</small>
-                      <strong>{view.fpsLimit > 0 ? `${view.fpsLimit} FPS` : "UNCAPPED"}</strong>
+                      <strong>{view.fpsLimit > 0 ? `${view.fpsLimit} FPS` : view.engine === "cef" ? "DISPLAY / MAX 120" : "ENGINE DEFAULT"}</strong>
                     </span>
                     <span>
                       <small>INPUT SCOPE DEPTH</small>
@@ -820,6 +845,16 @@ export default function DevStudioPage({
                       <small>ALLOWED METHODS</small>
                       <strong>{view.allowedMethods.length}</strong>
                     </span>
+                    {view.recovery && view.engine === 'cef' && <span title={view.recovery.lastFailure || 'No renderer failure recorded.'}>
+                      <small>RECOVERY / CONTEXT LOSS</small>
+                      <strong>{view.suspended ? 'SUSPENDED' : view.recovery.recoveryBlocked ? 'STOPPED' : view.recovery.recovering ? 'RECOVERING' : 'IDLE'} · {view.recovery.rendererCrashes} / {view.recovery.contextLosses}</strong>
+                    </span>}
+                    {view.recovery && view.engine === 'cef' && <span title="CEF crash capture requires its optional external configuration.">
+                      <small>CRASH REPORTER / STALLED BATCHES</small><strong>{view.recovery.crashReportsEnabled ? 'ENABLED' : 'NOT CONFIGURED'} · {view.recovery.stalledBatches}</strong>
+                    </span>}
+                    {view.resources && <span title="Estimated primary RGBA surface reservation; excludes browser-internal GPU allocations.">
+                      <small>MOD RESOURCE BUDGET</small><strong>{view.resources.views}/{view.resources.maxViews} views · {formatBytes(view.resources.reservedSurfaceBytes)}</strong>
+                    </span>}
                     {view.eventQueue && <span title={`${view.eventQueue.controlPending} host controls; ${view.eventQueue.inFlight} in flight; ${view.eventQueue.rejected} rejected; oldest queued ${view.eventQueue.oldestMs.toFixed(1)} ms; longest batch ${view.eventQueue.maxDispatchMs.toFixed(1)} ms`}>
                       <small>PENDING EVENTS</small>
                       <strong>{view.eventQueue.pending} / {view.eventQueue.capacity}</strong>
@@ -1303,10 +1338,17 @@ export default function DevStudioPage({
                         >
                           <Icon name="rotate" size={13} /> Hot Reload
                         </button>
+                        {mod.registered && runtimeButtons(mod.id, mod.resources?.suspended)}
                       </div>
                     </div>
 
                     <div className="dev-metrics-row">
+                      {mod.resources && <>
+                        <span><small>RUNTIME</small><strong>{mod.resources.suspended ? 'SUSPENDED' : 'ENABLED'}</strong></span>
+                        <span><small>RESERVED VIEWS</small><strong>{mod.resources.views}/{mod.resources.maxViews}</strong></span>
+                        <span title="Primary RGBA surface estimate; browser caches and internal GPU allocations are additional."><small>SURFACE RESERVATION</small><strong>{formatBytes(mod.resources.reservedSurfaceBytes)} / {formatBytes(mod.resources.surfaceByteLimit)}</strong></span>
+                        <span><small>MOD QUEUES / REJECTIONS</small><strong>{mod.resources.eventCount} events · {mod.resources.replyCount} replies · {mod.resources.rejected} denied</strong></span>
+                      </>}
                       <span>
                         <small>ACTIVE VIEWS</small>
                         <strong>{mod.activeViewCount}</strong>
