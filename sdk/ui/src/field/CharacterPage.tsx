@@ -60,6 +60,13 @@ export interface SavedCharacterLoadout {
 
 const LOADOUT_STORAGE_KEY = "skyultra.character.loadouts.v1";
 
+function formatCompactMetric(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(value) >= 100_000) return `${(value / 1_000).toFixed(1)}K`;
+  return Math.round(value).toLocaleString();
+}
+
 function loadSavedLoadouts(characterName?: string | null): SavedCharacterLoadout[] {
   try {
     const store = readLocalSkyUltraProfileStore();
@@ -505,15 +512,15 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
         </div>
 
         <div className="char-hero-banner__kpis">
-          <div className="char-kpi-tile">
+          <div className="char-kpi-tile" title={`${armorRating.toLocaleString()} Armor Rating`}>
             <small>PHYSICAL MITIGATION</small>
             <strong>{physicalMitigation.toFixed(0)}%</strong>
-            <span>{armorRating.toLocaleString()} Armor Rating</span>
+            <span>{formatCompactMetric(armorRating)} Armor</span>
           </div>
-          <div className="char-kpi-tile">
-            <small>EFFECTIVE HEALTH (EHP)</small>
-            <strong>{effectiveHp.toLocaleString()}</strong>
-            <span>{Math.round(player?.health.current ?? 0).toLocaleString()} Base HP</span>
+          <div className="char-kpi-tile" title={`Effective HP: ${effectiveHp.toLocaleString()}`}>
+            <small>EFFECTIVE HP (EHP)</small>
+            <strong>{formatCompactMetric(effectiveHp)}</strong>
+            <span>{formatCompactMetric(player?.health.current ?? 0)} Base HP</span>
           </div>
           <div className="char-kpi-tile">
             <small>EQUIPPED LOADOUT</small>
@@ -714,7 +721,7 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
                       <div className="char-ward-card__head">
                         <strong>{res.label}</strong>
                         <span className="char-ward-card__status">{status}</span>
-                        <b>{val}%</b>
+                        <b title={`${val.toLocaleString()}%`}>{val.toLocaleString()}%</b>
                       </div>
                       <div className="char-progress-track">
                         <i style={{ width: `${pct}%` }} />

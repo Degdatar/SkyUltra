@@ -85,7 +85,7 @@ export default function SettingsPage({
     } catch {
       // Ignore storage access errors
     }
-    return 'all';
+    return 'inventory';
   });
   const [settings, setSettings] = useState<SkyUltraSettings>(defaultSkyUltraSettings);
   const [profileStore, setProfileStore] = useState<SkyUltraProfileStoreV2>(() => readLocalSkyUltraProfileStore());
@@ -98,6 +98,7 @@ export default function SettingsPage({
   const [status, setStatus] = useState<SkyUltraSplashStatus | null>(null);
   const [selectedModId, setSelectedModId] = useState<string>('');
   const [customModInput, setCustomModInput] = useState<string>('');
+  const [settingsQuery, setSettingsQuery] = useState<string>('');
 
   useEffect(() => {
     let active = true;
@@ -596,14 +597,17 @@ export default function SettingsPage({
     }
   };
 
-  const showInventory = category === 'all' || category === 'inventory';
-  const showMagic = category === 'all' || category === 'magic';
-  const showProfiles = category === 'all' || category === 'profiles';
-  const showThemes = category === 'all' || category === 'themes';
-  const showHotkeys = category === 'all' || category === 'hotkeys';
-  const showEngine = category === 'all' || category === 'engine';
-  const showCursor = category === 'all' || category === 'cursor';
-  const showSplash = category === 'all' || category === 'splash';
+  const queryTokens = settingsQuery.trim().toLowerCase();
+  const activeCat: SettingsCategory = queryTokens ? 'all' : category;
+  const matchesQuery = (keywords: string): boolean => !queryTokens || keywords.toLowerCase().includes(queryTokens);
+  const showInventory = (activeCat === 'all' || activeCat === 'inventory') && matchesQuery('inventory barter container mannequin loot pickpocket replacement display pause stolen weight value');
+  const showMagic = (activeCat === 'all' || activeCat === 'magic') && matchesQuery('magic spellbook favorites replacement display pause');
+  const showProfiles = (activeCat === 'all' || activeCat === 'profiles') && matchesQuery('profile sync character global defaults json import export');
+  const showThemes = (activeCat === 'all' || activeCat === 'themes') && matchesQuery('theme visual darkmode dragonstone neon glass density motion splash book reader design parchment scale sound stolen lighting preview');
+  const showHotkeys = (activeCat === 'all' || activeCat === 'hotkeys') && matchesQuery('hotkey chord keyboard gamepad vr controller virtual');
+  const showEngine = (activeCat === 'all' || activeCat === 'engine') && matchesQuery('engine cef ultralight runtime multithreaded cpu gpu hot reload resolution vr');
+  const showCursor = (activeCat === 'all' || activeCat === 'cursor') && matchesQuery('cursor telemetry polling export portrait resolution');
+  const showSplash = (activeCat === 'all' || activeCat === 'splash') && matchesQuery('splash video soundtrack audio replay playback');
   const savedProfileEntries = useMemo(() => Object.values(profileStore.profiles), [profileStore.profiles]);
   const bothMenusEnabled =
     settings.replaceSkyrimInventory !== false &&
@@ -622,20 +626,19 @@ export default function SettingsPage({
 
   return (
     <div className="page settings-page">
-      <div className="page-lead">
-        <div>
+      <div className="settings-studio-header">
+        <div className="settings-studio-header__title">
           <span className="eyebrow">COMMAND DECK CONFIGURATION · LIVE WIRED CONTROLS</span>
           <h1>
-            System &amp; Interface Settings<span className="title-period">.</span>
+            System Settings<span className="title-period">.</span>
           </h1>
           <p>
-            Transform your interface architecture across 16 Classic, Celestial &amp; Neon themes, persist per-character
-            layouts with explicit global defaults, tune telemetry cadence, and bind 1-to-3 input hotkeys across Keyboard, Gamepad, and VR.
+            Configure menu replacements, 17 interface themes, per-character profiles, input chords, GPU runtime, and Book Reader studio layouts.
           </p>
         </div>
         <div className="settings-lead-actions">
           <button type="button" className="control-button" disabled={!loaded || busy} onClick={resetAllPreferences}>
-            Reset All Defaults
+            Reset Defaults
           </button>
           <button type="button" className="primary-button" disabled={!loaded || busy} onClick={() => void save()}>
             <Icon name="check" size={15} />
@@ -646,67 +649,96 @@ export default function SettingsPage({
 
       <div className="settings-overview-strip">
         <div className="settings-kpi-pill">
-          <small>ACTIVE PROFILE SCOPE</small>
+          <small>PROFILE SCOPE</small>
           <strong>{effectiveProfile.isCharacterScoped ? effectiveProfile.characterName : 'Global Defaults'}</strong>
           <span>
-            {profileStore.mode === 'per-character' ? 'Per-Character Auto' : 'Shared Global'} · Default:{' '}
+            {profileStore.mode === 'per-character' ? 'Per-Character Auto' : 'Shared Global'} ·{' '}
             {palettes.find((p) => p.value === profileStore.globalDefaults.theme)?.label ?? 'Dragonstone'}
           </span>
         </div>
         <div className="settings-kpi-pill">
-          <small>ACTIVE THEME ARCHITECTURE</small>
+          <small>THEME ARCHITECTURE</small>
           <strong>{palettes.find((p) => p.value === theme)?.label ?? 'Dragonstone'}</strong>
           <span>{palettes.find((p) => p.value === theme)?.styleTag ?? 'Imperial Inlay'}</span>
         </div>
         <div className="settings-kpi-pill">
-          <small>PRIMARY &amp; KEYBOARD CHORDS</small>
+          <small>INPUT CHORDS</small>
           <strong>{formatSkyUltraHotkey(settings.hotkey ?? defaultSkyUltraHotkey, 'keyboard')}</strong>
           <span>
-            Keyboard: {formatSkyUltraHotkey(settings.keyboardHotkey ?? defaultSkyUltraKeyboardHotkey, 'keyboard')} · VR:{' '}
-            {settings.vrHeadTracking !== false ? 'Head-Tracked' : 'Fixed'}
+            KBDeck: {formatSkyUltraHotkey(settings.keyboardHotkey ?? defaultSkyUltraKeyboardHotkey, 'keyboard')} · VR:{' '}
+            {settings.vrHeadTracking !== false ? 'HMD' : 'Fixed'}
           </span>
         </div>
         <div className="settings-kpi-pill">
-          <small>ENGINE &amp; TELEMETRY</small>
+          <small>ENGINE &amp; CADENCE</small>
           <strong>
             {(settings.menuEngine ?? 'cef').toUpperCase()} · {(uiPrefs.pollIntervalMs / 1000).toFixed(2)}s
           </strong>
           <span>
-            Inventory: {settings.replaceSkyrimInventory !== false ? 'SkyUltra 3D' : 'Vanilla/SkyUI'} · Barter:{' '}
-            {settings.replaceSkyrimBarter !== false ? 'SkyUltra' : 'Vanilla/SkyUI'}
+            Inventory: {settings.inventoryDisplayMode ?? 'windowed'} · Replacements:{' '}
+            {settings.replaceSkyrimInventory !== false ? 'SkyUltra' : 'Vanilla'}
           </span>
         </div>
       </div>
 
-      <nav className="settings-category-rail" role="tablist" aria-label="Settings categories">
-        {(
-          [
-            { id: 'all', label: 'All Settings', sub: 'Complete configuration deck' },
-            { id: 'inventory', label: 'Inventory & Barter', sub: 'Turn on/off in-game menus or return to Skyrim' },
-            { id: 'magic', label: 'Magic & Favorites', sub: 'Spellbook & favorites menu replacements' },
-            { id: 'profiles', label: 'Profiles & Sync', sub: 'Per-character layouts, defaults & JSON' },
-            { id: 'themes', label: 'Themes & Visuals', sub: '16 themes, neon bloom, grid & density' },
-            { id: 'hotkeys', label: 'Hotkeys & VR', sub: 'Keyboard, Gamepad & VR 3-input chords' },
-            { id: 'engine', label: 'Engine & Runtime', sub: 'Ultralight + CEF & VR head tracking' },
-            { id: 'cursor', label: 'Cursor & Telemetry', sub: 'Pointer style, polling rate & 4K export' },
-            { id: 'splash', label: 'Opening Splash', sub: 'Startup video & stereo soundtrack' },
-          ] as const
-        ).map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            aria-selected={category === tab.id}
-            className={'settings-cat-btn' + (category === tab.id ? ' is-active' : '')}
-            onClick={() => setCategory(tab.id)}
-          >
-            <strong>{tab.label}</strong>
-            <small>{tab.sub}</small>
-          </button>
-        ))}
-      </nav>
+      <div className="settings-studio-shell">
+        <aside className="settings-studio-sidebar">
+          <div className="settings-sidebar-search">
+            <label className="page-search">
+              <Icon name="search" size={15} />
+              <input
+                aria-label="Search settings"
+                value={settingsQuery}
+                onChange={(e) => setSettingsQuery(e.currentTarget.value)}
+                placeholder="Search any setting…"
+              />
+              {settingsQuery && (
+                <button type="button" aria-label="Clear settings search" onClick={() => setSettingsQuery('')}>
+                  <Icon name="close" size={12} />
+                </button>
+              )}
+            </label>
+          </div>
 
-      <fieldset disabled={!loaded || busy} style={{ border: 0, padding: 0, margin: 0 }}>
+          <nav className="settings-category-rail" role="tablist" aria-label="Settings categories">
+            {(
+              [
+                { id: 'inventory', label: 'Inventory & Barter', sub: 'Replacements, modes & world pause', icon: 'inventory' as const },
+                { id: 'magic', label: 'Magic & Favorites', sub: 'Spellbook & favorites overlays', icon: 'rune' as const },
+                { id: 'themes', label: 'Themes & Visuals', sub: '17 palettes, book reader & glass', icon: 'components' as const },
+                { id: 'profiles', label: 'Profiles & Sync', sub: 'Per-character & global JSON', icon: 'actors' as const },
+                { id: 'hotkeys', label: 'Hotkeys & VR', sub: 'Keyboard, gamepad & HMD chords', icon: 'target' as const },
+                { id: 'engine', label: 'Engine & Runtime', sub: 'CEF, Ultralight & hot reload', icon: 'performance' as const },
+                { id: 'cursor', label: 'Cursor & Telemetry', sub: 'Pointer style, polling & 4K export', icon: 'camera' as const },
+                { id: 'splash', label: 'Opening Splash', sub: 'Startup video & soundtrack', icon: 'play' as const },
+                { id: 'all', label: 'All Settings', sub: 'Show every category at once', icon: 'grid' as const },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={activeCat === tab.id}
+                className={'settings-cat-btn' + (activeCat === tab.id ? ' is-active' : '')}
+                onClick={() => {
+                  setCategory(tab.id);
+                  if (settingsQuery) setSettingsQuery('');
+                }}
+              >
+                <span className="settings-cat-btn__icon">
+                  <Icon name={tab.icon} size={15} />
+                </span>
+                <span className="settings-cat-btn__text">
+                  <strong>{tab.label}</strong>
+                  <small>{tab.sub}</small>
+                </span>
+              </button>
+            ))}
+          </nav>
+        </aside>
+
+        <div className="settings-studio-content">
+          <fieldset disabled={!loaded || busy} style={{ border: 0, padding: 0, margin: 0 }}>
         {showInventory && (
           <SkySettingsSection
             title="In-Game Inventory & Vendor Barter Menus"
@@ -752,11 +784,11 @@ export default function SettingsPage({
               <span>Player Inventory Display Mode</span>
               <SkyFilterChips
                 label="Player inventory display mode"
-                value={settings.inventoryDisplayMode ?? 'fullscreen'}
+                value={settings.inventoryDisplayMode ?? 'windowed'}
                 onValueChange={(val) => changeInventoryDisplayMode(val as SkyUltraDisplayMode)}
                 options={[
+                  { value: 'windowed', label: 'Windowed Mode (Default · Floating Overlay)' },
                   { value: 'fullscreen', label: 'Full Screen Mode' },
-                  { value: 'windowed', label: 'Windowed Mode (Floating Overlay)' },
                 ]}
               />
             </div>
@@ -1225,6 +1257,116 @@ export default function SettingsPage({
               checked={uiPrefs.scanlines}
               onCheckedChange={(scanlines) => updateUiPref({ scanlines })}
             />
+
+            <div className="settings-choice">
+              <span>Tab transition splash mode</span>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                <SkyFilterChips
+                  label="Tab transition splash"
+                  value={uiPrefs.tabTransition}
+                  onValueChange={(tabTransition) => updateUiPref({ tabTransition })}
+                  options={[
+                    { value: 'cinematic', label: 'Cinematic Logo Splash' },
+                    { value: 'minimal', label: 'Minimal Fade' },
+                    { value: 'instant', label: 'Instant Cut' },
+                  ]}
+                />
+                <button
+                  type="button"
+                  className="control-button"
+                  onClick={() => window.dispatchEvent(new Event('skyultra:preview-tab-splash'))}
+                >
+                  <Icon name="play" size={12} />
+                  <span>Preview Tab Splash</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="settings-choice">
+              <span>Book Reader default design (7 architectures)</span>
+              <SkyFilterChips
+                label="Book Reader default design"
+                value={uiPrefs.bookReaderDesign}
+                onValueChange={(bookReaderDesign) => updateUiPref({ bookReaderDesign })}
+                options={[
+                  { value: 'auto', label: 'Auto Match' },
+                  { value: 'codex', label: 'Codex' },
+                  { value: 'scroll', label: 'Scroll' },
+                  { value: 'grimoire', label: 'Grimoire' },
+                  { value: 'dwemer', label: 'Dwemer' },
+                  { value: 'scholar', label: 'Scholar' },
+                  { value: 'datapad', label: 'Datapad' },
+                ]}
+              />
+            </div>
+
+            <SkyToggleSwitch
+              label="Synchronize Book Reader colors to active theme"
+              description="Match Book Reader covers, folios, and filigree to your active SkyUltra theme (disable for classic aged yellow parchment)."
+              checked={uiPrefs.bookThemeSync}
+              onCheckedChange={(bookThemeSync) => updateUiPref({ bookThemeSync })}
+            />
+
+            <div className="settings-choice">
+              <span>Glass backdrop frost &amp; blur intensity</span>
+              <SkyFilterChips
+                label="Glass intensity"
+                value={uiPrefs.glassIntensity}
+                onValueChange={(glassIntensity) => updateUiPref({ glassIntensity })}
+                options={[
+                  { value: 'subtle', label: 'Subtle (Fastest)' },
+                  { value: 'balanced', label: 'Balanced' },
+                  { value: 'ultra', label: 'Ultra Frosted' },
+                ]}
+              />
+            </div>
+
+            <SkyRangeSlider
+              label="Interface zoom scale"
+              value={Math.round((uiPrefs.uiScale ?? 1) * 100)}
+              min={85}
+              max={125}
+              step={5}
+              unit="%"
+              onValueChange={(pct) => updateUiPref({ uiScale: pct / 100 })}
+            />
+
+            <div className="settings-choice">
+              <span>Default 3D Studio Lighting Rig</span>
+              <SkyFilterChips
+                label="Studio lighting"
+                value={uiPrefs.studioLighting}
+                onValueChange={(studioLighting) => updateUiPref({ studioLighting })}
+                options={[
+                  { value: 'studio', label: 'Studio' },
+                  { value: 'warm', label: 'Warm' },
+                  { value: 'cool', label: 'Cool' },
+                  { value: 'soft', label: 'Soft' },
+                  { value: 'dramatic', label: 'Dramatic' },
+                ]}
+              />
+            </div>
+
+            <SkyToggleSwitch
+              label="Show Gold-per-Weight (V/W) efficiency badges"
+              description="Highlight high-value loot ratios across Inventory and Container menus."
+              checked={uiPrefs.showValuePerWeight}
+              onCheckedChange={(showValuePerWeight) => updateUiPref({ showValuePerWeight })}
+            />
+
+            <SkyToggleSwitch
+              label="Stolen &amp; Pickpocket Protection Guard"
+              description="Require confirmation before dropping stolen items and skip owned/stolen items during Smart Loot."
+              checked={uiPrefs.stolenProtection}
+              onCheckedChange={(stolenProtection) => updateUiPref({ stolenProtection })}
+            />
+
+            <SkyToggleSwitch
+              label="Declarative UI feedback sounds"
+              description="Play subtle Skyrim UI audio cues when equipping gear, navigating modules, or changing settings."
+              checked={uiPrefs.soundEffects}
+              onCheckedChange={(soundEffects) => updateUiPref({ soundEffects })}
+            />
           </SkySettingsSection>
         )}
 
@@ -1643,6 +1785,8 @@ export default function SettingsPage({
             ? 'Reading preferences…'
             : 'Theme, density, glow, cursor, and polling changes apply live! Click Save Preferences to persist hotkey, splash, and export settings to Skyrim.')}
       </p>
+        </div>
+      </div>
     </div>
   );
 }

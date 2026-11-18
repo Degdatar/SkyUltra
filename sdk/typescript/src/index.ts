@@ -120,8 +120,15 @@ export function getSkyWebView(target?: Window): SkyWebViewAPI {
 }
 
 /** Release a view's opt-in native startup splash after the interface has mounted. */
-export function markSkyUltraPageReady(bridge: SkyWebViewAPI = getSkyWebView()): Promise<{ ready: boolean }> {
-  return bridge.request("ui.pageReady", {});
+export function markSkyUltraPageReady(
+  bridge: SkyWebViewAPI = getSkyWebView(),
+  options?: { epoch?: number },
+): Promise<{ ready: boolean; stale?: boolean }> {
+  const payload: Record<string, JsonValue> =
+    options && typeof options.epoch === 'number' && Number.isFinite(options.epoch) && options.epoch > 0
+      ? { epoch: Math.trunc(options.epoch) }
+      : {};
+  return bridge.request('ui.pageReady', payload);
 }
 
 /** Connect the UI kit's popup scopes so Escape dismisses the popup before its game view. */

@@ -581,8 +581,15 @@ await game.containerTransfer({ action: 'takeAll' });                            
 await game.containerTransfer({ action: 'storeAll', includeEquipped: false });           // or 'plantAll'
 ```
 
-`SkyUltraSettings` (`readSkyUltraSettings` / `updateSkyUltraSettings`) includes native menu replacement and container configuration fields for Storage Containers (`skyultra_container.swf`), Corpse & Monster Looting (`skyultra_loot.swf`), NPC Pickpocketing (`skyultra_pickpocket.swf`), and Mannequins (`skyultra_mannequin.swf`):
+`SkyUltraSettings` (`readSkyUltraSettings` / `updateSkyUltraSettings`) includes native menu replacement and container configuration fields for Storage Containers (`skyultra_container.swf`), Corpse & Monster Looting (`skyultra_loot.swf`), NPC Pickpocketing (`skyultra_pickpocket.swf`), Mannequins (`skyultra_mannequin.swf`), and Compass HUD (`skyultra_compass.swf`):
 - `replaceSkyrimContainer: boolean` (`containerDisplayMode: 'half' | 'full' | 'windowed'`, `containerPauseWorld: boolean`)
 - `replaceSkyrimLoot: boolean` (`lootDisplayMode: 'half' | 'full' | 'windowed'`, `lootPauseWorld: boolean`)
 - `replaceSkyrimPickpocket: boolean` (`pickpocketDisplayMode: 'half' | 'full' | 'windowed'`, `pickpocketPauseWorld: boolean`)
 - `replaceSkyrimMannequin: boolean` (`mannequinDisplayMode: 'half' | 'full' | 'windowed'`, `mannequinPauseWorld: boolean`)
+
+### Extended inventory, actor & Developer Studio contracts
+
+- `createSkyUltraGame()` adds `renameItem(formId, newName)` (`game.renameItem`), supports `'vw'` (Value/Weight) sorting on `inventory()` and `containerSnapshot()`, and supports `{ clearOverride: true }` on `actorThumbnail()` to revert custom portrait overrides.
+- `Item`, `Npc`, and `ContainerSnapshot` include rich combat & world metadata (`temperTier`, `poisonName`, `soulSize`, `teachesSkill`, `isOwned`, `pickpocketChance`, and NPC `magicka`, `stamina`, `className`, `isEssential`, `isUnique`, `combatState`, `relationshipRank`).
+- `SkyUltraUiPreferences` adds `tabTransition` (`'full' | 'subtle' | 'none'`), `bookReaderDesign` (`'auto' | 'codex' | 'scroll' | 'grimoire' | 'dwemer' | 'scholar' | 'datapad'`), `bookThemeSync`, `glassIntensity`, `uiScale`, `soundEffects`, `showValuePerWeight`, and `stolenProtection`.
+- Developer Studio helpers in `@skyultra/sdk`: `clearSkyUltraBridgeLog`, `setSkyUltraModViewState`, `runSkyUltraViewProbe`, `generateSkyUltraBridgeCallSnippet`, plus optional `{ epoch }` on `markSkyUltraPageReady`.

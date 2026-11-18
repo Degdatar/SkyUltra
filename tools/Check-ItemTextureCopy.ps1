@@ -24,7 +24,7 @@ public static class SkyUltraItemTextureCopyCheck {
  [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate void Unmap(IntPtr self,IntPtr resource,uint sub);
  [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate ulong MessageCount(IntPtr self);
  [UnmanagedFunctionPointer(CallingConvention.StdCall)] delegate int ReadMessage(IntPtr self,ulong index,IntPtr message,ref UIntPtr length);
- static T Method<T>(IntPtr self,int slot) where T:Delegate { return Marshal.GetDelegateForFunctionPointer<T>(Marshal.ReadIntPtr(Marshal.ReadIntPtr(self),slot*IntPtr.Size)); }
+ static T Method<T>(IntPtr self,int slot) where T:class { return (T)(object)Marshal.GetDelegateForFunctionPointer(Marshal.ReadIntPtr(Marshal.ReadIntPtr(self),slot*IntPtr.Size),typeof(T)); }
  static void Check(int hr,string operation) { if(hr<0)throw new Exception(operation+": HRESULT 0x"+hr.ToString("X8")); }
  static void Drop(ref IntPtr value) { if(value!=IntPtr.Zero){Marshal.Release(value);value=IntPtr.Zero;} }
  static void Require(bool value,string message) { if(!value)throw new Exception(message); }

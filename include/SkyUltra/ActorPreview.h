@@ -82,6 +82,7 @@ struct ActorPreviewFrame {
 [[nodiscard]] ActorPreviewAnimations CaptureActorPreviewAnimations(ViewId owner,bool pose_library=false);
 void TickActorPreviews();
 [[nodiscard]] ActorPreviewStatus GetActorPreviewStatus(ViewId owner);
+void HideActorPreviewImmediate(ViewId owner) noexcept;
 void RemoveActorPreview(ViewId owner) noexcept;
 void ClearActorPreviews() noexcept;
 // Captures the requested camera/pose on the render thread, then writes a

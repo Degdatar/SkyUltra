@@ -1819,7 +1819,7 @@
     },
     {
       "name": "baseline-browser-mapping",
-      "version": "2.11.35",
+      "version": "2.11.37",
       "licenses": [
         "Apache-2.0"
       ],
@@ -1869,7 +1869,7 @@
     },
     {
       "name": "caniuse-lite",
-      "version": "1.0.30001820",
+      "version": "1.0.30001826",
       "licenses": [
         "CC-BY-4.0"
       ],
@@ -2820,11 +2820,20 @@
         "MIT"
       ],
       "lockfiles": [
-        "apps/skyultra-menu/package-lock.json",
         "samples/my-mod/package-lock.json",
         "samples/react-mod-starter/package-lock.json",
         "samples/ui-kit-test-mod/package-lock.json",
         "sdk/vite-plugin/package-lock.json"
+      ]
+    },
+    {
+      "name": "vite",
+      "version": "7.3.8",
+      "licenses": [
+        "MIT"
+      ],
+      "lockfiles": [
+        "apps/skyultra-menu/package-lock.json"
       ]
     },
     {

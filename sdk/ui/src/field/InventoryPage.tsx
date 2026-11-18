@@ -6,153 +6,65 @@ import { ItemThumbnail, ItemImage } from './ItemThumbnail.js';
 import { itemThumbnailQueue } from './itemThumbnails.js';
 import { itemDragPosition } from './itemDrag.js';
 import { EquipmentPanel, EquipmentSelection, ItemCombatBadges, fitsEquipmentSlot, formatItemCombatMeta } from './EquipmentPanel.js';
+import { BookReader, parseBookActionResult, type BookReaderDesignChoice, type ReadingBookState } from './BookReader.js';
 import { SkyChoice, SkyDataList, SkySegmentedControl } from '../core.js';
 import { Icon, itemIcon } from './icons.js';
 import { Empty } from './pieces.js';
-import { formId, type Item, type Player } from './model.js';
+import { formId, type Item, type Palette, type Player } from './model.js';
 
 const pageSize = 64;
 const categoryOrder = ['weapon','armor','potion','ingredient','ammo','book','scroll','soul gem','key','miscellaneous'];
 const categoryLabels: Record<string, string> = {all:'All items',weapon:'Weapons',armor:'Armor',potion:'Potions',ingredient:'Ingredients',ammo:'Ammo',book:'Books',scroll:'Scrolls','soul gem':'Soul gems',key:'Keys',miscellaneous:'Misc.'};
 type Drag = { item: Item; pointer: number; x: number; y: number; active: boolean };
-type ReadingBookState = {
-  id: string;
-  title: string;
-  text: string;
-  pages: string[];
-  images: string[];
-  style: 'book' | 'note' | 'map';
-};
+type SmartChip = 'all' | 'enchanted' | 'tempered' | 'books' | 'unread' | 'stolen' | 'poisoned';
+type OutfitLoadout = { name: string; slots: Array<{ slot: SkyUltraEquipmentSlot; id: string; itemName: string }> };
 
-function renderFormattedPageContent(rawPage: string, isFirstFolio: boolean): React.JSX.Element {
-  const blocks = rawPage
-    .replace(/\r\n/g, '\n')
-    .split(/\n{2,}/)
-    .map(b => b.trim())
-    .filter(Boolean);
-  let appliedDropCap = false;
-  return (
-    <div className="inventory-book-folio__content">
-      {blocks.map((block, idx) => {
-        if (/^[-—―*~_=]{2,}$/.test(block)) {
-          return <hr key={idx} className="inventory-book-folio__rule" />;
-        }
-        const lines = block.split('\n');
-        const isShortHeading = idx === 0 && isFirstFolio && lines.length <= 3 && block.length < 90 && !/[.!?:]$/.test(block);
-        if (isShortHeading) {
-          return (
-            <div key={idx} className="inventory-book-folio__title-block">
-              {lines.map((line, lIdx) => <p key={lIdx}>{line}</p>)}
-            </div>
-          );
-        }
-        const canDropCap = isFirstFolio && !appliedDropCap && /^[A-Za-z]/.test(block) && block.length > 45;
-        if (canDropCap) {
-          appliedDropCap = true;
-          const firstChar = block.charAt(0);
-          const rest = block.slice(1);
-          return (
-            <p key={idx} className="inventory-book-folio__paragraph has-dropcap">
-              <span className="inventory-book-folio__dropcap" aria-hidden="true">{firstChar}</span>
-              <span>{firstChar}{rest}</span>
-            </p>
-          );
-        }
-        return (
-          <p key={idx} className="inventory-book-folio__paragraph">
-            {block}
-          </p>
-        );
-      })}
-    </div>
-  );
+const LOADOUT_STORAGE_KEY = 'skyultra.loadouts.v1';
+
+function readLocalInventoryPrefs(): {
+  defaultTheme?: string;
+  bookReaderDesign?: BookReaderDesignChoice;
+  bookThemeSync?: boolean;
+  showValuePerWeight?: boolean;
+  stolenProtection?: boolean;
+} {
+  try {
+    const raw = window.localStorage?.getItem('skyultra.uiPreferences.v2');
+    if (raw) {
+      return JSON.parse(raw) as {
+        defaultTheme?: string;
+        bookReaderDesign?: BookReaderDesignChoice;
+        bookThemeSync?: boolean;
+        showValuePerWeight?: boolean;
+        stolenProtection?: boolean;
+      };
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+  return {};
 }
 
-type BookLeaf =
-  | { kind: 'cover' | 'back'; src?: string; title: string }
-  | { kind: 'plate'; src: string; index: number }
-  | { kind: 'text'; text: string; pageNo: number }
-  | { kind: 'finis' };
-
-/**
- * Lays a book out as physical leaves: front cover, text folios (interior engravings
- * after the first folio), and a back cover. The cover only appears on the first and
- * last spreads, and is always paired with a facing page so it never sits alone.
- */
-function buildBookLeaves(book: ReadingBookState, hasRealText: boolean): BookLeaf[] {
-  const coverSrc = book.images[0];
-  const interior = book.images.slice(1);
-  const leaves: BookLeaf[] = [{ kind: 'cover', src: coverSrc, title: book.title }];
-  const pages = hasRealText ? book.pages : [];
-  pages.forEach((text, idx) => {
-    leaves.push({ kind: 'text', text, pageNo: idx + 1 });
-    if (idx === 0) interior.forEach((src, pIdx) => leaves.push({ kind: 'plate', src, index: pIdx + 1 }));
-  });
-  if (pages.length === 0) interior.forEach((src, pIdx) => leaves.push({ kind: 'plate', src, index: pIdx + 1 }));
-  if (leaves.length % 2 === 0) leaves.push({ kind: 'finis' });
-  leaves.push({ kind: 'back', src: coverSrc, title: book.title });
-  return leaves;
+function readOutfitLoadouts(): Array<OutfitLoadout | null> {
+  try {
+    const raw = window.localStorage?.getItem(LOADOUT_STORAGE_KEY);
+    if (!raw) return [null, null, null, null];
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      return [0, 1, 2, 3].map((i) => (parsed[i] && typeof parsed[i] === 'object' ? (parsed[i] as OutfitLoadout) : null));
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return [null, null, null, null];
 }
 
-function leafLabel(leaf: BookLeaf | undefined): string {
-  if (!leaf) return '';
-  switch (leaf.kind) {
-    case 'cover': return 'Front Cover';
-    case 'back': return 'Back Cover';
-    case 'plate': return `Plate ${leaf.index}`;
-    case 'finis': return 'The End';
-    default: return `Folio ${leaf.pageNo}`;
+function writeOutfitLoadouts(next: Array<OutfitLoadout | null>): void {
+  try {
+    window.localStorage?.setItem(LOADOUT_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Ignore storage errors
   }
-}
-
-function renderBookLeaf(leaf: BookLeaf | undefined, side: 'left' | 'right', title: string, ownerName = 'Degdatar'): React.JSX.Element {
-  const base = `inventory-book-folio inventory-book-folio--${side}`;
-  if (!leaf) return <article className={base + ' is-blank'} />;
-  if (leaf.kind === 'cover' || leaf.kind === 'back') {
-    return (
-      <article className={`${base} inventory-book-folio--cover is-${leaf.kind}`}>
-        {leaf.src ? (
-          <img className="inventory-book-cover__art" src={leaf.src} alt={`${title} ${leaf.kind === 'cover' ? 'cover' : 'back cover'}`} />
-        ) : (
-          <div className="inventory-book-cover__leather">
-            <img className="inventory-book-cover__logo" src="./SkyUltraLogoMark.png" alt="SkyUltra" draggable={false} />
-            {leaf.kind === 'cover' && <strong>{title}</strong>}
-            <small>{leaf.kind === 'cover' ? 'SkyUltra Archives' : ownerName}</small>
-          </div>
-        )}
-      </article>
-    );
-  }
-  if (leaf.kind === 'plate') {
-    return (
-      <article className={`${base} inventory-book-folio--plate`}>
-        <div className="inventory-book-plate__frame"><img src={leaf.src} alt={`${title} plate ${leaf.index}`} /></div>
-        <small className="inventory-book-plate__caption">Illuminated Plate {leaf.index}</small>
-      </article>
-    );
-  }
-  if (leaf.kind === 'finis') {
-    return (
-      <article className={base}>
-        <div className="inventory-book-folio__endpiece">
-          <small>The End</small>
-        </div>
-      </article>
-    );
-  }
-  if (leaf.kind !== 'text') return <article className={base} />;
-  return (
-    <article className={base}>
-      <header className="inventory-book-folio__header">
-        <span>{title}</span>
-        <small>Folio {leaf.pageNo}</small>
-      </header>
-      {renderFormattedPageContent(leaf.text, leaf.pageNo === 1)}
-      <footer className="inventory-book-folio__footer">
-        <span>— {leaf.pageNo} —</span>
-      </footer>
-    </article>
-  );
 }
 
 export default function InventoryPage({ player, bridge, obscured = false, initialCategory = 'all', initialId = '', standalone = false, displayMode = 'fullscreen', pauseWorld = false, onToggleDisplayMode, onTogglePauseWorld, onClose }: {
@@ -170,12 +82,13 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
   const [remote, setRemote] = useState<SkyUltraInventoryPage | null>(null), [loading, setLoading] = useState(false);
   const [readMessage, setReadMessage] = useState(''), [actionMessage, setActionMessage] = useState('');
   const [readingBook, setReadingBook] = useState<ReadingBookState | null>(null);
-  const [bookSpreadIndex, setBookSpreadIndex] = useState(0);
-  const [bookViewMode, setBookViewMode] = useState<'spread' | 'scroll'>('spread');
-  const [bookZoomed, setBookZoomed] = useState(false);
-  const [bookTurnDir, setBookTurnDir] = useState<'next' | 'prev' | ''>('');
-  const bookSpreadMax = useRef(0);
+  const [smartChip, setSmartChip] = useState<SmartChip>('all');
+  const [renamingItem, setRenamingItem] = useState<Item | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [pendingDropItem, setPendingDropItem] = useState<Item | null>(null);
+  const [loadouts, setLoadouts] = useState<Array<OutfitLoadout | null>>(() => readOutfitLoadouts());
   const [outfitPlayer, setOutfitPlayer] = useState(player), [busy, setBusy] = useState(false), [revision, setRevision] = useState(0);
+  const localPrefs = useMemo(() => readLocalInventoryPrefs(), [revision, readingBook]);
   const action = useRef<AbortController | null>(null), locked = useRef(false);
   const drag = useRef<Drag | null>(null), suppressClick = useRef(false);
   const [dragging, setDragging] = useState<Item | null>(null), [hoverSlot, setHoverSlot] = useState('');
@@ -188,16 +101,6 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
   useEffect(() => { setOffset(0); }, [query, category, wearFilter, sort]);
   useEffect(() => () => { action.current?.abort(); }, [bridge]);
   useEffect(() => { if (obscured) { drag.current = null; setDragging(null); setHoverSlot(''); } }, [obscured]);
-  useEffect(() => {
-    if (!readingBook) return;
-    const onKey = (ev: KeyboardEvent): void => {
-      if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); setReadingBook(null); return; }
-      if (ev.key === 'ArrowRight' || ev.key === 'PageDown') { setBookTurnDir('next'); setBookSpreadIndex(i => Math.min(bookSpreadMax.current, i + 1)); }
-      else if (ev.key === 'ArrowLeft' || ev.key === 'PageUp') { setBookTurnDir('prev'); setBookSpreadIndex(i => Math.max(0, i - 1)); }
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [readingBook]);
   useEffect(() => {
     if (!game || !bridge || obscured) return;
     let active = true, pending = false;
@@ -228,9 +131,18 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
     .filter(item => category === 'all' || item.category === category)
     .filter(item => wearFilter === 'all' || item.equipped === (wearFilter === 'equipped'))
     .filter(item => !query.trim() || (item.name + ' ' + item.category + ' ' + item.id + ' ' + formId(item.id)).toLowerCase().includes(query.trim().toLowerCase()))
-    .sort((a, b) => sort === 'value' ? b.value - a.value : sort === 'weight' ? b.weight - a.weight : sort === 'count' ? b.count - a.count : a.name.localeCompare(b.name)),
+    .sort((a, b) => sort === 'vw' ? (b.value / Math.max(b.weight, 0.05)) - (a.value / Math.max(a.weight, 0.05)) : sort === 'value' ? b.value - a.value : sort === 'weight' ? b.weight - a.weight : sort === 'count' ? b.count - a.count : a.name.localeCompare(b.name)),
   [player, category, wearFilter, query, sort]);
-  const items = (remote?.available ? remote.results : fallback.slice(offset, offset + pageSize)).filter(isValidNamedItem);
+  const rawItems = (remote?.available ? remote.results : fallback.slice(offset, offset + pageSize)).filter(isValidNamedItem);
+  const items = rawItems.filter((item) => {
+    if (smartChip === 'enchanted') return Boolean(item.enchanted || item.enchantments?.length);
+    if (smartChip === 'tempered') return Boolean(item.temperTier);
+    if (smartChip === 'books') return item.category.toLowerCase() === 'book';
+    if (smartChip === 'unread') return item.category.toLowerCase() === 'book' && item.isRead !== true;
+    if (smartChip === 'stolen') return Boolean(item.stolen);
+    if (smartChip === 'poisoned') return Boolean(item.poisonName);
+    return true;
+  });
   const total = remote?.available ? remote.totalMatches : fallback.length;
   const categories = remote?.available ? remote.categories : [...new Set((player?.inventory ?? []).map(item => item.category))].sort();
   const categoryTabs = ['all', ...[...new Set([...categories, ...(category === 'all' ? [] : [category])])].sort((a,b) => {
@@ -314,30 +226,8 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
       const result = await game.itemAction({ formId: item.id, action: itemAction, count, openNative }, { signal: controller.signal });
       if (!result.accepted) { setActionMessage(result.message ?? 'Skyrim declined that item action.'); return; }
       if (result.bookText !== undefined && !openNative) {
-        const cleanTitle = (result.bookTitle || item.name).replace(/^\$+/, '').trim();
-        const pages = (result.bookPages && result.bookPages.length > 0 ? result.bookPages : [result.bookText])
-          .map(p => p.trim())
-          .filter(Boolean);
-        const images = result.bookImages ?? [];
-        const style: 'book' | 'note' | 'map' =
-          result.bookStyle ??
-          (images.length > 0 && (/map/i.test(cleanTitle) || pages.length <= 1)
-            ? 'map'
-            : pages.length > 1
-              ? 'book'
-              : 'note');
-        setReadingBook({
-          id: item.id,
-          title: cleanTitle,
-          text: result.bookText,
-          pages: pages.length > 0 ? pages : [result.bookText],
-          images,
-          style,
-        });
-        setBookSpreadIndex(0);
-        setBookZoomed(false);
-        setBookTurnDir('');
-        setBookViewMode(style === 'book' && (pages.length > 1 || images.length > 0) ? 'spread' : 'scroll');
+        const parsedBook = parseBookActionResult(item, result);
+        if (parsedBook) setReadingBook(parsedBook);
       }
       await new Promise(resolve => window.setTimeout(resolve, 120));
       if (!controller.signal.aborted) {
@@ -367,6 +257,72 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
       setActionMessage(result.message ?? (item.name + ' updated.'));
     } catch (error) {
       if (!controller.signal.aborted) setActionMessage(error instanceof Error ? error.message : 'Could not update favorites.');
+    } finally {
+      locked.current = false;
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
+  async function submitRenameItem(item: Item, nextName: string, clear = false): Promise<void> {
+    if (!game || obscured || locked.current) return;
+    locked.current = true;
+    setBusy(true);
+    setActionMessage(clear ? `Restoring ${item.name}…` : `Renaming ${item.name}…`);
+    const controller = new AbortController();
+    action.current = controller;
+    try {
+      const result = await game.renameItem({ id: item.id, name: nextName, clear }, { signal: controller.signal });
+      if (result.updated) {
+        setRenamingItem(null);
+        setRenameDraft('');
+        setRevision(value => value + 1);
+      }
+      setActionMessage(result.message ?? (result.updated ? 'Item renamed.' : 'Could not rename item.'));
+    } catch (error) {
+      if (!controller.signal.aborted) setActionMessage(error instanceof Error ? error.message : 'Could not rename item.');
+    } finally {
+      locked.current = false;
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
+  function saveCurrentLoadout(slotIndex: number): void {
+    const equip = outfitPlayer?.equipment;
+    if (!equip) return;
+    const entries: OutfitLoadout['slots'] = [];
+    const seen = new Set<string>();
+    for (const [slotKey, eqItem] of Object.entries(equip)) {
+      if (!eqItem) continue;
+      const key = `${slotKey}:${eqItem.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ slot: slotKey as SkyUltraEquipmentSlot, id: eqItem.id, itemName: eqItem.name });
+    }
+    const next = [...loadouts];
+    next[slotIndex] = { name: `Loadout ${slotIndex + 1} (${entries.length})`, slots: entries };
+    setLoadouts(next);
+    writeOutfitLoadouts(next);
+    setActionMessage(`Saved ${entries.length} equipped slots to Loadout ${slotIndex + 1}.`);
+  }
+  async function applySavedLoadout(slotIndex: number): Promise<void> {
+    const preset = loadouts[slotIndex];
+    if (!preset || !game || obscured || locked.current) return;
+    locked.current = true;
+    setBusy(true);
+    setActionMessage(`Equipping Loadout ${slotIndex + 1}…`);
+    const controller = new AbortController();
+    action.current = controller;
+    let applied = 0;
+    try {
+      for (const entry of preset.slots) {
+        if (controller.signal.aborted) break;
+        try {
+          const res = await game.equipItem(entry.id, entry.slot, { signal: controller.signal });
+          if (res.accepted) ++applied;
+        } catch {
+          // Skip missing or un-equippable pieces cleanly
+        }
+      }
+      setRevision(v => v + 1);
+      setActionMessage(`Applied Loadout ${slotIndex + 1} (${applied}/${preset.slots.length} equipped).`);
     } finally {
       locked.current = false;
       if (!controller.signal.aborted) setBusy(false);
@@ -421,13 +377,49 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
     <div className="pack-categories" role="group" aria-label="Inventory categories">{categoryTabs.map(value => <button type="button" key={value} aria-pressed={category === value} onClick={() => setCategory(value)} title={categoryLabels[value] ?? value}><Icon name={value === 'all' ? 'inventory' : itemIcon(value)} size={18} /><span>{categoryLabels[value] ?? value}</span></button>)}</div>
     <div className="inventory-filters">
       <SkyChoice label="Equipment state" value={wearFilter} onValueChange={setWearFilter} options={[{ value: 'all', label: 'All equipment states' }, { value: 'equipped', label: 'Equipped' }, { value: 'carried', label: 'Carried' }]} />
-      <SkyChoice label="Sort inventory" value={sort} onValueChange={setSort} options={[{ value: 'name', label: 'Name A–Z' }, { value: 'value', label: 'Highest value' }, { value: 'weight', label: 'Highest weight' }, { value: 'count', label: 'Largest stack' }]} />
+      <SkyChoice label="Sort inventory" value={sort} onValueChange={setSort} options={[{ value: 'name', label: 'Name A–Z' }, { value: 'value', label: 'Highest value' }, { value: 'weight', label: 'Highest weight' }, { value: 'vw', label: 'Gold / weight (V/W)' }, { value: 'count', label: 'Largest stack' }]} />
       <span className="pack-filter-state">{categoryLabels[category] ?? category}<i />{wearFilter === 'all' ? 'All gear' : wearFilter === 'equipped' ? 'Equipped' : 'Carried'}</span>
+    </div>
+    <div className="inventory-subbar">
+      <div className="smart-filter-chips" role="group" aria-label="Quick item traits">
+        {([
+          { id: 'all', label: 'All Traits' },
+          { id: 'enchanted', label: 'Enchanted' },
+          { id: 'tempered', label: 'Tempered' },
+          { id: 'poisoned', label: 'Poisoned' },
+          { id: 'books', label: 'Books' },
+          { id: 'unread', label: 'Unread' },
+          { id: 'stolen', label: 'Stolen' },
+        ] as const).map(chip => (
+          <button key={chip.id} type="button" className={'smart-chip' + (smartChip === chip.id ? ' is-active' : '')} onClick={() => setSmartChip(chip.id)}>{chip.label}</button>
+        ))}
+      </div>
+      <div className="loadout-strip" role="group" aria-label="Quick outfit loadouts">
+        <small className="eyebrow">OUTFITS</small>
+        {[0, 1, 2, 3].map(idx => {
+          const preset = loadouts[idx];
+          return (
+            <div key={idx} className="loadout-slot">
+              <button type="button" className={'control-button loadout-slot__equip' + (preset ? ' is-active' : '')} disabled={!preset || busy || obscured} title={preset ? `Equip ${preset.name}` : `Loadout ${idx + 1} empty`} onClick={() => { void applySavedLoadout(idx); }}>
+                <span>{preset ? `#${idx + 1}` : `${idx + 1}`}</span>
+              </button>
+              <button type="button" className="control-button loadout-slot__save" disabled={busy || obscured || !bridge} title={`Save current outfit to slot ${idx + 1}`} onClick={() => saveCurrentLoadout(idx)}>+</button>
+            </div>
+          );
+        })}
+      </div>
     </div>
     <div className={'inventory-results inventory-results--' + layout}>{items.length ? items.map(item => {
       const isEnchanted = Boolean(item.enchanted || item.enchantments?.length);
       const isStolen = Boolean(item.stolen) && item.id !== '15';
       const enchantSummary = item.enchantments?.length ? item.enchantments.map(e => e.description ? `${e.name}: ${e.description}` : e.name).join(' · ') : item.enchantmentName || 'Enchanted';
+      const vwRatio = item.weight > 0 ? Math.round((item.value / item.weight) * 10) / 10 : null;
+      const combatBadgeLabel =
+        typeof item.damage === 'number' && item.damage > 0
+          ? `DMG ${Math.round(item.damage)}`
+          : typeof item.armorRating === 'number' && item.armorRating > 0
+            ? `AR ${Math.round(item.armorRating)}`
+            : null;
       return <button type="button" aria-pressed={item.id === selected?.id} key={item.id} title={(isEnchanted ? `${item.name} (${enchantSummary})` : item.name) + (isStolen ? ' [STOLEN]' : '') + (item.isRead === true ? ' [Already read]' : '')} data-category={item.category} data-enchanted={isEnchanted ? 'true' : undefined} data-stolen={isStolen ? 'true' : undefined} className={'item-tile' + (item.id === selected?.id ? ' is-active' : '') + (item.equipped ? ' is-equipped' : '') + (isEnchanted ? ' is-enchanted' : '') + (isStolen ? ' is-stolen' : '') + (activeTab === 'inventory' && item.equipSlots?.length ? ' can-equip' : '')}
         onClick={() => { if (suppressClick.current) { suppressClick.current = false; return; } selectItem(item); }}
         onDragStart={event => event.preventDefault()}
@@ -437,19 +429,37 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
         <span className="item-tile__top"><small>{item.equipped ? <><Icon name="check" size={10} />WORN</> : isStolen ? <span className="item-tile__stolen-tag"><Icon name="stolen" size={10} />STOLEN</span> : (item.armorTypeLabel || item.weaponType || item.category)}</small><span>{isEnchanted && <em className="item-tile__enchant-mark" title={enchantSummary}><Icon name="flame" size={10} /></em>}{item.value.toLocaleString()}<Icon name="gold" size={10} /></span></span>
         <span className="item-tile__image"><ItemThumbnail item={item} bridge={bridge} paused={obscured} />{isEnchanted && <span className="item-tile__enchant-badge" title={enchantSummary} aria-label="Enchanted item"><Icon name="flame" size={11} /></span>}
           {item.isRead === true && <span className="item-tile__read-seal" role="img" title="Already read" aria-label="Already read"><Icon name="bookRead" size={22} /></span>}
-          {isStolen && <span className="item-tile__stolen-pill" title="Stolen item"><Icon name="stolen" size={10} />STOLEN</span>}{item.count > 1 && <b className="item-tile__quantity">×{item.count.toLocaleString()}</b>}</span>
-        <span className="item-tile__copy"><strong>{isEnchanted && <Icon name="flame" size={10} />}{item.name}</strong><small>{isStolen ? 'Stolen · ' : ''}{item.armorTypeLabel || item.weaponType || item.category}<ItemCombatBadges item={item} compact /><span>{item.weight} wt</span></small></span>
+          {isStolen && <span className="item-tile__stolen-pill" title="Stolen item"><Icon name="stolen" size={10} />STOLEN</span>}
+          {combatBadgeLabel && <b className="item-tile__stat-chip">{combatBadgeLabel}</b>}
+          {item.count > 1 && <b className="item-tile__quantity">×{item.count.toLocaleString()}</b>}</span>
+        <span className="item-tile__copy"><strong>{isEnchanted && <Icon name="flame" size={10} />}{item.name}</strong><small>{isStolen ? 'Stolen · ' : ''}{item.armorTypeLabel || item.weaponType || item.category}<ItemCombatBadges item={item} compact /><span className="item-meta-pills">{item.temperTier && <b className="item-meta-pill">{item.temperTier}</b>}{item.poisonName && <b className="item-meta-pill is-poison">Poisoned</b>}{item.soulSize && <b className="item-meta-pill">{item.soulSize}</b>}{item.teachesSkill && <b className="item-meta-pill">+1 {item.teachesSkill}</b>}{localPrefs.showValuePerWeight !== false && vwRatio !== null && item.value > 0 && <b className="item-meta-pill">{vwRatio} V/W</b>}</span><span>{item.weight} wt</span></small></span>
       </button>;
     }) : <Empty title={loading ? 'Reading inventory' : 'No items matched'} detail="Try a different filter or search." icon="inventory" />}</div>
     <div className="roster-footer inventory-pagination"><span>{loading ? 'Refreshing…' : total ? `${offset + 1}–${offset + items.length} of ${total.toLocaleString()}` : '0 items'}{!bridge && player?.inventoryTruncated ? ' · Snapshot is partial' : ''}</span><div><button className="control-button" disabled={offset === 0 || loading} onClick={() => setOffset(value => Math.max(0, value - pageSize))}>Previous</button><button className="control-button" disabled={offset + items.length >= total || loading} onClick={() => setOffset(value => value + items.length)}>Next</button></div></div>
-    {activeTab === 'inventory' && <EquipmentSelection player={outfitPlayer} selected={selected} bridge={bridge} obscured={obscured} onInspect={standalone ? undefined : () => { if (selected) setSelectedId(selected.id); setTab('studio'); }} enabled={!!bridge && !busy && !obscured} onChange={(item, slot, unequip) => { void changeEquipment(item, slot, unequip); }} onItemAction={(item, act, count) => { void performItemAction(item, act, count); }} onToggleFavorite={(item) => { void toggleFavorite(item); }} />}
+    {activeTab === 'inventory' && <EquipmentSelection player={outfitPlayer} selected={selected} bridge={bridge} obscured={obscured} onInspect={standalone ? undefined : () => { if (selected) setSelectedId(selected.id); setTab('studio'); }} enabled={!!bridge && !busy && !obscured} onChange={(item, slot, unequip) => { void changeEquipment(item, slot, unequip); }} onItemAction={(item, act, count) => { if (act === 'drop' && item.stolen && localPrefs.stolenProtection !== false) { setPendingDropItem(item); return; } void performItemAction(item, act, count); }} onToggleFavorite={(item) => { void toggleFavorite(item); }} onRenameItem={(item) => { setRenamingItem(item); setRenameDraft(item.name); }} />}
+    {renamingItem && (
+      <form className="inventory-inline-modal" onSubmit={ev => { ev.preventDefault(); void submitRenameItem(renamingItem, renameDraft); }}>
+        <strong>Rename {renamingItem.name}:</strong>
+        <input className="pack-search" style={{ minHeight: 30, padding: '0 10px', flex: '1 1 200px' }} value={renameDraft} maxLength={96} onChange={e => setRenameDraft(e.currentTarget.value)} aria-label="New item name" />
+        <button type="submit" className="control-button is-active" disabled={busy || !renameDraft.trim()}>Apply</button>
+        <button type="button" className="control-button" disabled={busy} onClick={() => { void submitRenameItem(renamingItem, '', true); }}>Reset Name</button>
+        <button type="button" className="control-button" onClick={() => setRenamingItem(null)}>Cancel</button>
+      </form>
+    )}
+    {pendingDropItem && (
+      <div className="inventory-inline-modal" role="alert">
+        <span><strong>Stolen Protection:</strong> Confirm dropping <em>{pendingDropItem.name}</em>?</span>
+        <button type="button" className="control-button is-active" onClick={() => { const item = pendingDropItem; setPendingDropItem(null); void performItemAction(item, 'drop', 1); }}>Confirm Drop</button>
+        <button type="button" className="control-button" onClick={() => setPendingDropItem(null)}>Keep Item</button>
+      </div>
+    )}
     <div className="inventory-notice" role="status">{actionMessage || readMessage || (activeTab === 'inventory' ? 'Select an item or drag it to a matching equipment slot.' : 'Select an item to open its studio preview.')}</div>
   </section>;
   return <div className={'page inventory-page inventory-page--wardrobe inventory-page--armory' + (standalone ? ' inventory-page--standalone' : '')}>
     <header className="armory-masthead"><div className="armory-heading"><span className="eyebrow">{standalone ? 'SKYRIM PLAYER INVENTORY · LIVE 3D LOADOUT' : 'EQUIPMENT & BELONGINGS'}</span><h1>{activeTab === 'studio' ? 'Item studio' : standalone ? 'Player Inventory' : 'Inventory'}</h1></div>
       {!standalone && <div className="armory-workspaces"><SkySegmentedControl label="Inventory workspace" value={tab} onValueChange={value => { drag.current = null; setDragging(null); setTab(value); }} options={[{ value: 'inventory', label: 'Inventory' }, { value: 'studio', label: 'Item studio' }]} /></div>}
       <div className="armory-masthead__end">
-        {(onToggleDisplayMode || onTogglePauseWorld) && (
+        {standalone && (onToggleDisplayMode || onTogglePauseWorld) && (
           <div className="armory-mode-pills" role="group" aria-label="Display and world state">
             {onToggleDisplayMode && (
               <button type="button" className={'control-button armory-mode-btn' + (displayMode === 'windowed' ? ' is-active' : '')} onClick={onToggleDisplayMode} aria-pressed={displayMode === 'windowed'} title={`Toggle between Full Screen and Windowed mode (Current: ${displayMode === 'windowed' ? 'Windowed' : 'Full Screen'})`}>
@@ -486,132 +496,17 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
       }} /> : <ItemThumbnail item={selected} />}<div className="item-inspector__copy"><span className="eyebrow">{selected.armorTypeLabel || selected.weaponType || selected.category}{(selected.enchanted || selected.enchantments?.length) ? ' · ENCHANTED' : ''}{formatItemCombatMeta(selected) ? ` · ${formatItemCombatMeta(selected).toUpperCase()}` : ''}</span><h2>{selected.name}</h2><p className="item-form">{formId(selected.id)}</p><SkyDataList label="Item properties" rows={[...(typeof selected.damage === 'number' && selected.damage > 0 ? [{ id: 'damage', label: 'Damage (DMG)', value: String(Math.round(selected.damage)) }] : []), ...(typeof selected.armorRating === 'number' && selected.armorRating > 0 ? [{ id: 'armorRating', label: selected.armorTypeLabel ? `${selected.armorTypeLabel} Rating` : 'Armor Rating', value: String(Math.round(selected.armorRating)) }] : []), ...(selected.armorTypeLabel ? [{ id: 'armorClass', label: 'Armor Class', value: selected.armorTypeLabel }] : []), ...(selected.weaponType ? [{ id: 'weaponType', label: 'Weapon Class', value: selected.weaponType }] : []), { id: 'value', label: 'Value', value: selected.value.toLocaleString() + ' gold' }, { id: 'weight', label: 'Weight', value: String(selected.weight) }, { id: 'count', label: 'Quantity', value: selected.count.toLocaleString() }, { id: 'ratio', label: 'Value / weight', value: selected.weight > 0 ? (selected.value / selected.weight).toFixed(1) : 'Weightless' }, ...(selected.enchantmentCharge !== undefined ? [{ id: 'charge', label: 'Enchantment charge', value: `${selected.enchantmentCharge}%` }] : [])]} />{(selected.enchanted || selected.enchantments?.length) && <div className="selection-enchantments">{selected.enchantments?.length ? selected.enchantments.map((eff, idx) => <div key={`${eff.name}-${idx}`} className="selection-enchantment"><Icon name="flame" size={11} /><strong>{eff.name}</strong>{eff.description && <span>{eff.description}</span>}</div>) : <div className="selection-enchantment"><Icon name="flame" size={11} /><strong>{selected.enchantmentName || 'Enchanted Item'}</strong><span>Arcane enchantment active</span></div>}</div>}<p className="inspector-note">World model and alternate textures from the item record. Preview and Save use the selected lighting.</p></div></> : <Empty title="Select an item" detail="Details appear here." icon="inventory" />}</aside>}
     </div>
 
-    {readingBook && (() => {
-      const hasRealText = Boolean(readingBook.text.trim()) && !/This note or book has no inscription text\./i.test(readingBook.text);
-      const isMap = readingBook.style === 'map';
-      // Maps only ever show their front face; the back of the sheet is never rendered.
-      const shownImages = isMap ? readingBook.images.slice(0, 1) : readingBook.images;
-      const useCodex = readingBook.style === 'book' && bookViewMode === 'spread' && (readingBook.pages.length > 1 || readingBook.images.length > 0);
-      const leaves = useCodex ? buildBookLeaves(readingBook, hasRealText) : [];
-      const totalSpreads = Math.max(1, Math.ceil(leaves.length / 2));
-      const clampedSpread = Math.min(bookSpreadIndex, totalSpreads - 1);
-      bookSpreadMax.current = totalSpreads - 1;
-      const leftLeaf = leaves[clampedSpread * 2];
-      const rightLeaf = leaves[clampedSpread * 2 + 1];
-      const textPageCount = hasRealText ? readingBook.pages.length : 0;
-      const turn = (dir: 'next' | 'prev'): void => {
-        setBookTurnDir(dir);
-        setBookSpreadIndex(i => dir === 'next' ? Math.min(totalSpreads - 1, i + 1) : Math.max(0, i - 1));
-      };
-      const eyebrowText =
-        isMap
-          ? "CARTOGRAPHER'S ARCHIVE · SURVEY PLATE"
-          : readingBook.style === 'note'
-            ? 'IMPERIAL DISPATCH · PARCHMENT, MISSIVE & RECIPE'
-            : 'SKYULTRA CHRONICLE · ILLUMINATED CODEX';
-      return (
-        <div className={`inventory-book-modal inventory-book-modal--${readingBook.style}`} role="dialog" aria-modal="true" aria-label={readingBook.title} onClick={() => setReadingBook(null)}>
-          <div className={`inventory-book-reader inventory-book-reader--${readingBook.style}${useCodex ? ' is-codex' : ''} surface`} onClick={e => e.stopPropagation()}>
-            <span className="inventory-book-reader__corner is-tl" aria-hidden="true" />
-            <span className="inventory-book-reader__corner is-tr" aria-hidden="true" />
-            <span className="inventory-book-reader__corner is-bl" aria-hidden="true" />
-            <span className="inventory-book-reader__corner is-br" aria-hidden="true" />
-            <header className="inventory-book-reader__header">
-              <div className="inventory-book-reader__title-group">
-                <span className="eyebrow"><Icon name="book" size={12} /> {eyebrowText}</span>
-                <h2>{readingBook.title}</h2>
-                <div className="inventory-book-reader__meta">
-                  <span>{isMap ? 'Field Survey Plate' : readingBook.style === 'note' ? 'Parchment Manuscript' : 'Bound Tome'}</span>
-                  {textPageCount > 0 && <span>{textPageCount} {textPageCount === 1 ? 'folio' : 'folios'}</span>}
-                  {!isMap && shownImages.length > 0 && <span>{shownImages.length} {shownImages.length === 1 ? 'engraving' : 'engravings'}</span>}
-                </div>
-              </div>
-              <div className="inventory-book-reader__actions">
-                {isMap && shownImages.length > 0 && (
-                  <button type="button" className={'book-action-btn' + (bookZoomed ? ' is-active' : '')} onClick={() => setBookZoomed(z => !z)}>
-                    <Icon name="search" size={12} />
-                    <span>{bookZoomed ? 'Fit Plate' : 'Magnify'}</span>
-                  </button>
-                )}
-                {readingBook.style === 'book' && (readingBook.pages.length > 1 || readingBook.images.length > 0) && (
-                  <button type="button" className="book-action-btn" onClick={() => { setBookViewMode(m => m === 'spread' ? 'scroll' : 'spread'); setBookSpreadIndex(0); setBookTurnDir(''); }}>
-                    <Icon name="book" size={12} />
-                    <span>{bookViewMode === 'spread' ? 'Scroll View' : 'Open Codex'}</span>
-                  </button>
-                )}
-                <button type="button" className="book-action-btn" onClick={() => { const id = readingBook.id; const title = readingBook.title; setReadingBook(null); void performItemAction({ id, name: title, category: 'book', count: 1, value: 0, weight: 0, equipped: false }, 'read', 1, true); }}>
-                  <span>Open in Skyrim</span>
-                </button>
-                <button type="button" className="book-action-btn is-close" onClick={() => setReadingBook(null)} aria-label="Close reader">
-                  <span>Close</span><kbd>ESC</kbd>
-                </button>
-              </div>
-            </header>
-
-            <div className="inventory-book-reader__body" tabIndex={0}>
-              {useCodex ? (
-                <div className="inventory-book-reader__codex-wrap">
-                  <div className="inventory-book-reader__binding">
-                    <button type="button" className="inventory-book-reader__turn is-prev" disabled={clampedSpread === 0} onClick={() => turn('prev')} aria-label="Previous pages">‹</button>
-                    <div key={clampedSpread} className={'inventory-book-reader__codex' + (bookTurnDir ? ` is-turn-${bookTurnDir}` : '')}>
-                      {renderBookLeaf(leftLeaf, 'left', readingBook.title, player?.playerName || 'Degdatar')}
-                      <div className="inventory-book-reader__spine" aria-hidden="true" />
-                      {renderBookLeaf(rightLeaf, 'right', readingBook.title, player?.playerName || 'Degdatar')}
-                    </div>
-                    <button type="button" className="inventory-book-reader__turn is-next" disabled={clampedSpread >= totalSpreads - 1} onClick={() => turn('next')} aria-label="Next pages">›</button>
-                  </div>
-                  <div className="inventory-book-reader__pager">
-                    <span className="inventory-book-reader__pager-status">{leafLabel(leftLeaf)}{rightLeaf ? ` · ${leafLabel(rightLeaf)}` : ''}</span>
-                    <div className="inventory-book-reader__ribbon" aria-hidden="true">
-                      {Array.from({ length: totalSpreads }, (_, i) => (
-                        <button key={i} type="button" tabIndex={-1} className={i === clampedSpread ? 'is-active' : ''} onClick={() => { setBookTurnDir(i > clampedSpread ? 'next' : 'prev'); setBookSpreadIndex(i); }} />
-                      ))}
-                    </div>
-                    <span className="inventory-book-reader__pager-hint">← → to turn pages</span>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  {shownImages.length > 0 && (
-                    <div className={'inventory-book-reader__gallery' + (bookZoomed ? ' is-zoomed' : '') + (isMap ? ' is-map' : '')}>
-                      {shownImages.map((src, idx) => (
-                        <figure key={idx} className="inventory-book-reader__figure" onClick={() => setBookZoomed(z => !z)}>
-                          <div className="inventory-book-reader__art-frame">
-                            <img src={src} alt={`${readingBook.title} plate ${idx + 1}`} />
-                          </div>
-                          <figcaption>
-                            <span>{isMap ? `${readingBook.title} · Cartographic Plate` : `Illuminated Plate ${idx + 1}`}</span>
-                            <small>{bookZoomed ? 'Click plate to fit frame' : 'Click plate to magnify'}</small>
-                          </figcaption>
-                        </figure>
-                      ))}
-                    </div>
-                  )}
-                  {(hasRealText || shownImages.length === 0) && (
-                    <article className={`inventory-book-parchment inventory-book-parchment--${readingBook.style}`}>
-                      <div className="inventory-book-parchment__crest" aria-hidden="true">
-                        <span />
-                      </div>
-                      {readingBook.pages.map((pageText, pIdx) => (
-                        <div key={pIdx} className="inventory-book-parchment__section">
-                          {readingBook.pages.length > 1 && (
-                            <div className="inventory-book-parchment__folio-tag">Folio {pIdx + 1} of {readingBook.pages.length}</div>
-                          )}
-                          {renderFormattedPageContent(pageText, pIdx === 0)}
-                        </div>
-                      ))}
-                      <div className="inventory-book-parchment__seal" aria-hidden="true">
-                        <span>SKYULTRA ARCHIVES</span>
-                      </div>
-                    </article>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      );
-    })()}
+    {readingBook && (
+      <BookReader
+        book={readingBook}
+        playerName={player?.playerName}
+        theme={(localPrefs.defaultTheme as Palette) || 'dragonstone'}
+        design={localPrefs.bookReaderDesign ?? 'auto'}
+        themeSync={localPrefs.bookThemeSync !== false}
+        onOpenNative={(book) => { void performItemAction({ id: book.id, name: book.title, category: 'book', count: 1, value: 0, weight: 0, equipped: false }, 'read', 1, true); }}
+        onClose={() => setReadingBook(null)}
+      />
+    )}
     {dragging && <div ref={ghostRef} className="equipment-drag-ghost" style={{ transform: 'translate3d(' + ghostPoint.current.x + 'px,' + ghostPoint.current.y + 'px,0)' }} aria-hidden="true"><span className="equipment-drag-ghost__art">{dragImage.current ? <ItemImage item={dragging} src={dragImage.current} /> : <ItemThumbnail item={dragging} bridge={bridge} paused={obscured} />}</span><span className="equipment-drag-ghost__copy"><strong>{dragging.name}</strong><small>{hoverSlot ? fitsEquipmentSlot(dragging, hoverSlot) ? 'Release to equip' : 'Incompatible slot' : 'Drag to an equipment slot'}</small></span></div>}
   </div>;
 }

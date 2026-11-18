@@ -24,6 +24,7 @@ public:
     [[nodiscard]] BrowserEngine Engine() const noexcept override;
     [[nodiscard]] bool Initialize(std::string& error) override;
     void Shutdown() noexcept override;
+    [[nodiscard]] bool NeedsImmediateContextPump(void* d3d_device, void* d3d_context) const noexcept override;
     void PumpFrame(void* d3d_device, void* d3d_context) override;
     void SetPageBridgeMessageCallback(PageBridgeMessageCallback callback) override;
     [[nodiscard]] std::unique_ptr<IWebView> CreateView(

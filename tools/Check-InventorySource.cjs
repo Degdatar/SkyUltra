@@ -124,7 +124,8 @@ async function pageChecks(){
  const panel=moduleSource('sdk/ui/src/field/EquipmentPanel.tsx',{'react':React,'@skyultra/sdk':{},'./ActorStage.js':{ModelStage:'ModelStage'},'./itemThumbnails.js':{actorThumbnailQueue:()=>({set(){}}),PLAYER_PORTRAIT_QUEUE_KEY:'0x00000014:0x00000007'},'./ItemThumbnail.js':{ItemThumbnail:'Thumbnail'},'./EquipmentGlyph.js':{EquipmentGlyph:'EquipmentGlyph'},'./spellArt.js':{HeartIcon:'HeartIcon'},'./icons.js':{Icon:'Icon'},'./model.js':{formId:String}});
  const dragPosition=moduleSource('sdk/ui/src/field/itemDrag.ts',{});
  const thumbnailModule=moduleSource('sdk/ui/src/field/itemThumbnails.ts',{'@skyultra/sdk':sdk});
- const page=moduleSource('sdk/ui/src/field/InventoryPage.tsx',{'react':React,'@skyultra/sdk':sdk,'./ItemStage.js':{ItemStage:'ItemStage'},'./ItemThumbnail.js':{ItemThumbnail:'Thumbnail',ItemImage:'ItemImage'},'./itemDrag.js':dragPosition,'./itemThumbnails.js':thumbnailModule,'./EquipmentPanel.js':{...panel,EquipmentPanel:'EquipmentPanel'},'../core.js':{SkyChoice:'Choice',SkyDataList:'DataList',SkySegmentedControl:'Segments'},'./icons.js':{Icon:'Icon',itemIcon:()=> 'inventory'},'./pieces.js':{Empty:'Empty'},'./model.js':{formId:String}},{window,document,AbortController});
+ const bookReader=moduleSource('sdk/ui/src/field/BookReader.tsx',{'react':React,'@skyultra/sdk':sdk,'./icons.js':{Icon:'Icon'},'./model.js':{palettes:[{value:'dragonstone',label:'Dragonstone',color:'#dfa84e',secondary:'#ff765f',family:'classic',styleTag:'Imperial'}]}},{window});
+ const page=moduleSource('sdk/ui/src/field/InventoryPage.tsx',{'react':React,'@skyultra/sdk':sdk,'./ItemStage.js':{ItemStage:'ItemStage'},'./ItemThumbnail.js':{ItemThumbnail:'Thumbnail',ItemImage:'ItemImage'},'./itemDrag.js':dragPosition,'./itemThumbnails.js':thumbnailModule,'./BookReader.js':bookReader,'./EquipmentPanel.js':{...panel,EquipmentPanel:'EquipmentPanel'},'../core.js':{SkyChoice:'Choice',SkyDataList:'DataList',SkySegmentedControl:'Segments'},'./icons.js':{Icon:'Icon',itemIcon:()=> 'inventory'},'./pieces.js':{Empty:'Empty'},'./model.js':{formId:String}},{window,document,AbortController});
  const props={player:snapshot,bridge:api,obscured:false};
  function render(){dirty=false;cursor=0;tree=page.default(props);const changes=effects.splice(0);for(const change of changes)slots[change.index]?.cleanup?.();for(const {index,fn,deps} of changes)slots[index]={deps,cleanup:fn()};}
  async function settle(){for(let i=0;i<20;i++){await Promise.resolve();if(dirty)render();}}
@@ -148,7 +149,12 @@ async function pageChecks(){
  allowRead=true;
  find(node=>node.type===panel.EquipmentSelection).props.onItemAction(book,'read',1);await settle();await flush();
  assert.equal(readSeals(cardFor(book.name)).length,1);checks++;
- find(node=>node.props.role==='dialog'&&node.props.className?.includes('inventory-book-modal')).props.onClick();await settle();
+ const readerNode=find(node=>node.type===bookReader.BookReader);
+ assert.ok(readerNode);
+ const readerTree=bookReader.BookReader(readerNode.props);
+ assert.equal(readerTree.props.role,'dialog');
+ assert.ok(readerTree.props.className.includes('inventory-book-modal'));
+ readerTree.props.onClick();await settle();
  find(node=>node.type==='Segments'&&node.props.label==='Inventory layout').props.onValueChange('list');render();await settle();
  assert.ok(find(node=>node.props.className==='inventory-results inventory-results--list'));checks++;
  for(const read of [book,note,tome]){assert.equal(readSeals(cardFor(read.name)).length,1);checks++;}

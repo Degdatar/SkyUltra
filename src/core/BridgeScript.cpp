@@ -103,19 +103,16 @@ std::string BuildBridgeResponseScript(
     return script;
 }
 
-bool ParseBridgeConsoleMessage(
-    ViewId view_id, std::string_view console_message, PageBridgeMessage& out_message)
+bool ParseBridgePayloadJson(
+    ViewId view_id, std::string_view body, PageBridgeMessage& out_message)
 {
-    constexpr std::string_view kPrefix = "__SKYULTRA_BRIDGE__";
     constexpr std::size_t kMaxMessageBytes = 65536;
     constexpr std::size_t kMaxRequestIdBytes = 128;
     constexpr std::size_t kMaxNameBytes = 128;
-    if (view_id == 0 || !console_message.starts_with(kPrefix) ||
-        console_message.size() > kMaxMessageBytes + kPrefix.size()) {
+    if (view_id == 0 || body.empty() || body.size() > kMaxMessageBytes) {
         return false;
     }
 
-    const auto body = console_message.substr(kPrefix.size());
     auto message = nlohmann::json::parse(body.begin(), body.end(), nullptr, false);
     if (message.is_discarded() || !message.is_object()) {
         return false;
@@ -169,6 +166,18 @@ bool ParseBridgeConsoleMessage(
     parsed.kind = PageBridgeMessageKind::Request;
     out_message = std::move(parsed);
     return true;
+}
+
+bool ParseBridgeConsoleMessage(
+    ViewId view_id, std::string_view console_message, PageBridgeMessage& out_message)
+{
+    constexpr std::string_view kPrefix = "__SKYULTRA_BRIDGE__";
+    constexpr std::size_t kMaxMessageBytes = 65536;
+    if (view_id == 0 || !console_message.starts_with(kPrefix) ||
+        console_message.size() > kMaxMessageBytes + kPrefix.size()) {
+        return false;
+    }
+    return ParseBridgePayloadJson(view_id, console_message.substr(kPrefix.size()), out_message);
 }
 
 }  // namespace skyultra

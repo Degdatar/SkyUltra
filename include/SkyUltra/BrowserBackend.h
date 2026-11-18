@@ -51,6 +51,8 @@ struct PageBridgeResponse {
     std::string error_message;
 };
 
+[[nodiscard]] bool ParseBridgePayloadJson(
+    ViewId view_id, std::string_view payload_json, PageBridgeMessage& out_message);
 [[nodiscard]] bool ParseBridgeConsoleMessage(
     ViewId view_id, std::string_view console_message, PageBridgeMessage& out_message);
 
@@ -150,6 +152,10 @@ public:
         std::string_view error_message) = 0;
     [[nodiscard]] virtual std::optional<SoftwareFrame> TakeFrame() = 0;
     [[nodiscard]] virtual std::optional<GpuFrame> GetGpuFrame() { return std::nullopt; }
+    virtual void DiscardCachedFrame() noexcept {}
+    virtual void MarkPageReady() noexcept {}
+    [[nodiscard]] virtual std::uint64_t PaintSequence() const noexcept { return 0; }
+    virtual void SetDisplayOccluded(bool occluded) noexcept { (void)occluded; }
 };
 
 class IWebRuntime {
@@ -163,6 +169,12 @@ public:
     }
     [[nodiscard]] virtual bool Initialize(std::string& error) = 0;
     virtual void Shutdown() noexcept = 0;
+    [[nodiscard]] virtual bool NeedsImmediateContextPump(void* d3d_device, void* d3d_context) const noexcept
+    {
+        (void)d3d_device;
+        (void)d3d_context;
+        return true;
+    }
     // Called from Skyrim's serialized render-thread callback before compositing.
     // Backends may use this to finish work before the overlay is drawn.
     virtual void PumpFrame(void* d3d_device, void* d3d_context)

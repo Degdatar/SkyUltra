@@ -20,17 +20,15 @@ The app consumes `@skyultra/ui`; reusable screens live in `sdk/ui/src/field`.
 Public `/menu`, `/game`, `/gameplay`, `/chrome`, `/core` and `/widgets` entries let
 other mods use individual surfaces without importing this entire menu.
 
-The nine modules cover Overview, Actor Observatory, Inventory, Character Sheet,
-Settings, HUD workshop, Performance Lab, Developer Studio and the Guide. Actor
+The nine modules cover Overview, Actor Observatory (tri-vitals, pinning, smart filters/sort, camera presets, Reset Portrait), Inventory (smart filter chips, `V/W` sort, inline renaming, 4 quick loadouts, 7-design theme-synced Book Reader), Character Sheet, Settings (17 themes across 4 families, motion `TabSplash`, glass intensity, UI scale, Book Reader styles), HUD workshop, Performance Lab, Developer Studio (with Modder Workbench: Bridge Playground, TS/JS/Papyrus snippets, visual `manifest.json` builder & `--sky-*` token inspector) and the Guide. Actor
 and item studios support lighting, camera controls and exports. Creature captures
 retain missing secondary skin-bone mappings, and single-bone skinned props use
 explicit weights when their vertex layout omits skin attributes. Icon/portrait
 caches live under `Data/SkyUltra/Cache/`; generated dynamic actor portraits include
 identity tokens to avoid reusing another creature's image.
 
-Passive HUDs use the native UI render pass without the carrier's old
-menu-blocking flag. Skyrim menu transitions suppress HUD views and close the
-carrier as needed. Verify movement, map-marker dialogs and other overlays after
+Passive HUDs (including `skyultra_compass.swf`) use the native UI render pass without the carrier's old
+menu-blocking flag. Skyrim menu transitions suppress HUD views, broadcast synchronized `skyultra.menuSession` epochs, and discard cached surfaces cleanly so windows do not overlap across frames. Verify movement, map-marker dialogs and other overlays after
 changing the renderer; a source check is not a visual/runtime test.
 
 ## Build and package (developer action)
@@ -42,8 +40,8 @@ parameters before packaging or installation.
 
 The package includes the plugin, `SkyUltra/skyultra.menu/manifest.json`,
 `Files/index.html`, `Files/hud.html`, `Files/SkyUltraBridge.js`, bundled web assets,
-native/Papyrus scripts, browser runtime directories and configured menu-launcher
-assets. Copy the **contents** of its `Data` folder into the chosen mod output,
+native/Papyrus scripts, the trimmed 16-file CEF runtime (`locales/en-US.pak` only, with `SkyUltraCefSubprocess.pdb` staged separately in `Diagnostics/`), Ultralight assets, and configured menu-launcher
+assets (`9` SWF carriers). Copy the **contents** of its `Data` folder into the chosen mod output,
 preserving relative paths. The plugin DLL alone is insufficient.
 
 ## Settings and author documentation

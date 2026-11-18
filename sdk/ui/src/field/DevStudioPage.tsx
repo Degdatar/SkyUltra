@@ -4,17 +4,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SKYULTRA_COMPATIBILITY_MATRIX,
   auditLegacyModSourceForSkyUltra,
+  auditSkyUltraManifestObject,
   captureLiveDomInspectorTree,
+  clearSkyUltraBridgeLog,
   configureSkyUltraSpatialPlacement,
   diagnoseCoexistenceAndLayering,
   diagnoseSkyUltraModRecord,
+  generateSkyUltraBridgeCallSnippet,
   manageSkyUltraDiagnosticSample,
   manageSkyUltraModRuntime,
+  type JsonValue,
   type SkyUltraModRuntimeAction,
   playSkyUltraSound,
   projectSkyUltraWorldAnchors,
   readSkyUltraDeveloperSnapshot,
   reloadSkyUltraModViews,
+  runSkyUltraViewProbe,
+  setSkyUltraModViewState,
   skyUltraActorBones,
   skyUltraSoundPresets,
   skyUltraSpatialModes,
@@ -31,7 +37,7 @@ import { SkyFrame } from "../widgets.js";
 import { Icon } from "./icons.js";
 import { Empty, SectionTitle } from "./pieces.js";
 
-type DevTab = "views" | "bridge" | "mods" | "doctor";
+type DevTab = "views" | "bridge" | "mods" | "doctor" | "workbench";
 type ViewFilter = "all" | "panel" | "hud" | "visible";
 type BridgeFilter = "all" | "errors" | "requests" | "events";
 type ModFilter = "all" | "healthy" | "faults" | "active";
@@ -338,6 +344,28 @@ export default function DevStudioPage({
   const [spatialBone, setSpatialBone] = useState<string>("NPC Head [Head]");
   const [projectedAnchors, setProjectedAnchors] = useState<SkyUltraProjectedAnchor[]>([]);
 
+  const [pgMethod, setPgMethod] = useState<string>("game.getPlayerSnapshot");
+  const [pgPayloadText, setPgPayloadText] = useState<string>("{}");
+  const [pgOutput, setPgOutput] = useState<string>("Choose a bridge method and click Execute Request to inspect live JSON.");
+  const [pgLatencyMs, setPgLatencyMs] = useState<number | null>(null);
+  const [pgBusy, setPgBusy] = useState<boolean>(false);
+  const [pgSnippetTarget, setPgSnippetTarget] = useState<"ts" | "js" | "papyrus">("ts");
+
+  const [mbId, setMbId] = useState<string>("author.my_hud");
+  const [mbName, setMbName] = useState<string>("My SkyUltra Overlay");
+  const [mbVersion, setMbVersion] = useState<string>("1.0.0");
+  const [mbEntry, setMbEntry] = useState<string>("Files/index.html");
+  const [mbStorage, setMbStorage] = useState<boolean>(false);
+  const [mbAssetAccess, setMbAssetAccess] = useState<boolean>(true);
+  const [mbRequests, setMbRequests] = useState<string[]>([
+    "ui.pageReady",
+    "ui.close",
+    "ui.setInputScope",
+    "game.getPlayerSnapshot",
+    "game.subscribe",
+  ]);
+  const [tokenTick, setTokenTick] = useState<number>(0);
+
   useEffect(() => {
     if (!statusNote) return;
     const timer = window.setTimeout(() => setStatusNote(""), 3000);
@@ -385,6 +413,152 @@ export default function DevStudioPage({
     const res = await configureSkyUltraSpatialPlacement({ mode, bone: spatialBone }, bridge);
     setStatusNote(`Spatial placement mode set to '${res.mode}' (${res.bone}).`);
   };
+
+  const handleViewStateAction = async (
+    viewId: number,
+    action: "show" | "hide" | "focus" | "probe",
+  ): Promise<void> => {
+    if (busy) return;
+    if (!native) {
+      if (action === "show" || action === "hide") {
+        setSnapshot((prev) => ({
+          ...prev,
+          views: prev.views.map((v) => (v.viewId === viewId ? { ...v, visible: action === "show" } : v)),
+        }));
+      }
+      setStatusNote(`Preview mode: queued '${action}' for view #${viewId}.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      if (action === "probe") {
+        const res = await runSkyUltraViewProbe(
+          { viewId, eventName: "skyultra.dev.probe", payload: { timestamp: Date.now(), source: "devstudio" } },
+          bridge,
+        );
+        setStatusNote(res.message ?? `Dispatched probe event '${res.eventName ?? "skyultra.dev.probe"}' to view #${viewId}.`);
+      } else {
+        const res = await setSkyUltraModViewState(
+          action === "focus" ? { viewId, focused: true } : { viewId, visible: action === "show" },
+          bridge,
+        );
+        setStatusNote(res.message ?? `Updated view #${viewId} (${action}).`);
+        await refreshSnapshot();
+      }
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleClearBridgeLog = async (): Promise<void> => {
+    if (busy) return;
+    const modScope = bridgeModFilter === "all" ? undefined : bridgeModFilter;
+    if (!native) {
+      setSnapshot((prev) => ({
+        ...prev,
+        bridgeLog: modScope ? prev.bridgeLog.filter((e) => e.modId !== modScope) : [],
+      }));
+      setStatusNote(`Preview mode: cleared bridge ledger${modScope ? ` for ${modScope}` : ""}.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await clearSkyUltraBridgeLog(modScope, bridge);
+      setStatusNote(
+        `Cleared ${res.removed ?? 0} bridge entry/entries${modScope ? ` for ${modScope}` : ""} (${res.remaining ?? 0} remaining).`,
+      );
+      await refreshSnapshot();
+    } catch (err) {
+      setStatusNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const playgroundParseResult = useMemo<{ ok: true; value: JsonValue } | { ok: false; error: string }>(() => {
+    const trimmed = pgPayloadText.trim();
+    if (!trimmed) return { ok: true, value: {} };
+    try {
+      return { ok: true, value: JSON.parse(trimmed) as JsonValue };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Invalid JSON payload." };
+    }
+  }, [pgPayloadText]);
+
+  const handleExecutePlayground = async (): Promise<void> => {
+    const method = pgMethod.trim();
+    if (!method || !playgroundParseResult.ok || pgBusy) return;
+    setPgBusy(true);
+    const start = performance.now();
+    try {
+      const response = await bridge.request(method, playgroundParseResult.value);
+      setPgLatencyMs(performance.now() - start);
+      setPgOutput(JSON.stringify(response, null, 2));
+      setStatusNote(`Executed ${method} (${(performance.now() - start).toFixed(2)} ms).`);
+    } catch (err) {
+      setPgLatencyMs(performance.now() - start);
+      setPgOutput(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setPgBusy(false);
+    }
+  };
+
+  const builtManifest = useMemo(
+    () => ({
+      schemaVersion: 1,
+      id: mbId.trim() || "author.my_hud",
+      name: mbName.trim() || "My SkyUltra Overlay",
+      version: mbVersion.trim() || "1.0.0",
+      entry: mbEntry.trim() || "Files/index.html",
+      permissions: {
+        storage: mbStorage,
+        assetAccess: mbAssetAccess,
+        networkHosts: [] as string[],
+        pageRequests: mbRequests,
+      },
+    }),
+    [mbId, mbName, mbVersion, mbEntry, mbStorage, mbAssetAccess, mbRequests],
+  );
+  const manifestValidation = useMemo(() => auditSkyUltraManifestObject(builtManifest), [builtManifest]);
+  const playgroundSnippet = useMemo(
+    () =>
+      generateSkyUltraBridgeCallSnippet(
+        pgSnippetTarget,
+        pgMethod.trim() || "game.getPlayerSnapshot",
+        playgroundParseResult.ok ? playgroundParseResult.value : {},
+      ),
+    [pgSnippetTarget, pgMethod, playgroundParseResult],
+  );
+  const themeTokens = useMemo(() => {
+    const tokenNames = [
+      "--sky-bg",
+      "--sky-surface",
+      "--sky-raised",
+      "--sky-border",
+      "--sky-text",
+      "--sky-muted",
+      "--sky-accent",
+      "--sky-accent-secondary",
+      "--sky-gold",
+      "--sky-success",
+      "--sky-danger",
+      "--sky-radius",
+      "--sky-glass-blur",
+      "--sky-font-display",
+      "--sky-font-data",
+    ] as const;
+    const hostEl =
+      typeof document !== "undefined"
+        ? document.querySelector<HTMLElement>(".atlas, [data-sky-palette], [data-theme]") ?? document.documentElement
+        : null;
+    const styles = hostEl && typeof getComputedStyle === "function" ? getComputedStyle(hostEl) : null;
+    return tokenNames.map((name) => ({
+      name,
+      value: styles?.getPropertyValue(name).trim() || "inherit",
+    }));
+  }, [tab, tokenTick]);
   const coexistenceFindings = useMemo(() => diagnoseCoexistenceAndLayering(snapshot), [snapshot]);
   const migrationAudit = useMemo(
     () => auditLegacyModSourceForSkyUltra(migrationSource, { modId: migrationModId, modName: "Ported SkyUltra Overlay" }),
@@ -700,6 +874,7 @@ export default function DevStudioPage({
             { id: "bridge", label: "Bridge & Errors", sub: `${deniedTotal} Denials / ${snapshot.bridgeLog.length} Calls`, icon: "performance" },
             { id: "mods", label: "Per-Mod Diagnostics", sub: `${snapshot.mods.length} Packages & Hot Reload`, icon: "inventory" },
             { id: "doctor", label: "Broken Mod Doctor", sub: "Live In-Game Fault Diagnosis", icon: "shield" },
+            { id: "workbench", label: "Modder Workbench", sub: "Playground, Manifest & CSS Tokens", icon: "components" },
           ] as const
         ).map((item) => (
           <button
@@ -799,6 +974,40 @@ export default function DevStudioPage({
                       <code className="dev-url">{view.initialUrl}</code>
                     </div>
                     <div className="dev-card__actions">
+                      <button
+                        type="button"
+                        className="char-stage-btn"
+                        disabled={busy || (view.modId === "skyultra.menu" && view.visible)}
+                        title={
+                          view.modId === "skyultra.menu" && view.visible
+                            ? "Keep the active SkyUltra Menu visible while inspecting."
+                            : view.visible
+                              ? "Hide this surface without unloading it"
+                              : "Show this surface"
+                        }
+                        onClick={() => void handleViewStateAction(view.viewId, view.visible ? "hide" : "show")}
+                      >
+                        <Icon name={view.visible ? "pause" : "play"} size={13} />{" "}
+                        {view.visible ? "Hide View" : "Show View"}
+                      </button>
+                      <button
+                        type="button"
+                        className="char-stage-btn"
+                        disabled={busy}
+                        title="Grant native focus to this view"
+                        onClick={() => void handleViewStateAction(view.viewId, "focus")}
+                      >
+                        <Icon name="target" size={13} /> Focus
+                      </button>
+                      <button
+                        type="button"
+                        className="char-stage-btn"
+                        disabled={busy}
+                        title="Emit a diagnostic 'skyultra.dev.probe' event into this view"
+                        onClick={() => void handleViewStateAction(view.viewId, "probe")}
+                      >
+                        <Icon name="bell" size={13} /> Probe
+                      </button>
                       <button
                         type="button"
                         className={"char-stage-btn" + (inspectedViewId === view.viewId ? " char-stage-btn--active" : "")}
@@ -1117,7 +1326,39 @@ export default function DevStudioPage({
       {tab === "bridge" && (
         <section className="surface dev-section">
           <SectionTitle eyebrow="REAL-TIME IPC & PERMISSION LEDGER" title="Bridge Requests, Events & Errors">
-            <span className="quiet-pill">{filteredBridgeLog.length} SHOWN</span>
+            <div className="dev-card__actions">
+              <span className="quiet-pill">{filteredBridgeLog.length} SHOWN</span>
+              <button
+                type="button"
+                className={"char-stage-btn" + (!autoRefresh ? " char-stage-btn--active" : "")}
+                onClick={() => setAutoRefresh((v) => !v)}
+              >
+                <Icon name={autoRefresh ? "pause" : "play"} size={13} />
+                {autoRefresh ? "Pause Stream" : "Resume Stream"}
+              </button>
+              <button
+                type="button"
+                className="char-stage-btn"
+                disabled={busy || snapshot.bridgeLog.length === 0}
+                onClick={() => void handleClearBridgeLog()}
+              >
+                <Icon name="close" size={13} /> Clear Ledger
+              </button>
+              <button
+                type="button"
+                className="char-stage-btn"
+                disabled={filteredBridgeLog.length === 0}
+                onClick={() => {
+                  const text = JSON.stringify(filteredBridgeLog, null, 2);
+                  if (navigator.clipboard) {
+                    void navigator.clipboard.writeText(text);
+                    setStatusNote(`Copied ${filteredBridgeLog.length} bridge ledger entry/entries as JSON.`);
+                  }
+                }}
+              >
+                Copy JSON
+              </button>
+            </div>
           </SectionTitle>
 
           <div className="dev-filter-toolbar">
@@ -1853,6 +2094,324 @@ export default function DevStudioPage({
                   )}
                 </article>
               ))}
+            </div>
+          </SkyFrame>
+        </div>
+      )}
+
+      {tab === "workbench" && (
+        <div className="dev-section-stack">
+          <SkyFrame
+            eyebrow="INTERACTIVE BRIDGE PLAYGROUND & CODE GENERATOR"
+            title="Live Request Tester & SDK / JS / Papyrus Snippets"
+            actions={
+              <div className="dev-card__actions">
+                {pgLatencyMs !== null && <span className="quiet-pill">{pgLatencyMs.toFixed(2)} ms RTT</span>}
+                <button
+                  type="button"
+                  className="char-stage-btn char-stage-btn--primary"
+                  disabled={pgBusy || !playgroundParseResult.ok || !pgMethod.trim()}
+                  onClick={() => void handleExecutePlayground()}
+                >
+                  <Icon name="play" size={13} /> {pgBusy ? "Running…" : "Execute Request"}
+                </button>
+              </div>
+            }
+          >
+            <div className="workbench-grid">
+              <div style={{ display: "grid", gap: "10px" }}>
+                <div className="smart-filter-chips" role="group" aria-label="Quick bridge methods">
+                  {(
+                    [
+                      "game.getPlayerSnapshot",
+                      "game.getInventory",
+                      "game.getNearbyActors",
+                      "game.getActiveContainer",
+                      "ui.getSettings",
+                      "ui.playSound",
+                      "ui.evalInView",
+                    ] as const
+                  ).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      className={"smart-chip" + (pgMethod === m ? " is-active" : "")}
+                      onClick={() => {
+                        setPgMethod(m);
+                        if (m === "ui.playSound") setPgPayloadText('{\n  "sound": "ok"\n}');
+                        else if (m === "game.getInventory") setPgPayloadText('{\n  "limit": 12\n}');
+                        else setPgPayloadText("{}");
+                      }}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <label style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
+                  <span className="eyebrow">METHOD NAME</span>
+                  <input
+                    type="text"
+                    className="settings-mod-input"
+                    value={pgMethod}
+                    onChange={(e) => setPgMethod(e.currentTarget.value)}
+                    placeholder="e.g. game.getPlayerSnapshot"
+                  />
+                </label>
+                <label style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
+                  <span className="eyebrow">
+                    JSON PAYLOAD {playgroundParseResult.ok ? "(VALID JSON)" : `(${playgroundParseResult.error})`}
+                  </span>
+                  <textarea
+                    rows={5}
+                    value={pgPayloadText}
+                    onChange={(e) => setPgPayloadText(e.currentTarget.value)}
+                    style={{
+                      width: "100%",
+                      fontFamily: "monospace",
+                      fontSize: "12px",
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      border: "1px solid var(--sky-border)",
+                      background: "rgba(8, 9, 12, 0.78)",
+                      color: "var(--sky-text)",
+                    }}
+                  />
+                </label>
+                <div>
+                  <span className="eyebrow">RESPONSE JSON</span>
+                  <pre className="dev-dom-repl__output" style={{ maxHeight: "220px", overflow: "auto", marginTop: "4px" }}>
+                    {pgOutput}
+                  </pre>
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gap: "10px", alignContent: "start" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", flexWrap: "wrap" }}>
+                  <div className="dev-filter-group" role="tablist" aria-label="Snippet language">
+                    {(
+                      [
+                        { id: "ts", label: "TypeScript SDK" },
+                        { id: "js", label: "Vanilla JS" },
+                        { id: "papyrus", label: "Papyrus Handler" },
+                      ] as const
+                    ).map((lang) => (
+                      <button
+                        key={lang.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={pgSnippetTarget === lang.id}
+                        className={"dev-filter-pill dev-filter-pill--compact" + (pgSnippetTarget === lang.id ? " is-active" : "")}
+                        onClick={() => setPgSnippetTarget(lang.id)}
+                      >
+                        {lang.label}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className="char-stage-btn char-stage-btn--sm"
+                    onClick={() => {
+                      if (navigator.clipboard) {
+                        void navigator.clipboard.writeText(playgroundSnippet);
+                        setStatusNote(`Copied ${pgSnippetTarget.toUpperCase()} snippet for '${pgMethod}'.`);
+                      }
+                    }}
+                  >
+                    Copy Snippet
+                  </button>
+                </div>
+                <pre className="dev-dom-repl__output" style={{ maxHeight: "340px", overflow: "auto" }}>
+                  <code>{playgroundSnippet}</code>
+                </pre>
+              </div>
+            </div>
+          </SkyFrame>
+
+          <SkyFrame
+            eyebrow="SCHEMAVERSION 1 AUTHORING & LIVE VALIDATION"
+            title="Visual manifest.json Builder & Schema Validator"
+            actions={
+              <div className="dev-card__actions">
+                <span className={"dev-status-pill " + (manifestValidation.valid ? "is-ok" : "is-error")}>
+                  {manifestValidation.valid ? "SCHEMA VALID" : `${manifestValidation.findings.filter((f) => f.severity === "error").length} ERROR(S)`}
+                </span>
+                <button
+                  type="button"
+                  className="char-stage-btn char-stage-btn--primary"
+                  onClick={() => {
+                    const formatted = JSON.stringify(builtManifest, null, 2);
+                    if (navigator.clipboard) {
+                      void navigator.clipboard.writeText(formatted);
+                      setStatusNote(`Copied manifest.json for '${builtManifest.id}' (${mbRequests.length} permissions).`);
+                    }
+                  }}
+                >
+                  Copy manifest.json
+                </button>
+              </div>
+            }
+          >
+            <div className="workbench-grid">
+              <div style={{ display: "grid", gap: "10px", alignContent: "start" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "10px" }}>
+                  <label style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
+                    <span className="eyebrow">MOD ID</span>
+                    <input
+                      type="text"
+                      className="settings-mod-input"
+                      value={mbId}
+                      onChange={(e) => setMbId(e.currentTarget.value)}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
+                    <span className="eyebrow">VERSION</span>
+                    <input
+                      type="text"
+                      className="settings-mod-input"
+                      value={mbVersion}
+                      onChange={(e) => setMbVersion(e.currentTarget.value)}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
+                    <span className="eyebrow">DISPLAY NAME</span>
+                    <input
+                      type="text"
+                      className="settings-mod-input"
+                      value={mbName}
+                      onChange={(e) => setMbName(e.currentTarget.value)}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "4px", fontSize: "12px" }}>
+                    <span className="eyebrow">HTML ENTRY</span>
+                    <input
+                      type="text"
+                      className="settings-mod-input"
+                      value={mbEntry}
+                      onChange={(e) => setMbEntry(e.currentTarget.value)}
+                    />
+                  </label>
+                </div>
+
+                <div className="smart-filter-chips">
+                  <button
+                    type="button"
+                    className={"smart-chip" + (mbAssetAccess ? " is-active" : "")}
+                    onClick={() => setMbAssetAccess((v) => !v)}
+                  >
+                    assetAccess: {mbAssetAccess ? "TRUE" : "FALSE"}
+                  </button>
+                  <button
+                    type="button"
+                    className={"smart-chip" + (mbStorage ? " is-active" : "")}
+                    onClick={() => setMbStorage((v) => !v)}
+                  >
+                    storage: {mbStorage ? "TRUE" : "FALSE"}
+                  </button>
+                </div>
+
+                <div>
+                  <span className="eyebrow">PAGEREQUEST PERMISSIONS ({mbRequests.length} SELECTED)</span>
+                  <div className="smart-filter-chips" style={{ marginTop: "6px" }}>
+                    {(
+                      [
+                        "ui.pageReady",
+                        "ui.close",
+                        "ui.setInputScope",
+                        "ui.playSound",
+                        "ui.getSettings",
+                        "ui.updateSettings",
+                        "ui.clearBridgeLog",
+                        "ui.setModViewState",
+                        "ui.evalInView",
+                        "game.getPlayerSnapshot",
+                        "game.subscribe",
+                        "game.unsubscribe",
+                        "game.getInventory",
+                        "game.renameItem",
+                      ] as const
+                    ).map((perm) => {
+                      const active = mbRequests.includes(perm);
+                      return (
+                        <button
+                          key={perm}
+                          type="button"
+                          className={"smart-chip" + (active ? " is-active" : "")}
+                          aria-pressed={active}
+                          onClick={() =>
+                            setMbRequests((prev) => (prev.includes(perm) ? prev.filter((p) => p !== perm) : [...prev, perm]))
+                          }
+                        >
+                          {perm}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {manifestValidation.findings.length > 0 && (
+                  <div className="dev-findings-list">
+                    {manifestValidation.findings.map((f, idx) => (
+                      <article key={`mb-${f.code}-${idx}`} className={`dev-finding-card is-${f.severity}`}>
+                        <div className="dev-finding-card__top">
+                          <span className={`dev-status-pill is-${f.severity}`}>{f.severity.toUpperCase()}</span>
+                          <code>{f.code}</code>
+                          <strong>{f.title}</strong>
+                        </div>
+                        <p>{f.detail}</p>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <span className="eyebrow">GENERATED MANIFEST.JSON PREVIEW</span>
+                <pre className="dev-dom-repl__output" style={{ marginTop: "6px", maxHeight: "340px", overflow: "auto" }}>
+                  <code>{JSON.stringify(builtManifest, null, 2)}</code>
+                </pre>
+              </div>
+            </div>
+          </SkyFrame>
+
+          <SkyFrame
+            eyebrow="ACTIVE THEME COMPUTED STYLES · CLICK ANY TOKEN TO COPY"
+            title="Live --sky-* CSS Theme Token Inspector"
+            actions={
+              <button type="button" className="char-stage-btn" onClick={() => setTokenTick((t) => t + 1)}>
+                <Icon name="rotate" size={13} /> Sample Tokens
+              </button>
+            }
+          >
+            <div className="token-swatch-grid">
+              {themeTokens.map((tok) => {
+                const isColor = /^(#|rgb|hsl|oklch|color)/i.test(tok.value);
+                return (
+                  <button
+                    key={tok.name}
+                    type="button"
+                    className="token-swatch"
+                    title={`Click to copy var(${tok.name})`}
+                    onClick={() => {
+                      const expr = `var(${tok.name})`;
+                      if (navigator.clipboard) {
+                        void navigator.clipboard.writeText(expr);
+                        setStatusNote(`Copied ${expr} (${tok.value})`);
+                      }
+                    }}
+                  >
+                    <span
+                      className="token-swatch__chip"
+                      style={{ background: isColor ? tok.value : "color-mix(in srgb, var(--sky-accent) 22%, transparent)" }}
+                    />
+                    <span style={{ display: "grid", minWidth: 0 }}>
+                      <code>{tok.name}</code>
+                      <small style={{ color: "var(--sky-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {tok.value}
+                      </small>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </SkyFrame>
         </div>

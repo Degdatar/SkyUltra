@@ -13,7 +13,7 @@ Choose the integration that fits your mod:
 
 SkyUltra uses schema-v1 manifests with `schemaVersion`, `entry` and explicit `permissions`. Its page bridge is `window.SkyWebView`; the SDK helper is `getSkyWebView()`. The native exports are `SkyUltra_GetAPI_V1` through `SkyUltra_GetAPI_V4`; use the matching structures in the supplied header. A native mod registers an existing manifest rather than passing an in-memory manifest to a different ABI.
 
-Browser selection is per view/mod and depends on the host's available backends and settings. A manifest may pin `browserEngine` to `cef` or `ultralight`. Test the CSS/JavaScript features your pages use in each engine you support.
+Browser selection is per view/mod and depends on the host's available backends and settings. A manifest may pin `browserEngine` to `cef` or `ultralight`. Test the CSS/JavaScript features your pages use in each engine you support. Inside the game, Developer Studio's **Modder Workbench** tab provides an interactive Bridge Playground, TypeScript/JS/Papyrus snippet generator, visual `manifest.json` builder/validator, and `--sky-*` CSS token inspector alongside live view Show/Hide/Focus/Probe controls.
 
 Renderer and gameplay endpoints are listed in the [TypeScript contracts](../sdk/typescript/README.md). World-anchor projection uses `ui.projectWorldAnchors` (SDK `projectSkyUltraWorldAnchors`); spatial placement uses `ui.setSpatialPlacement` (SDK `configureSkyUltraSpatialPlacement`). There is no `world.projectPositions` or `world.setPlacement` endpoint in this host.
 

@@ -7,11 +7,38 @@ import {
   type SkyWebViewAPI,
 } from '@skyultra/sdk';
 import { ItemThumbnail } from './ItemThumbnail.js';
-import { ItemCombatBadges } from './EquipmentPanel.js';
+import { ItemCombatBadges, resolveItemUseAction } from './EquipmentPanel.js';
+import { BookReader, parseBookActionResult, type BookReaderDesignChoice, type ReadingBookState } from './BookReader.js';
 import { SkyChoice, SkySegmentedControl } from '../core.js';
 import { Icon, itemIcon } from './icons.js';
 import { Empty } from './pieces.js';
-import { formId, type Item, type Player } from './model.js';
+import { formId, type Item, type Palette, type Player } from './model.js';
+
+function readLocalContainerPrefs(): {
+  defaultTheme?: string;
+  bookReaderDesign?: BookReaderDesignChoice;
+  bookThemeSync?: boolean;
+  showValuePerWeight?: boolean;
+  stolenProtection?: boolean;
+} {
+  try {
+    if (typeof window !== 'undefined') {
+      const raw = window.localStorage?.getItem('skyultra.uiPreferences.v2');
+      if (raw) {
+        return JSON.parse(raw) as {
+          defaultTheme?: string;
+          bookReaderDesign?: BookReaderDesignChoice;
+          bookThemeSync?: boolean;
+          showValuePerWeight?: boolean;
+          stolenProtection?: boolean;
+        };
+      }
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+  return {};
+}
 
 const pageSize = 48;
 const categoryOrder = ['weapon', 'armor', 'potion', 'ingredient', 'ammo', 'book', 'scroll', 'soul gem', 'key', 'miscellaneous'];
@@ -80,7 +107,7 @@ export default function ContainerPage({
   const [snapshot, setSnapshot] = useState<SkyUltraContainerSnapshot | null>(null);
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
-  const [sort, setSort] = useState<'name' | 'value' | 'weight' | 'count'>('name');
+  const [sort, setSort] = useState<'name' | 'value' | 'weight' | 'count' | 'vw'>('name');
   const [layout, setLayout] = useState<'grid' | 'list'>('grid');
   const [offset, setOffset] = useState(0);
   const [selectedId, setSelectedId] = useState('');
@@ -90,8 +117,22 @@ export default function ContainerPage({
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [revision, setRevision] = useState(0);
+  const [readingBook, setReadingBook] = useState<ReadingBookState | null>(null);
+  const localPrefs = useMemo(() => readLocalContainerPrefs(), [revision, readingBook]);
   const locked = useRef(false);
   const actionController = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    setSnapshot(null);
+    setSide('container');
+    setQuery('');
+    setCategory('all');
+    setOffset(0);
+    setSelectedId('');
+    setSliderModalItem(null);
+    setReadingBook(null);
+    setStatusMessage('');
+  }, [variant]);
 
   useEffect(() => () => actionController.current?.abort(), [bridge]);
   useEffect(() => {
@@ -197,13 +238,15 @@ export default function ContainerPage({
             .includes(trimmed),
       )
       .sort((a, b) =>
-        sort === 'value'
-          ? b.value - a.value
-          : sort === 'weight'
-            ? b.weight - a.weight
-            : sort === 'count'
-              ? b.count - a.count
-              : a.name.localeCompare(b.name),
+        sort === 'vw'
+          ? (b.value / Math.max(b.weight, 0.05)) - (a.value / Math.max(a.weight, 0.05))
+          : sort === 'value'
+            ? b.value - a.value
+            : sort === 'weight'
+              ? b.weight - a.weight
+              : sort === 'count'
+                ? b.count - a.count
+                : a.name.localeCompare(b.name),
       );
   }, [activeSourceItems, category, query, sort]);
 
@@ -353,6 +396,112 @@ export default function ContainerPage({
         setStatusMessage(error instanceof Error ? error.message : 'Container transfer failed.');
         setRevision(v => v + 1);
       }
+    } finally {
+      locked.current = false;
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
+
+  async function executeSmartLootValuables(): Promise<void> {
+    if (!game || obscured || locked.current) return;
+    const protectStolen = isStealing && localPrefs.stolenProtection !== false;
+    const candidates = rawContainerItems.filter(item => {
+      if (item.id === '15') return true;
+      if (protectStolen && (item.stolen || item.isOwned)) return false;
+      const vw = item.value / Math.max(item.weight, 0.05);
+      return (item.weight === 0 && item.value > 0) || vw >= 10;
+    });
+    if (candidates.length === 0) {
+      setStatusMessage(
+        protectStolen && rawContainerItems.some(i => i.stolen || i.isOwned)
+          ? 'No legal high-value items matched (Stolen Protection skipped owned items).'
+          : 'No high-value valuables (>= 10 V/W or weightless) matched in this container.',
+      );
+      return;
+    }
+    locked.current = true;
+    setBusy(true);
+    setStatusMessage(`Smart Looting ${candidates.length} valuable stack(s)…`);
+    actionController.current?.abort();
+    const controller = new AbortController();
+    actionController.current = controller;
+    let moved = 0;
+    try {
+      for (const item of candidates) {
+        if (controller.signal.aborted) break;
+        const res = await game.containerTransfer(
+          {
+            mode: isPickpocket ? 'steal' : 'take',
+            formId: item.id,
+            count: item.count,
+            containerRefId: snapshot?.containerRefId,
+          },
+          { signal: controller.signal },
+        );
+        if (res.caught || res.closeMenu) {
+          if (res.container && res.container.available) setSnapshot(res.container);
+          onPlayerChanged?.();
+          setStatusMessage(res.message ?? 'Caught pickpocketing during Smart Loot!');
+          onClose?.();
+          return;
+        }
+        if (res.accepted) {
+          ++moved;
+          if (res.container && res.container.available) setSnapshot(res.container);
+        }
+      }
+      onPlayerChanged?.();
+      setRevision(v => v + 1);
+      setStatusMessage(`Smart Loot collected ${moved} valuable stack${moved === 1 ? '' : 's'}.`);
+    } catch (error) {
+      if (!controller.signal.aborted) setStatusMessage(error instanceof Error ? error.message : 'Smart Loot failed.');
+    } finally {
+      locked.current = false;
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
+
+  async function executeTakeAndAction(item: Item, followUp: 'equip' | 'consume' | 'read'): Promise<void> {
+    if (!game || obscured || locked.current || side !== 'container') return;
+    locked.current = true;
+    setBusy(true);
+    setStatusMessage(`Taking & ${followUp === 'equip' ? 'equipping' : followUp === 'read' ? 'reading' : 'using'} ${item.name}…`);
+    actionController.current?.abort();
+    const controller = new AbortController();
+    actionController.current = controller;
+    try {
+      if (followUp === 'equip') {
+        const res = await game.containerTransfer(
+          { mode: isPickpocket ? 'steal' : 'take', formId: item.id, count: 1, containerRefId: snapshot?.containerRefId, equip: true },
+          { signal: controller.signal },
+        );
+        if (res.caught || res.closeMenu) { onClose?.(); return; }
+        if (res.container && res.container.available) setSnapshot(res.container);
+        onPlayerChanged?.();
+        setStatusMessage(res.message ?? `Took & equipped ${item.name}.`);
+        return;
+      }
+      const res = await game.containerTransfer(
+        { mode: isPickpocket ? 'steal' : 'take', formId: item.id, count: 1, containerRefId: snapshot?.containerRefId },
+        { signal: controller.signal },
+      );
+      if (res.caught || res.closeMenu) { onClose?.(); return; }
+      if (!res.accepted) {
+        setStatusMessage(res.message ?? 'Could not take item first.');
+        return;
+      }
+      if (res.container && res.container.available) setSnapshot(res.container);
+      const act = followUp === 'read' ? 'read' : (resolveItemUseAction(item) ?? 'drink');
+      const actionRes = await game.itemAction({ formId: item.id, action: act, count: 1 }, { signal: controller.signal });
+      if (followUp === 'read' && actionRes.accepted) {
+        const parsedBook = parseBookActionResult(item, actionRes);
+        if (parsedBook) setReadingBook(parsedBook);
+      }
+      onPlayerChanged?.();
+      setRevision(v => v + 1);
+      setStatusMessage(actionRes.message ?? `Processed ${item.name}.`);
+    } catch (error) {
+      if (!controller.signal.aborted) setStatusMessage(error instanceof Error ? error.message : 'Combined action failed.');
     } finally {
       locked.current = false;
       if (!controller.signal.aborted) setBusy(false);
@@ -581,6 +730,16 @@ export default function ContainerPage({
               </button>
               <button
                 type="button"
+                className="control-button container-bulk-btn"
+                disabled={!bridge || busy || obscured || rawContainerItems.length === 0}
+                onClick={() => void executeSmartLootValuables()}
+                title="Take gold, weightless valuables, and items >= 10 Gold/Weight"
+              >
+                <Icon name="gold" size={13} />
+                <span>Loot Valuables</span>
+              </button>
+              <button
+                type="button"
                 className={'control-button container-bulk-btn' + (isPickpocket ? ' container-bulk-btn--plant' : '')}
                 disabled={!bridge || busy || obscured || rawPlayerItems.length === 0}
                 onClick={() => void executeBulkTransfer('storeAll')}
@@ -624,11 +783,12 @@ export default function ContainerPage({
             <SkyChoice
               label="Sort container items"
               value={sort}
-              onValueChange={v => setSort(v as 'name' | 'value' | 'weight' | 'count')}
+              onValueChange={v => setSort(v as 'name' | 'value' | 'weight' | 'count' | 'vw')}
               options={[
                 { value: 'name', label: 'Name A–Z' },
                 { value: 'value', label: 'Highest value' },
                 { value: 'weight', label: 'Highest weight' },
+                { value: 'vw', label: 'Gold / weight (V/W)' },
                 { value: 'count', label: 'Largest stack' },
               ]}
             />
@@ -638,6 +798,12 @@ export default function ContainerPage({
               {side === 'container'
                 ? `${containerName} · Click item to ${takeVerb}`
                 : `Your Pack · Click item to ${storeVerb}`}
+              {selected && (
+                <>
+                  <i />
+                  {`Carry: ${Math.max(0, Math.round((carryCurrent + (side === 'container' ? 1 : -1) * selected.weight * (showQuantitySlider ? clampedQuantity : 1)) * 10) / 10)}/${carryMax} wt`}
+                </>
+              )}
             </span>
           </div>
 
@@ -649,7 +815,9 @@ export default function ContainerPage({
                   ? item.enchantments.map(e => (e.description ? `${e.name}: ${e.description}` : e.name)).join(' · ')
                   : item.enchantmentName || 'Enchanted';
                 const isGoldItem = item.id === '15';
-                const isStolen = side === 'player' && Boolean(item.stolen) && !isGoldItem;
+                const isStolen = (side === 'player' ? Boolean(item.stolen) : Boolean(item.stolen || item.isOwned || isStealing)) && !isGoldItem;
+                const chance = typeof item.pickpocketChance === 'number' ? item.pickpocketChance : null;
+                const vwRatio = item.weight > 0 ? Math.round((item.value / item.weight) * 10) / 10 : null;
                 return (
                   <button
                     type="button"
@@ -737,6 +905,16 @@ export default function ContainerPage({
                         {isStolen ? 'Stolen · ' : ''}
                         {item.armorTypeLabel || item.weaponType || item.category}
                         <ItemCombatBadges item={item} compact />
+                        <span className="item-meta-pills">
+                          {chance !== null && (
+                            <b className={'item-meta-pill ' + (chance >= 75 ? 'is-pickpocket-high' : chance >= 40 ? 'is-pickpocket-mid' : 'is-pickpocket-low')}>
+                              {chance}%
+                            </b>
+                          )}
+                          {item.temperTier && <b className="item-meta-pill">{item.temperTier}</b>}
+                          {item.poisonName && <b className="item-meta-pill is-poison">Poisoned</b>}
+                          {localPrefs.showValuePerWeight !== false && vwRatio !== null && item.value > 0 && <b className="item-meta-pill">{vwRatio} V/W</b>}
+                        </span>
                         <span>{item.weight} wt</span>
                       </small>
                     </span>
@@ -985,6 +1163,36 @@ export default function ContainerPage({
                     </span>
                   </button>
                 )}
+                {side === 'container' && Boolean(selected.equipSlots?.length) && (
+                  <button
+                    type="button"
+                    className="control-button"
+                    disabled={!bridge || busy || obscured}
+                    onClick={() => void executeTakeAndAction(selected, 'equip')}
+                  >
+                    <span>Take &amp; Equip</span>
+                  </button>
+                )}
+                {side === 'container' && (selected.useAction === 'drink' || selected.useAction === 'eat' || selected.category.toLowerCase() === 'potion' || selected.category.toLowerCase() === 'ingredient') && (
+                  <button
+                    type="button"
+                    className="control-button"
+                    disabled={!bridge || busy || obscured}
+                    onClick={() => void executeTakeAndAction(selected, 'consume')}
+                  >
+                    <span>Take &amp; Consume</span>
+                  </button>
+                )}
+                {side === 'container' && selected.category.toLowerCase() === 'book' && !selected.teachesSpell && (
+                  <button
+                    type="button"
+                    className="control-button"
+                    disabled={!bridge || busy || obscured}
+                    onClick={() => void executeTakeAndAction(selected, 'read')}
+                  >
+                    <span>Take &amp; Read</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -1059,6 +1267,16 @@ export default function ContainerPage({
           </footer>
         </section>
       </div>
+      {readingBook && (
+        <BookReader
+          book={readingBook}
+          playerName={playerName}
+          theme={(localPrefs.defaultTheme as Palette) || 'dragonstone'}
+          design={localPrefs.bookReaderDesign ?? 'auto'}
+          themeSync={localPrefs.bookThemeSync !== false}
+          onClose={() => setReadingBook(null)}
+        />
+      )}
     </div>
   );
 }

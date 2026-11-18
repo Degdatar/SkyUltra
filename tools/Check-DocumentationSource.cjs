@@ -1,7 +1,28 @@
 // Documentation/source checks only. No compilation, bundling or installation.
 const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process'),vm=require('node:vm'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'..'),ts=require(path.join(root,'sdk/ui/node_modules/typescript'));
-const files=cp.execFileSync('rg',['--files','docs','api','sdk','apps','samples','-g','*.md','-g','!**/node_modules/**','-g','!**/dist/**','-g','!docs/licenses/**','-g','!**/templates/**'],{cwd:root,encoding:'utf8'}).trim().split(/\r?\n/);
+function collectMarkdownFiles(){
+ try{
+  return cp.execFileSync('rg',['--files','docs','api','sdk','apps','samples','-g','*.md','-g','!**/node_modules/**','-g','!**/dist/**','-g','!docs/licenses/**','-g','!**/templates/**'],{cwd:root,encoding:'utf8'}).trim().split(/\r?\n/).filter(Boolean);
+ }catch{
+  const found=[];
+  const skipDirs=new Set(['node_modules','dist','templates']);
+  const walk=(relDir)=>{
+   const absDir=path.join(root,relDir);
+   if(!fs.existsSync(absDir))return;
+   for(const entry of fs.readdirSync(absDir,{withFileTypes:true})){
+    const rel=path.posix.join(relDir.replace(/\\/g,'/'),entry.name);
+    if(entry.isDirectory()){
+     if(skipDirs.has(entry.name)||rel==='docs/licenses')continue;
+     walk(rel);
+    }else if(entry.isFile()&&entry.name.endsWith('.md'))found.push(rel);
+   }
+  };
+  for(const dir of ['docs','api','sdk','apps','samples'])walk(dir);
+  return found.sort();
+ }
+}
+const files=collectMarkdownFiles();
 files.push('README.md');
 const compatibility={};
 vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(root,'sdk/typescript/src/compatibility.ts'),'utf8'),{

@@ -19,11 +19,16 @@ function moduleSource(file,imports){
 const controls=moduleSource('sdk/ui/src/controls.tsx',{'./scales.js':{}});
 const {ActorAnimationTimeline}=moduleSource('sdk/ui/src/field/ActorAnimationTimeline.tsx',{'../core.js':controls});
 const {defaultActorCamera}=moduleSource('sdk/ui/src/field/actorCamera.ts',{});
+const previewLifecycleJs=ts.transpileModule(fs.readFileSync(path.join(root,'sdk/ui/src/field/previewLifecycle.ts'),'utf8'),{
+ fileName:'sdk/ui/src/field/previewLifecycle.ts',compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
+}).outputText;
+const previewLifecycle={};vm.runInNewContext(previewLifecycleJs,{exports:previewLifecycle,window:{dispatchEvent(){},addEventListener(){},removeEventListener(){}},Event:class{constructor(type){this.type=type;}}});
 const {ActorStage,ModelStage}=moduleSource('sdk/ui/src/field/ActorStage.tsx',{
  '@skyultra/sdk':{createSkyUltraRenderer:()=>({}),createSkyUltraItemRenderer:()=>({})},
  '../core.js':{SkySegmentedControl:()=>null,SkyChoice:()=>null},
  './ActorAnimationTimeline.js':{ActorAnimationTimeline},
  './actorCamera.js':{defaultActorCamera},'./icons.js':{Icon:()=>null},
+ './previewLifecycle.js':previewLifecycle,
 });
 let checks=0;
 function render(Component,props){return renderToStaticMarkup(React.createElement(Component,props));}

@@ -18,7 +18,7 @@ SkyUI, ENB, Community Shaders, SSE Engine Fixes, TrueHUD and Wheeler are **not r
 ### Installing with Mod Organizer 2 (MO2) or Vortex
 
 1. Install the **SkyUltra** archive through MO2 or Vortex and enable it in your mod list.
-2. Ensure no other mod overwrites `Data/SKSE/Plugins/SkyUltra.dll` or the `Data/Interface/skyultra_*.swf` files (`skyultra_inventory.swf`, `skyultra_barter.swf`, `skyultra_container.swf`, `skyultra_loot.swf`, `skyultra_pickpocket.swf`, `skyultra_mannequin.swf`, `skyultra_magic.swf`, `skyultra_favorites.swf`). Settings persist in `Data/SKSE/Plugins/SkyUltra.settings.json`; SkyUltra no longer reads or ships an INI. Advanced startup options are documented in [runtime settings](BRIDGE_DELIVERY.md#one-settings-file).
+2. Ensure no other mod overwrites `Data/SKSE/Plugins/SkyUltra.dll` or the `Data/Interface/skyultra_*.swf` files (`skyultra_inventory.swf`, `skyultra_barter.swf`, `skyultra_container.swf`, `skyultra_loot.swf`, `skyultra_pickpocket.swf`, `skyultra_mannequin.swf`, `skyultra_magic.swf`, `skyultra_favorites.swf`, `skyultra_compass.swf`). Settings persist in `Data/SKSE/Plugins/SkyUltra.settings.json`; SkyUltra no longer reads or ships an INI. The bundled Chromium CEF runtime stays compact at **16 files** under `SKSE/Plugins/SkyUltra/CEF/` (`locales/en-US.pak` only; debug PDBs live separately in `Diagnostics/`). Advanced startup options are documented in [runtime settings](BRIDGE_DELIVERY.md#one-settings-file).
 3. Launch Skyrim via `skse64_loader.exe` (or `sksevr_loader.exe` in VR).
 
 ---
@@ -81,12 +81,15 @@ SkyUltra treats **Skyrim VR** as a first-class platform:
 - Instant summary of your character's **Health, Magicka, and Stamina** rings, armor rating, active magic effects, encumbrance, and 11 equipped gear slots.
 
 ### Module 02 // Actor Observatory
-- **Nearby Radar (`1.5K` to `12K` units)**: Inspect every loaded NPC, creature, or follower around you with auto-generated 3D bust portraits (close-up of head, shoulders, and upper body) cached persistently in `Data/SkyUltra/Cache/Portraits/` (`Overwrite/SkyUltra/Cache/Portraits/` in MO2).
-- **Find NPC**: Search across all NPC records in your load order by name.
-- **3D Character Studio & Live Dress-Up**: Orbit, zoom, pan, switch between **Full model** and **Portrait** (head, shoulders & upper body close-up), change lighting presets, click **Update portrait** (Camera button) to overwrite the cached portrait in-game, and **equip or unequip** armor, weapons, and ammo directly on the selected NPC with instant visual and slot updates.
+- **Nearby Radar (`1.5K` to `12K` units) & Smart Filters**: Inspect nearby NPCs, creatures, or followers with auto-generated 3D bust portraits cached persistently in `Data/SkyUltra/Cache/Portraits/`. Filter by **All / Followers / Unique / Essential / In Combat / Pinned**, sort by **Distance / Name / Level / Health**, and **Pin** favorite targets to the top.
+- **Tri-Vitals & Rich Dossier**: Inspect **Health**, **Magicka**, and **Stamina** meters alongside **Class**, **Essential**, **Unique**, **Combat State**, and **Relationship** pills, and click **Base Form** or **Reference ID** cards to copy hex FormIDs.
+- **3D Character Studio, Camera Presets & Reset Portrait**: Orbit, zoom, pan, trigger **Bust / 3/4 View / Full Body / Profile** camera presets, toggle **Full model** vs **Portrait**, change lighting presets (`Studio`, `Soft`, `Dramatic`, `Warm`, `Cool`), click **Update portrait** to save to Overwrite (or **Reset portrait** to clear custom overrides), and **equip or unequip** gear directly on loaded NPCs.
 
-### Module 03 // Inventory, Vendor Barter, Storage Containers, Corpse Looting, NPC Pickpocketing, Mannequins & 3D Item Studio
-- Filter your inventory by category (Weapons, Armor, Potions, Ingredients, Ammo, Books, Keys, Misc), equipment state, or search query (`Space` shortcut).
+### Module 03 // Inventory, Containers, Pickpocketing, Book Reader & 3D Item Studio
+- **Smart Filters, `V/W` Sort & Inline Item Renaming**: Filter by category, equipment state, search (`Space`), or smart chips (**Enchanted**, **Tempered**, **Poisoned**, **Books**, **Unread**, **Stolen**); sort by **Value/Weight (`V/W`)**; save and equip **4 Quick Outfit Loadouts**; compare selected stats against worn gear; and **rename carried items** inline (`game.renameItem`).
+- **Theme-Reactive 7-Design Book Reader**: Open books, letters, journals, and maps in **7 selectable styles** (**Auto**, **Codex**, **Scroll**, **Grimoire**, **Dwemer**, **Scholar**, **Datapad**), toggle **Theme Sync vs Parchment Paper**, adjust text scale (`S / M / L / XL`), search highlighted terms in-book, save page bookmarks, and pan/zoom illustrated maps.
+- **Smart Loot, Pickpocket `%` & Combined Actions**: Storage and corpse loot containers add **Smart Loot Valuables** (collecting Gold + high `V/W` or weightless valuables while honoring **Stolen Protection**), live carry-weight forecasts, **Take & Equip / Take & Consume / Take & Read**, and native **Pickpocket `%`** probability badges in `skyultra_pickpocket.swf`.
+- **Zero-Overlap SWF Window Transitions**: Session-epoch transition gating discards stale cached surfaces immediately before switching or closing SWF overlays (`skyultra_inventory`, `barter`, `container`, `loot`, `pickpocket`, `mannequin`, `magic`, `favorites`, `compass`) so windows never overlap for stray frames.
 - **Persistent Overwrite Icon & Portrait Cache**: Item icons (`Data/SkyUltra/Cache/Items/`) and player/actor portraits (`Data/SkyUltra/Cache/Portraits/`) are saved to your MO2 `Overwrite` folder so icons and portraits load immediately on future game launches without waiting to re-render. Click the **Camera** button under the Player Inventory 3D stage at any time to capture a fresh head-and-shoulders bust portrait of your character and update the cached portrait across the HUD, Overview, and Character Sheet.
 - **Expanded Combat Stats Under Item Icons**: View **Heavy Armor**, **Light Armor**, **Clothing**, and **Shield** badges, **AR** armor ratings, weapon class labels, and **DMG** damage badges directly beneath each item icon across Player Inventory, Vendor Barter, Storage Containers, Corpse Looting, NPC Pickpocketing, and Mannequins.
 - **Already Read Seal**: Inventory book cards display a gold book-and-bookmark seal with a check mark only when Skyrim marks the item as read. This includes readable notes, letters, maps and spell tomes. The seal appears in grid and list views; hover the card for “Already read.” Unread items have no seal.
@@ -107,10 +110,15 @@ SkyUltra treats **Skyrim VR** as a first-class platform:
 
 ---
 
-### Module 08 // Developer Studio
+### Module 05 // Settings & UX Customization
+- Choose across **17 themes** spanning 4 families (**Dark Mode**, **Classic**, **Celestial**, **Neon**), configure **Tab Transition Splash** (**Full Motion**, **Subtle**, or **Off** with live preview of the animated SkyUltra crest & loading bar), **Default Book Reader Design** and **Theme Sync**, **Glass Intensity**, **UI Scale** (`90%`–`115%`), **Show V/W Badges**, and **Stolen Drop Protection**.
 
-- **Mod runtime controls**: Suspend a registered mod to unload its browser pages and stop its scripts/subscriptions; Resume loads fresh pages while retaining native handles. Unload destroys those handles. Unsaved page state is lost; these controls last for the current game session.
-- **Resource and failure diagnostics**: Inspect per-mod view/surface reservations, shared event/reply budgets, renderer crashes, WebGL context loss and stalled bridge batches. SkyUltra's own menu cannot suspend itself. See [runtime resilience and optional local crash dumps](RUNTIME_RESILIENCE.md) for limits and setup; crash reporting requires explicit setup and a game restart.
+### Module 08 // Developer Studio & Modder Workbench
+
+- **Live View Controls**: **Show / Hide**, **Focus**, emit diagnostic **Probe** events, open the embedded DOM/CSS/REPL inspector, reload, suspend, resume, or unload registered views.
+- **Bridge Ledger Controls**: Filter IPC calls and permission denials, pause/resume live streaming, **Clear Ledger** (`ui.clearBridgeLog`), or copy filtered telemetry as JSON.
+- **Modder Workbench (Tab 5)**: Interactive **Bridge Playground** with round-trip latency readout and **TypeScript SDK / Vanilla JS / Papyrus** snippet generation, a **Visual `manifest.json` Builder & Validator**, and a live **`--sky-*` CSS Token Inspector**.
+- **Mod runtime controls & diagnostics**: Suspend, resume, or unload mod pages and inspect per-mod surface reservations, shared queues, renderer crashes, WebGL context loss, and stalled bridge batches. SkyUltra's own menu cannot suspend itself. See [runtime resilience and optional local crash dumps](RUNTIME_RESILIENCE.md).
 
 ## 6. Opening Video Splash Screen
 

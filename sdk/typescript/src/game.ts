@@ -41,6 +41,12 @@ export interface Item {
   canCharge?: boolean;
   canDrop?: boolean;
   teachesSpell?: string;
+  teachesSkill?: string;
+  temperTier?: string;
+  poisonName?: string;
+  soulSize?: string;
+  isOwned?: boolean;
+  pickpocketChance?: number;
   /** Skyrim's saved read flag for books, notes and spell tomes; absent on other items. */
   isRead?: boolean;
   favorite?: boolean;
@@ -48,7 +54,28 @@ export interface Item {
 }
 export interface QuestObjective { index: number; text: string; completed: boolean; failed: boolean; }
 export interface QuestSummary { id: string; formId: string; name: string; stage: number; active: boolean; type: string; objectives: QuestObjective[]; }
-export interface Npc { baseFormId: string; name: string; race: string; sex: string; referenceId?: string; distance?: number; level?: number; follower?: boolean; dead?: boolean; health?: number; healthMax?: number; armorRating?: number; equipment?: Player['equipment']; }
+export interface Npc {
+  baseFormId: string;
+  name: string;
+  race: string;
+  sex: string;
+  referenceId?: string;
+  distance?: number;
+  level?: number;
+  follower?: boolean;
+  dead?: boolean;
+  health?: number;
+  healthMax?: number;
+  magicka?: { current: number; max: number };
+  stamina?: { current: number; max: number };
+  armorRating?: number;
+  className?: string;
+  isEssential?: boolean;
+  isUnique?: boolean;
+  combatState?: 'idle' | 'searching' | 'combat';
+  relationshipRank?: number;
+  equipment?: Player['equipment'];
+}
 export type SkyUltraCompassMarkerKind =
   | 'home'
   | 'inn'
@@ -102,7 +129,10 @@ export interface ActorResponse { available: boolean; radius: number; totalNearby
 export interface SearchResponse { available: boolean; totalMatches: number; results: Npc[]; }
 
 import { getSkyWebView, type JsonValue, type SkyUltraRequestOptions, type SkyWebViewAPI } from './index.js';
-export interface SkyUltraInventoryOptions { query?: string; category?: string; equipment?: 'all'|'equipped'|'carried'; sort?: 'name'|'value'|'weight'|'count'; offset?: number; limit?: number; }
+export type SkyUltraInventorySort = 'name' | 'value' | 'weight' | 'count' | 'vw';
+export interface SkyUltraInventoryOptions { query?: string; category?: string; equipment?: 'all'|'equipped'|'carried'; sort?: SkyUltraInventorySort; offset?: number; limit?: number; }
+export interface SkyUltraItemRenameOptions { id: number | string; name: string; clear?: boolean; }
+export interface SkyUltraItemRenameResult { updated: boolean; accepted?: boolean; cleared?: boolean; id?: string; formId?: string; name?: string; message?: string; }
 export interface SkyUltraInventoryPage { available: boolean; results: Item[]; totalTypes: number; totalMatches: number; offset: number; categories: string[]; }
 export interface SkyUltraEquipmentResult { accepted: boolean; formId?: string; slot?: SkyUltraEquipmentSlot; equipment?: Player['equipment']; message?: string; }
 export interface SkyUltraItemActionOptions { formId: number | string; action: SkyUltraItemAction; count?: number; openNative?: boolean; }
@@ -153,6 +183,7 @@ export interface SkyUltraContainerSnapshot {
   containerBaseFormId?: string;
   containerName?: string;
   containerType?: 'mannequin' | 'actor' | 'corpse' | 'container';
+  variant?: 'container' | 'mannequin' | 'loot' | 'pickpocket';
   containerMode?: 'loot' | 'steal' | 'pickpocket' | 'npc';
   containerItems: Item[];
   containerTotalTypes?: number;
@@ -172,7 +203,7 @@ export interface SkyUltraContainerSnapshotOptions {
   containerRefId?: number | string;
   query?: string;
   category?: string;
-  sort?: 'name' | 'value' | 'weight' | 'count';
+  sort?: SkyUltraInventorySort;
 }
 export type SkyUltraContainerTransferMode = 'take' | 'store' | 'takeAll' | 'storeAll' | 'steal' | 'plant' | 'stealAll' | 'plantAll';
 export interface SkyUltraContainerTransferOptions {
@@ -197,7 +228,7 @@ export interface SkyUltraContainerTransferResult {
   message?: string;
   container?: SkyUltraContainerSnapshot;
 }
-export const skyUltraInventoryMethods = ['game.getInventory','game.getItemThumbnail','game.equipItem','game.unequipItem','game.itemAction','game.getBarterSnapshot','game.barterTransaction','game.getContainerSnapshot','game.containerTransfer'] as const;
+export const skyUltraInventoryMethods = ['game.getInventory','game.getItemThumbnail','game.equipItem','game.unequipItem','game.itemAction','game.renameItem','game.getBarterSnapshot','game.barterTransaction','game.getContainerSnapshot','game.containerTransfer'] as const;
 
 /** Spell book categories, matching Skyrim's Magic menu tabs. */
 export const skyUltraSpellCategories = ['alteration','conjuration','destruction','illusion','restoration','powers','shouts','other'] as const;
@@ -848,19 +879,29 @@ export function createSkyUltraGame(bridge:SkyWebViewAPI=getSkyWebView()) {
     search: (query:string,options?:SkyUltraRequestOptions)=>bridge.request<SearchResponse>('game.searchNpcs',{query,limit:50},options),
     inventory: (input:SkyUltraInventoryOptions={},options?:SkyUltraRequestOptions)=>{
       const {query='',category='all',equipment='all',sort='name',offset=0,limit=64}=input;
-      if(query.length>256||!['all','equipped','carried'].includes(equipment)||!['name','value','weight','count'].includes(sort)||!Number.isInteger(offset)||offset<0||offset>1000000||!Number.isInteger(limit)||limit<1||limit>64)throw new TypeError('Invalid inventory page options.');
+      if(query.length>256||!['all','equipped','carried'].includes(equipment)||!['name','value','weight','count','vw'].includes(sort)||!Number.isInteger(offset)||offset<0||offset>1000000||!Number.isInteger(limit)||limit<1||limit>64)throw new TypeError('Invalid inventory page options.');
       return bridge.request<SkyUltraInventoryPage>('game.getInventory',{query,category,equipment,sort,offset,limit},options);
+    },
+    renameItem: (input:SkyUltraItemRenameOptions,options?:SkyUltraRequestOptions)=>{
+      if(!input||typeof input!=='object')throw new TypeError('Item rename options are required.');
+      const checkedId=inventoryFormId(input.id);
+      const trimmed=typeof input.name==='string'?input.name.trim():'';
+      if(!input.clear&&!trimmed)throw new TypeError('A non-empty item name is required.');
+      const payload:Record<string,JsonValue>={id:String(checkedId),name:trimmed.slice(0,96)};
+      if(input.clear===true)payload.clear=true;
+      return bridge.request<SkyUltraItemRenameResult>('game.renameItem',payload,options);
     },
     thumbnail: (formId:number|string,options?:SkyUltraRequestOptions&{usePreview?:boolean})=>{
       const payload:{formId:number|string;usePreview?:boolean}={formId:inventoryFormId(formId)};
       if(options?.usePreview===true)payload.usePreview=true;
       return bridge.request<SkyUltraItemThumbnail>('game.getItemThumbnail',payload,options);
     },
-    actorThumbnail: (actor:{referenceId?:number|string;baseFormId?:number|string;usePreview?:boolean},options?:SkyUltraRequestOptions)=>{
-      const payload:{referenceId?:number|string;baseFormId?:number|string;usePreview?:boolean}={};
+    actorThumbnail: (actor:{referenceId?:number|string;baseFormId?:number|string;usePreview?:boolean;clearOverride?:boolean},options?:SkyUltraRequestOptions)=>{
+      const payload:{referenceId?:number|string;baseFormId?:number|string;usePreview?:boolean;clearOverride?:boolean}={};
       if(actor?.referenceId!==undefined&&actor.referenceId!=='')payload.referenceId=inventoryFormId(actor.referenceId);
       if(actor?.baseFormId!==undefined&&actor.baseFormId!=='')payload.baseFormId=inventoryFormId(actor.baseFormId);
       if(actor?.usePreview===true)payload.usePreview=true;
+      if(actor?.clearOverride===true)payload.clearOverride=true;
       if(payload.referenceId===undefined&&payload.baseFormId===undefined)throw new TypeError('An actor referenceId or baseFormId is required.');
       return bridge.request<SkyUltraItemThumbnail>('game.getActorThumbnail',payload,options);
     },
@@ -902,7 +943,7 @@ export function createSkyUltraGame(bridge:SkyWebViewAPI=getSkyWebView()) {
       if(input.containerRefId!==undefined&&input.containerRefId!=='')payload.containerRefId=inventoryFormId(input.containerRefId);
       if(typeof input.query==='string')payload.query=input.query.slice(0,256);
       if(typeof input.category==='string')payload.category=input.category;
-      if(input.sort&&['name','value','weight','count'].includes(input.sort))payload.sort=input.sort;
+      if(input.sort&&['name','value','weight','count','vw'].includes(input.sort))payload.sort=input.sort;
       return bridge.request<SkyUltraContainerSnapshot>('game.getContainerSnapshot',payload,options);
     },
     containerTransfer: (input:SkyUltraContainerTransferOptions,options?:SkyUltraRequestOptions)=>{

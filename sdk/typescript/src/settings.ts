@@ -111,7 +111,7 @@ export const defaultSkyUltraSettings: SkyUltraSettings = {
   replaceSkyrimPickpocket: true,
   replaceSkyrimCompass: true,
   menuDisplayMode: 'fullscreen',
-  inventoryDisplayMode: 'fullscreen',
+  inventoryDisplayMode: 'windowed',
   barterDisplayMode: 'half',
   magicDisplayMode: 'half',
   favoritesDisplayMode: 'half',
@@ -382,6 +382,11 @@ export function readSkyUltraSplashStatus(bridge:SkyWebViewAPI=getSkyWebView()):P
 /** Built-in menu only; previews the full splash screen regardless of the saved replay/playback schedule. */
 export function replaySkyUltraSplash(bridge:SkyWebViewAPI=getSkyWebView()):Promise<{started:boolean}>{return bridge.request('ui.replaySplash',{});}
 
+export type SkyUltraTabTransitionMode = 'cinematic' | 'minimal' | 'instant';
+export type SkyUltraBookReaderDesign = 'auto' | 'codex' | 'scroll' | 'grimoire' | 'dwemer' | 'scholar' | 'datapad';
+export type SkyUltraGlassIntensity = 'subtle' | 'balanced' | 'ultra';
+export type SkyUltraStudioLighting = 'studio' | 'warm' | 'cool' | 'soft' | 'dramatic';
+
 export interface SkyUltraUiPreferences {
   defaultTheme: string;
   density: 'compact' | 'comfortable' | 'spacious';
@@ -390,9 +395,17 @@ export interface SkyUltraUiPreferences {
   cursorMode: 'themed' | 'native';
   cursorAccent: string;
   pollIntervalMs: 750 | 1500 | 3000 | 5000;
-  studioLighting: 'studio' | 'warm' | 'cool' | 'dramatic';
+  studioLighting: SkyUltraStudioLighting;
   backdropGrid: boolean;
   scanlines: boolean;
+  tabTransition: SkyUltraTabTransitionMode;
+  bookReaderDesign: SkyUltraBookReaderDesign;
+  bookThemeSync: boolean;
+  glassIntensity: SkyUltraGlassIntensity;
+  uiScale: number;
+  soundEffects: boolean;
+  showValuePerWeight: boolean;
+  stolenProtection: boolean;
 }
 export const defaultSkyUltraUiPreferences: SkyUltraUiPreferences = {
   defaultTheme: 'dragonstone',
@@ -405,10 +418,29 @@ export const defaultSkyUltraUiPreferences: SkyUltraUiPreferences = {
   studioLighting: 'studio',
   backdropGrid: true,
   scanlines: true,
+  tabTransition: 'cinematic',
+  bookReaderDesign: 'auto',
+  bookThemeSync: true,
+  glassIntensity: 'balanced',
+  uiScale: 1,
+  soundEffects: true,
+  showValuePerWeight: true,
+  stolenProtection: true,
 };
 const UI_PREFS_STORAGE_KEY = 'skyultra.uiPreferences.v2';
 export function sanitizeSkyUltraUiPrefs(raw: unknown): SkyUltraUiPreferences {
   const parsed = raw && typeof raw === 'object' ? (raw as Partial<SkyUltraUiPreferences>) : {};
+  const bookDesign = parsed.bookReaderDesign;
+  const validBookDesign: SkyUltraBookReaderDesign =
+    bookDesign === 'codex' ||
+    bookDesign === 'scroll' ||
+    bookDesign === 'grimoire' ||
+    bookDesign === 'dwemer' ||
+    bookDesign === 'scholar' ||
+    bookDesign === 'datapad'
+      ? bookDesign
+      : 'auto';
+  const rawScale = typeof parsed.uiScale === 'number' && Number.isFinite(parsed.uiScale) ? parsed.uiScale : 1;
   return {
     defaultTheme: typeof parsed.defaultTheme === 'string' && parsed.defaultTheme ? parsed.defaultTheme : defaultSkyUltraUiPreferences.defaultTheme,
     density: parsed.density === 'compact' || parsed.density === 'spacious' ? parsed.density : 'comfortable',
@@ -417,9 +449,29 @@ export function sanitizeSkyUltraUiPrefs(raw: unknown): SkyUltraUiPreferences {
     cursorMode: parsed.cursorMode === 'native' ? 'native' : 'themed',
     cursorAccent: typeof parsed.cursorAccent === 'string' && (parsed.cursorAccent === 'theme' || /^#[0-9a-f]{6}$/i.test(parsed.cursorAccent)) ? parsed.cursorAccent : 'theme',
     pollIntervalMs: parsed.pollIntervalMs === 750 || parsed.pollIntervalMs === 3000 || parsed.pollIntervalMs === 5000 ? parsed.pollIntervalMs : 1500,
-    studioLighting: parsed.studioLighting === 'warm' || parsed.studioLighting === 'cool' || parsed.studioLighting === 'dramatic' ? parsed.studioLighting : 'studio',
+    studioLighting:
+      parsed.studioLighting === 'warm' ||
+      parsed.studioLighting === 'cool' ||
+      parsed.studioLighting === 'soft' ||
+      parsed.studioLighting === 'dramatic'
+        ? parsed.studioLighting
+        : 'studio',
     backdropGrid: typeof parsed.backdropGrid === 'boolean' ? parsed.backdropGrid : true,
     scanlines: typeof parsed.scanlines === 'boolean' ? parsed.scanlines : true,
+    tabTransition:
+      parsed.tabTransition === 'minimal' || parsed.tabTransition === 'instant'
+        ? parsed.tabTransition
+        : 'cinematic',
+    bookReaderDesign: validBookDesign,
+    bookThemeSync: typeof parsed.bookThemeSync === 'boolean' ? parsed.bookThemeSync : true,
+    glassIntensity:
+      parsed.glassIntensity === 'subtle' || parsed.glassIntensity === 'ultra'
+        ? parsed.glassIntensity
+        : 'balanced',
+    uiScale: Math.max(0.85, Math.min(1.25, Math.round(rawScale * 100) / 100)),
+    soundEffects: typeof parsed.soundEffects === 'boolean' ? parsed.soundEffects : true,
+    showValuePerWeight: typeof parsed.showValuePerWeight === 'boolean' ? parsed.showValuePerWeight : true,
+    stolenProtection: typeof parsed.stolenProtection === 'boolean' ? parsed.stolenProtection : true,
   };
 }
 export function readSkyUltraUiPrefs(): SkyUltraUiPreferences {

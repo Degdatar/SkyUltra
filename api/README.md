@@ -101,7 +101,7 @@ Request IDs are **UTF-8 strings**, not integers. Input spans are borrowed for th
 
 There are two permission checks: `permissions.pageRequests` in the manifest, and the view's `set_page_request_allowlist`. The latter cannot grant methods absent from the manifest. Host-owned `game.*` and supported `ui.*` methods are handled by SkyUltra; custom names such as `sample.ping` reach the native callback.
 
-**Current callback ownership:** the exported host has one global `set_page_request_callback(callback, user_data)` slot. A later registration replaces it. Coordinate a shared dispatcher between native consumers; this is not a per-view/per-mod callback API. Papyrus has its own documented request-event route. Do not promise independent native callback ownership through a shim.
+- **Current callback ownership:** the exported host has one global `set_page_request_callback(callback, user_data)` slot. A later registration replaces it. Coordinate a shared dispatcher between native consumers; this is not a per-view/per-mod callback API. Papyrus has its own documented request-event route. Do not promise independent native callback ownership through a shim. Built-in menu session switching also emits `skyultra.menuSession` with a transition `epoch` token before hiding previous overlays so rapid SWF window transitions do not overlap across frames.
 
 ## Engines and lifecycle
 

@@ -41,6 +41,7 @@
       "game.equipItem",
       "game.unequipItem",
       "game.itemAction",
+      "game.renameItem",
       "game.getBarterSnapshot",
       "game.barterTransaction",
       "game.getContainerSnapshot",
@@ -60,7 +61,10 @@
       "ui.setSpatialPlacement",
       "ui.toggleDomInspector",
       "ui.interopCall",
-      "ui.manageModRuntime"
+      "ui.manageModRuntime",
+      "ui.clearBridgeLog",
+      "ui.setModViewState",
+      "ui.evalInView"
     ]
   }
 }

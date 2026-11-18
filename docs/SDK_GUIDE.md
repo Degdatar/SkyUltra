@@ -83,11 +83,13 @@ const subscription = subscribeSkyUltraGame(bridge, event => {
   document.querySelector('#hp')!.textContent = `${hp.current} / ${hp.max}`;
 }, { scope: 'hud', topics: ['vitals'], intervalMs: 250 });
 await markSkyUltraPageReady(bridge);
+// Menu-mode views listening to 'skyultra.menuSession' can echo its transition epoch:
+// await markSkyUltraPageReady(bridge, { epoch });
 // On component/page cleanup:
 // subscription.unsubscribe();
 ```
 
-The SDK merges deltas into a shared snapshot and shares the native feed among consumers in a view. Prefer this over one polling loop per widget. Subscribe before signaling application readiness if native code will push initial data. `ui.pageReady` releases the startup gate; it does not register a custom C++ callback or manufacture permissions.
+The SDK merges deltas into a shared snapshot and shares the native feed among consumers in a view. Prefer this over one polling loop per widget. Subscribe before signaling application readiness if native code will push initial data. `ui.pageReady` releases the startup gate (and validates optional session `epoch` tokens so stale paints from a closing overlay never flash over a newly opened menu); it does not register a custom C++ callback or manufacture permissions.
 
 For your own request contract:
 
@@ -133,6 +135,6 @@ Use `useSkyUltraClient`, `useSkyUltraEvent` and `useSkyUltraRequest` for typed c
 
 ## Package and diagnose
 
-Install the distribution with its root `manifest.json` and `Files/` content. Use Developer Studio to inspect the manifest, selected engine, bridge errors and permission denials. Check `SkyUltra.log`, and `SkyUltra_CEF.log` for CEF failures. An unrecognized field, missing entry, denied method, missing bridge or unsupported browser feature needs a different fix; enabling a shader mod does not resolve those errors.
+Install the distribution with its root `manifest.json` and `Files/` content. Use Developer Studio (including **Modder Workbench** for live Bridge Playground testing, TypeScript/JS/Papyrus snippet generation, Visual `manifest.json` validation, `--sky-*` CSS token inspection, and live view **Show/Hide/Focus/Probe** controls) to inspect the manifest, selected engine, bridge errors and permission denials. Check `SkyUltra.log`, and `SkyUltra_CEF.log` for CEF failures. An unrecognized field, missing entry, denied method, missing bridge or unsupported browser feature needs a different fix; enabling a shader mod does not resolve those errors.
 
 See [library acknowledgments](THIRD_PARTY_LIBRARIES.md). Node, npm, Vite, TypeScript and SDK source dependencies are author tools; they are not extra player requirements.

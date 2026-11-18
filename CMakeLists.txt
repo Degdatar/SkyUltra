@@ -144,7 +144,7 @@ if(SKYULTRA_BUILD_CEF)
     add_executable(SkyUltraCefSubprocess WIN32
         src/cef/CefSubprocess.cpp
         src/cef/SkyUltraCefSubprocess.rc)
-    target_include_directories(SkyUltraCefSubprocess PRIVATE "${SKYULTRA_CEF_ROOT}")
+    target_include_directories(SkyUltraCefSubprocess PRIVATE "${SKYULTRA_CEF_ROOT}" include)
     target_link_libraries(SkyUltraCefSubprocess PRIVATE libcef_dll_wrapper SkyUltraCEF ${CEF_STANDARD_LIBS})
     target_compile_features(SkyUltraCefSubprocess PRIVATE cxx_std_20)
     target_compile_definitions(SkyUltraCefSubprocess PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -158,37 +158,21 @@ if(SKYULTRA_BUILD_CEF)
         VERBATIM)
 
     set(SKYULTRA_CEF_PACKAGE_DIR "${CMAKE_CURRENT_BINARY_DIR}/package/Data/SKSE/Plugins/SkyUltra/CEF")
+    set(SKYULTRA_DIAGNOSTICS_DIR "${CMAKE_CURRENT_BINARY_DIR}/package/Diagnostics")
     set_target_properties(SkyUltraCefSubprocess PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${SKYULTRA_CEF_PACKAGE_DIR}"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${SKYULTRA_CEF_PACKAGE_DIR}"
-        PDB_OUTPUT_DIRECTORY "${SKYULTRA_CEF_PACKAGE_DIR}"
-        PDB_OUTPUT_DIRECTORY_RELEASE "${SKYULTRA_CEF_PACKAGE_DIR}")
-    foreach(cef_binary IN LISTS CEF_BINARY_FILES)
-        add_custom_command(TARGET SkyUltraCefSubprocess POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CEF_BINARY_DIR_RELEASE}/${cef_binary}" "${SKYULTRA_CEF_PACKAGE_DIR}")
-    endforeach()
-    foreach(cef_resource IN LISTS CEF_RESOURCE_FILES)
-        if(IS_DIRECTORY "${CEF_RESOURCE_DIR}/${cef_resource}")
-            add_custom_command(TARGET SkyUltraCefSubprocess POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${CEF_RESOURCE_DIR}/${cef_resource}"
-                    "${SKYULTRA_CEF_PACKAGE_DIR}/${cef_resource}")
-        else()
-            add_custom_command(TARGET SkyUltraCefSubprocess POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${CEF_RESOURCE_DIR}/${cef_resource}"
-                    "${SKYULTRA_CEF_PACKAGE_DIR}")
-        endif()
-    endforeach()
-    foreach(cef_notice IN ITEMS LICENSE.txt README.txt)
-        if(EXISTS "${SKYULTRA_CEF_ROOT}/${cef_notice}")
-            add_custom_command(TARGET SkyUltraCefSubprocess POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${SKYULTRA_CEF_ROOT}/${cef_notice}"
-                    "${SKYULTRA_CEF_PACKAGE_DIR}/${cef_notice}")
-        endif()
-    endforeach()
+        PDB_OUTPUT_DIRECTORY "${SKYULTRA_DIAGNOSTICS_DIR}"
+        PDB_OUTPUT_DIRECTORY_RELEASE "${SKYULTRA_DIAGNOSTICS_DIR}")
+    add_custom_command(TARGET SkyUltraCefSubprocess POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            "-DCEF_BINARY_SOURCE=${CEF_BINARY_DIR_RELEASE}"
+            "-DCEF_RESOURCE_SOURCE=${CEF_RESOURCE_DIR}"
+            "-DCEF_ROOT_SOURCE=${SKYULTRA_CEF_ROOT}"
+            "-DCEF_PACKAGE_DESTINATION=${SKYULTRA_CEF_PACKAGE_DIR}"
+            "-DCEF_DIAGNOSTICS_DESTINATION=${SKYULTRA_DIAGNOSTICS_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/StageCefRuntime.cmake"
+        VERBATIM)
 endif()
 
 if(SKYULTRA_BUILD_ULTRALIGHT)
@@ -323,7 +307,6 @@ if(SKYULTRA_BUILD_CEF OR SKYULTRA_BUILD_ULTRALIGHT)
 
     add_custom_command(TARGET SkyUltra POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:SkyUltra>/resources/SkyUltra/Files"
             "${CMAKE_CURRENT_BINARY_DIR}/package/Data/Interface"
         COMMAND ${CMAKE_COMMAND} -E rm -f
             "$<TARGET_FILE_DIR:SkyUltra>/SkyUltra.ini"

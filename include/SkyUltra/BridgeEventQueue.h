@@ -64,7 +64,8 @@ private:
     static bool IsControl(std::string_view name) noexcept {
         // Only complete host state is replaceable. Never coalesce custom
         // commands, deltas, input tokens, or pieces of a chunked transfer.
-        return name == "skyultra.visibility" || name == "skyultra.inventoryMode" ||
+        return name == "skyultra.visibility" || name == "skyultra.menuSession" ||
+            name == "skyultra.inventoryMode" ||
             name == "skyultra.barterMode" || name == "skyultra.containerMode" ||
             name == "skyultra.magicMode" || name == "skyultra.favoritesMode" ||
             name == "skyultra.mannequinMode" || name == "skyultra.lootMode" ||
@@ -177,20 +178,21 @@ public:
             (!state_->budget || !state_->budget->IsSuspended()) &&
             (!state_->controls.empty() || !state_->events.empty());
     }
-    [[nodiscard]] std::shared_ptr<Batch> Take(std::uint64_t consumer) {
+    [[nodiscard]] std::shared_ptr<Batch> Take(std::uint64_t consumer, std::size_t max_events = kBatchEvents) {
         {
             const std::scoped_lock lock(state_->mutex);
             if (state_->closed || (state_->budget && state_->budget->IsSuspended()) || consumer == 0 || consumer != state_->consumer ||
                 (state_->controls.empty() && state_->events.empty())) return {};
         }
+        const auto limit = std::clamp<std::size_t>(max_events, 1U, 64U);
         auto batch = std::make_shared<Batch>();
-        batch->events.reserve(kBatchEvents);
+        batch->events.reserve(limit);
         const std::scoped_lock lock(state_->mutex);
         if (state_->closed || (state_->budget && state_->budget->IsSuspended()) || consumer == 0 || consumer != state_->consumer ||
             (state_->controls.empty() && state_->events.empty())) return {};
         batch->owner = state_;
         std::size_t bytes{};
-        while (batch->events.size() < kBatchEvents) {
+        while (batch->events.size() < limit) {
             auto& queue = !state_->controls.empty() ? state_->controls : state_->events;
             if (queue.empty()) break;
             const auto next_bytes = queue.front().Bytes();

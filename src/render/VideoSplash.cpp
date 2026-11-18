@@ -245,6 +245,7 @@ public:
             (void)engine->Pause();
             (void)engine->SetCurrentTime(0.0);
         }
+        has_frame=false;
         playing=false;
         warming_first_frame=false;
         primed=false;

@@ -15,23 +15,23 @@ export const routeHelp: Record<Route, { title: string; body: string; tips: strin
     ],
   },
   actors: {
-    title: "Actor Observatory, Bust Portraits & Persistent Cache",
-    body: "Browse nearby actors and creatures with head-and-shoulders bust portraits cached in your Overwrite folder, dress up NPCs from your wardrobe, and frame custom portraits.",
+    title: "Actor Observatory, Tri-Vitals, Camera Presets & Bust Portraits",
+    body: "Browse nearby actors and creatures with head-and-shoulders bust portraits cached in Overwrite, filter and sort by Followers/Unique/Essential/Combat/Pinned, inspect Health/Magicka/Stamina tri-vitals and dossier traits, dress up NPCs from your wardrobe, and frame custom portraits.",
     tips: [
-      "Click Update portrait in Character Studio to save the current angle, lighting, and pose to Data/SkyUltra/Cache/Portraits/ (redirected by your mod manager when active).",
-      "Portrait frames the head and shoulders when the skeleton supports them; creature framing adapts to the rig. Full Model frames the entire body.",
+      "Click Update portrait (or Reset portrait to revert) in Character Studio to save or restore portraits in Data/SkyUltra/Cache/Portraits/ (redirected by your mod manager when active).",
+      "Use the Bust, 3/4 View, Full Body, and Profile camera presets to frame NPCs cleanly, or click Base Form / Reference ID tiles in the dossier to copy hex IDs.",
+      "Pin priority NPCs to keep them at the top of the roster, and filter live targets by Followers, Unique, Essential, or In Combat.",
       "Drag any armor, weapon, cape, lantern, jewelry, or ammo from the Wardrobe & Armory onto the actor's 11 equipment slots to dress them up.",
-      "Animal and creature portraits use their canonical upright .nif bind pose so grazing goats or pecking chickens always face the camera cleanly.",
     ],
   },
   inventory: {
-    title: "Inventory, Looting, Pickpocketing, Containers, Mannequins & Barter",
-    body: "Manage all 11 equipment slots, read books/maps with BSA artwork, loot dead NPCs & monsters (skyultra_loot.swf), pickpocket NPCs with Steal & Plant (skyultra_pickpocket.swf), use Storage Containers (skyultra_container.swf), dress Armor Mannequins in 3D (skyultra_mannequin.swf), and trade with merchants (skyultra_barter.swf).",
+    title: "Inventory, Containers, Pickpocketing & Theme-Synced Book Reader",
+    body: "Manage all 11 equipment slots with stat comparison deltas and 4 Quick Outfit Loadouts, sort by Value/Weight (V/W), rename items inline, smart-loot valuables, read books/maps in 7 Book Reader designs (Auto, Codex, Scroll, Grimoire, Dwemer, Scholar, Datapad), and replace Corpse Loot, Pickpocket, Barter, Container, Mannequin, and Compass HUD.",
     tips: [
-      "Corpse & Monster Looting (skyultra_loot.swf) opens in Half Container mode by default with single-click Take & Store, Take All & Store All bulk actions, and Gold displayed in both inventories.",
-      "NPC Pickpocketing (skyultra_pickpocket.swf) opens in Half Container mode by default: items on the targeted NPC say Steal (and show an EQUIPPED badge if worn by the NPC), while items in your inventory say Plant to reverse-pickpocket items or Gold onto the NPC.",
-      "Every container header includes two 1-click cycling buttons: one cycles Half Container → Windowed → Full Screen, and the other toggles Live World ↔ Pause World.",
-      "3D item icons are cached in Data/SkyUltra/Cache/Items/. MO2 normally redirects generated files to Overwrite or a configured output mod.",
+      "In Player Inventory, filter with smart chips (Enchanted, Tempered, Poisoned, Books, Unread, Stolen), rename carried gear inline (game.renameItem), save/apply 4 Quick Loadouts, and see Armor/Damage comparisons vs equipped gear.",
+      "Corpse & Monster Looting (skyultra_loot.swf) and Storage Containers (skyultra_container.swf) support Smart Loot Valuables (>=10 V/W or weightless + Gold), carry-weight forecasts, and 1-click Take & Equip / Take & Consume / Take & Read.",
+      "NPC Pickpocketing (skyultra_pickpocket.swf) displays live native Pickpocket % badges, Stolen/Owned protection, EQUIPPED tags on worn NPC gear, and Plant / Plant All.",
+      "Click Read on any book, note, or map to open the theme-reactive Book Reader with 7 selectable styles, Theme Sync vs Parchment paper toggle, S/M/L/XL text scale, in-book search, bookmarks, and interactive map pan/zoom.",
     ],
   },
   character: {
@@ -49,7 +49,7 @@ export const routeHelp: Record<Route, { title: string; body: string; tips: strin
     tips: [
       "Tab and Shift+Tab step one control at a time; Enter activates the focused control.",
       "Escape dismisses an open dropdown, modal, or recording scope before closing the menu.",
-      "All components adapt automatically across all 16 built-in SkyUltra Classic, Celestial, and Neon themes (Dragonstone default).",
+      "All components adapt automatically across all 17 built-in Dark Mode, Classic, Celestial, and Neon themes (Dragonstone default), including motion tab transitions and Book Reader styling.",
     ],
   },
   widgets: {
@@ -71,20 +71,20 @@ export const routeHelp: Record<Route, { title: string; body: string; tips: strin
     ],
   },
   devtools: {
-    title: "Developer Studio, Mod Doctor & Migration Tools",
-    body: "Inspect live Ultralight/CEF surfaces, filter bridge traffic & permission denials, hot-reload mod packages, repair broken manifests, and audit legacy PrismaUI / MageLight ports.",
+    title: "Developer Studio, Live Controls & Modder Workbench",
+    body: "Inspect live Ultralight/CEF surfaces with Show/Hide/Focus/Probe controls, filter/clear/export bridge traffic, hot-reload mod packages, repair broken manifests, and build mods faster in Tab 5 Modder Workbench.",
     tips: [
-      "Views & Layers and Bridge & Errors stream active HUD/panel surfaces, VRAM footprints, input scope depths, latencies, and copyable manifest.json permission fixes.",
-      "Broken Mod Doctor deploys a live diagnostic sample inside Skyrim, surfaces manifest/asset faults, and repairs + hot-reloads it without restarting the game.",
-      "Runtime Coexistence & Legacy Migration Scanner verifies D3D11 layer/cursor rules alongside PrismaUI, MageLight, TrueHUD, Wheeler, and Scaleform menus.",
+      "Views & Layers lets you Show/Hide, Focus, Probe, Inspect DOM, Suspend/Resume/Unload, and Reload individual browser surfaces while viewing VRAM budgets and recovery telemetry.",
+      "Modder Workbench includes an interactive Bridge Playground with live latency measurement and TypeScript SDK / Vanilla JS / Papyrus snippet generators, a Visual manifest.json Builder & Validator, and an active --sky-* CSS Token Inspector.",
+      "Broken Mod Doctor and the Legacy Migration Scanner diagnose manifest/permission faults and scan PrismaUI / MageLight sources for fast porting.",
     ],
   },
   settings: {
-    title: "Profiles, Multi-Engine Runtime, All 8 In-Game Menu Replacements & VR",
-    body: "Switch SkyUltra's browser engine between CEF (Default) and Ultralight without affecting any other mod, configure all 8 Skyrim menu replacements (Inventory, Barter, Storage Containers, Corpse Looting, NPC Pickpocketing, Mannequins, Spellbook, Favorites), and customize 16 themes.",
+    title: "Profiles, Multi-Engine Runtime, All 9 SWF Carriers & UX Customization",
+    body: "Switch SkyUltra between Chromium CEF (Default) and Ultralight cleanly, configure all 9 Skyrim SWF menu & HUD carriers (Inventory, Barter, Containers, Loot, Pickpocket, Mannequins, Spellbook, Favorites, Compass), and customize 17 themes, Motion Tab Splash styles, Glass Intensity, UI Scale, and Book Reader designs.",
     tips: [
-      "Simultaneous Multi-Engine Runtime defaults to Chromium CEF and lets you switch SkyUltra between CEF and Ultralight (and set per-mod engine overrides) concurrently at peak GPU speed.",
-      "Configure independent toggles, layout modes (Half Container / Windowed / Full Screen), and world state (Live World / Pause World) for Inventory, Vendor Barter, Storage Containers, Corpse & Monster Looting, NPC Pickpocketing, Armor Mannequins, Spellbook, and Favorites.",
+      "Configure Tab Transition Splash (Full Motion, Subtle, or Off with 1-click Preview), Default Book Reader Design (Auto / Codex / Scroll / Grimoire / Dwemer / Scholar / Datapad), Theme Sync vs Parchment toggle, Glass Intensity, UI Scale (90%–115%), Show V/W, and Stolen Drop Protection.",
+      "Configure independent toggles, layout modes (Half Container / Windowed / Full Screen), and world state (Live World / Pause World) for all replaced Skyrim menus and HUD carriers.",
       "The Virtual Keyboard Hotkey (Shift + K default on Keyboard, LT + LeftThumb on Gamepad, LeftGrip + LeftStickClick in VR) toggles the full ESC / F1–F12 / Shift / Ctrl / Alt / Tab / Caps keyboard whether the SkyUltra menu is open or closed.",
     ],
   },
@@ -134,9 +134,9 @@ const guideSteps: Array<{ id: string; title: string; description: string; route:
   },
   {
     id: "settings",
-    title: "Per-Character Profiles, 16 Themes & Mod Hotkeys",
+    title: "Per-Character Profiles, 17 Themes & UX Preferences",
     description:
-      "Save per-character themes & layouts with global defaults in SkyUltra.settings.json, switch between 16 themes, and bind 1–3 input chords on Keyboard, Gamepad, and VR.",
+      "Save per-character themes, tab splash styles, Book Reader presets, glass intensity, UI scale, and 1–3 input hotkeys inside SkyUltra.settings.json.",
     route: "settings",
     badge: "MODULE 05 · SETTINGS",
   },
@@ -309,8 +309,8 @@ export default function GuidePage({
       </SkyFrame>
 
       <SkyFrame
-        title="In-Game Menu Replacements (8 SWFs) & Persistent Overwrite Cache"
-        eyebrow="LOOTING · PICKPOCKETING · CONTAINERS · MANNEQUINS · BARTER · SPELLBOOK · FAVORITES"
+        title="In-Game Menu & HUD Replacements (9 SWF Carriers) & Book Reader"
+        eyebrow="LOOTING · PICKPOCKETING · CONTAINERS · MANNEQUINS · BARTER · SPELLBOOK · FAVORITES · COMPASS"
         className="guide-starter-overview"
       >
         <div className="guide-pillars-grid">

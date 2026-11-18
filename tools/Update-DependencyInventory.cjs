@@ -1,7 +1,30 @@
 // Read declared dependencies and committed npm locks; never install or build.
 const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process');
 const root=path.resolve(__dirname,'..');
-const files=cp.execFileSync('rg',['--files','sdk','apps','samples','-g','package.json','-g','package-lock.json','-g','!**/node_modules/**','-g','!**/dist/**'],{cwd:root,encoding:'utf8'}).trim().split(/\r?\n/).map(file=>file.replaceAll('\\','/')).sort();
+function collectDependencyFiles(){
+ try{
+  return cp.execFileSync('rg',['--files','sdk','apps','samples','-g','package.json','-g','package-lock.json','-g','!**/node_modules/**','-g','!**/dist/**'],{cwd:root,encoding:'utf8'}).trim().split(/\r?\n/).filter(Boolean).map(file=>file.replaceAll('\\','/')).sort();
+ }catch{
+  const found=[];
+  const skipDirs=new Set(['node_modules','dist']);
+  const walk=(relDir)=>{
+   const absDir=path.join(root,relDir);
+   if(!fs.existsSync(absDir))return;
+   for(const entry of fs.readdirSync(absDir,{withFileTypes:true})){
+    const rel=path.posix.join(relDir.replace(/\\/g,'/'),entry.name);
+    if(entry.isDirectory()){
+     if(skipDirs.has(entry.name))continue;
+     walk(rel);
+    }else if(entry.isFile()&&(entry.name==='package.json'||entry.name==='package-lock.json')){
+     found.push(rel);
+    }
+   }
+  };
+  for(const dir of ['sdk','apps','samples'])walk(dir);
+  return found.sort();
+ }
+}
+const files=collectDependencyFiles();
 const declared=[],locked=new Map();
 for(const file of files){
  const json=JSON.parse(fs.readFileSync(path.join(root,file),'utf8'));

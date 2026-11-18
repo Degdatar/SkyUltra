@@ -97,11 +97,12 @@ const actionButtonLabels: Record<SkyUltraItemAction, string> = {
   charge: 'Charge',
   drop: 'Drop',
 };
-export function EquipmentSelection({ player, selected, enabled, bridge, obscured = false, onInspect, onChange, onItemAction, onToggleFavorite, transferLabel, onTransfer }: {
+export function EquipmentSelection({ player, selected, enabled, bridge, obscured = false, onInspect, onChange, onItemAction, onToggleFavorite, onRenameItem, transferLabel, onTransfer }: {
   player: Player | null; selected: Item | null; enabled: boolean; bridge?: SkyWebViewAPI; obscured?: boolean; onInspect?(): void;
   onChange(item: Item, slot: SkyUltraEquipmentSlot, unequip?: boolean): void;
   onItemAction?(item: Item, action: SkyUltraItemAction, count?: number): void;
   onToggleFavorite?(item: Item): void;
+  onRenameItem?(item: Item): void;
   transferLabel?: string;
   onTransfer?(item: Item): void;
 }): React.JSX.Element {
@@ -115,6 +116,11 @@ export function EquipmentSelection({ player, selected, enabled, bridge, obscured
   const hasDamage = typeof selected?.damage === 'number' && selected.damage > 0;
   const hasArmor = typeof selected?.armorRating === 'number' && selected.armorRating > 0;
   const typeDetail = selected?.armorTypeLabel || selected?.weaponType || selected?.category;
+  const primarySlot = selected?.equipSlots?.[0];
+  const equippedCounterpart = primarySlot && primarySlot !== 'auto' ? (player?.equipment?.[primarySlot] ?? null) : null;
+  const compareBase = equippedCounterpart && equippedCounterpart.id.split(':')[0] !== selected?.id.split(':')[0] ? equippedCounterpart : null;
+  const dmgDelta = hasDamage && compareBase && typeof compareBase.damage === 'number' ? Math.round(selected!.damage! - compareBase.damage) : null;
+  const armorDelta = hasArmor && compareBase && typeof compareBase.armorRating === 'number' ? Math.round(selected!.armorRating! - compareBase.armorRating) : null;
   return <div className={'equipment-selection' + (selected?.equipped ? ' is-equipped' : '') + (isEnchanted ? ' is-enchanted' : '')}>
     <div className="selection-art" aria-hidden="true">{selected ? <ItemThumbnail item={selected} bridge={bridge} paused={obscured} /> : <EquipmentGlyph slot="mainHand" />}{selected && isEnchanted && <span className="selection-art__enchant-badge" title={enchantTitle}><Icon name="flame" size={12} /></span>}</div>
     <div className="selection-copy">
@@ -138,8 +144,8 @@ export function EquipmentSelection({ player, selected, enabled, bridge, obscured
         </span>
         {selected && (
           <div className="selection-properties">
-            {hasDamage && <span><Icon name="target" size={11} /><strong>{Math.round(selected.damage!)}</strong><small>DMG</small></span>}
-            {hasArmor && <span><Icon name="shield" size={11} /><strong>{Math.round(selected.armorRating!)}</strong><small>{selected.armorWeightClass === 'heavy' ? 'HEAVY AR' : selected.armorWeightClass === 'light' ? 'LIGHT AR' : 'ARMOR'}</small></span>}
+            {hasDamage && <span><Icon name="target" size={11} /><strong>{Math.round(selected.damage!)}</strong><small>DMG{dmgDelta ? <em className={dmgDelta > 0 ? 'item-delta-pos' : 'item-delta-neg'}> ({dmgDelta > 0 ? '+' : ''}{dmgDelta})</em> : null}</small></span>}
+            {hasArmor && <span><Icon name="shield" size={11} /><strong>{Math.round(selected.armorRating!)}</strong><small>{selected.armorWeightClass === 'heavy' ? 'HEAVY AR' : selected.armorWeightClass === 'light' ? 'LIGHT AR' : 'ARMOR'}{armorDelta ? <em className={armorDelta > 0 ? 'item-delta-pos' : 'item-delta-neg'}> ({armorDelta > 0 ? '+' : ''}{armorDelta})</em> : null}</small></span>}
             <span><Icon name="gold" size={11} /><strong>{selected.value.toLocaleString()}</strong><small>VALUE</small></span>
             <span><strong>{selected.weight}</strong><small>WEIGHT</small></span>
             <span><strong>{selected.count.toLocaleString()}</strong><small>OWNED</small></span>
@@ -153,6 +159,10 @@ export function EquipmentSelection({ player, selected, enabled, bridge, obscured
           {selected?.speed ? ` · Speed ${selected.speed}` : ''}
           {selected?.enchantmentName ? ` · ${selected.enchantmentName}` : ''}
           {selected?.teachesSpell ? ` · Teaches ${selected.teachesSpell}` : ''}
+          {selected?.teachesSkill ? ` · +1 ${selected.teachesSkill}` : ''}
+          {selected?.temperTier ? ` · ${selected.temperTier}` : ''}
+          {selected?.soulSize ? ` · ${selected.soulSize} Soul` : ''}
+          {selected?.poisonName ? ` · Poison: ${selected.poisonName}` : ''}
         </span>
       </div>
       {selected && isEnchanted && (
@@ -215,6 +225,11 @@ export function EquipmentSelection({ player, selected, enabled, bridge, obscured
           onClick={() => onToggleFavorite(selected)}
         >
           <HeartIcon filled={!!selected.favorite} size={15} />
+        </button>
+      )}
+      {onRenameItem && (
+        <button type="button" className="control-button" disabled={!enabled} onClick={() => onRenameItem(selected)} title={`Rename ${selected.name}`}>
+          Rename
         </button>
       )}
       {onInspect && <button type="button" className="selection-inspect" disabled={obscured} onClick={onInspect}>Item studio <Icon name="arrow" size={12} /></button>}

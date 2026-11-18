@@ -153,6 +153,14 @@ export function ModelStage({ subject, bridge, obscured, equipment = false, initi
     } finally { if (!controller.signal.aborted) setAnimationAction(null); }
   };
   const reset = (): void => { camera.current = initialCamera(); requestUpdate.current(); };
+  const applyCameraPreset = (preset: 'bust' | 'threeQuarter' | 'full' | 'profile'): void => {
+    const base = initialCamera();
+    if (preset === 'bust') camera.current = { ...base, yaw: 0, pitch: 0.06, zoom: 1.55, panX: 0, panY: -0.14 };
+    else if (preset === 'threeQuarter') camera.current = { ...base, yaw: 0.48, pitch: 0.08, zoom: 1.12, panX: 0, panY: -0.02 };
+    else if (preset === 'profile') camera.current = { ...base, yaw: 1.42, pitch: 0.05, zoom: 1.15, panX: 0, panY: 0 };
+    else camera.current = { ...base };
+    requestUpdate.current();
+  };
   const save = async (): Promise<void> => {
     if (saving || capturing || !status.ready || obscured) return;
     const node = stageRef.current; if (!node) return;
@@ -215,6 +223,12 @@ export function ModelStage({ subject, bridge, obscured, equipment = false, initi
     <div className="studio-controls"><SkySegmentedControl label="Model drag action" value={dragMode} onValueChange={setDragMode} options={[{value:'rotate',label:'Rotate'},{value:'pan',label:'Move'}]} />{!isItem && !equipment && <SkyChoice label="Actor pose" value={pose} disabled={capturing} onValueChange={value => { setPose(value); setAnimationFrame(0); }} options={[{value:'current',label:'Current pose'}, ...animationClips.map(clip => ({value:'animation:' + clip.id,label:clip.preset ? clip.name : 'Animation: ' + clip.name}))]} />}<SkyChoice label="Preview lighting" value={lighting} onValueChange={setLighting} options={[{value:'studio',label:'Studio light'},{value:'soft',label:'Soft light'},{value:'dramatic',label:'Dramatic light'},{value:'warm',label:'Warm light'},{value:'cool',label:'Cool light'}]} /></div>
     {!isItem && !equipment && <ActorAnimationTimeline clip={selectedAnimation} frame={animationFrame} busy={capturing || saving} onFrameChange={value => { setAnimationFrame(value); animationFrameRef.current = value; requestUpdate.current(); }} />}
     <div className="studio-controls">{!isItem && <button className={"control-button" + (motion ? " is-active" : "")} onClick={() => setMotion(value => !value)} disabled={mode === "portrait" || pose !== 'current'}><Icon name={motion ? "pause" : "play"} size={14} />{mode === "portrait" ? "Still portrait" : pose !== 'current' ? 'Static pose' : motion ? "Live motion" : "Pose frozen"}</button>}<button className="control-button" onClick={reset}><Icon name="rotate" size={14} />Reset view</button><button className="control-button" onClick={() => { refreshRef.current = true; setRevision(value => value + 1); }}>Recapture</button>{onCapturePortrait && <button className="control-button" title={isItem ? "Save current view as item portrait in Overwrite cache" : "Update portrait and save to Overwrite cache"} disabled={!status.ready || saving || capturing || obscured} onClick={() => { void capturePortrait(); }}><Icon name="camera" size={14} />{isItem ? "Save as portrait" : "Update portrait"}</button>}{!isItem && !equipment && <><button className="control-button" disabled={!status.ready || saving || capturing || obscured} onClick={() => { void captureAnimations(true); }}>{animationAction === 'library' ? 'Loading poses…' : 'Load poses'}</button><button className="control-button" disabled={!status.ready || saving || capturing || obscured} onClick={() => { void captureAnimations(); }}>{animationAction === 'capture' ? 'Capturing…' : 'Capture animations'}</button></>}<button className="control-button" disabled={!status.ready || saving || capturing || obscured} onClick={() => { void save(); }}>{saving ? 'Saving…' : 'Save'}</button></div>
+    {!isItem && !equipment && <div className="studio-controls studio-camera-presets" role="group" aria-label="Camera angle presets">
+      <button type="button" className="control-button" onClick={() => applyCameraPreset('bust')}>Bust</button>
+      <button type="button" className="control-button" onClick={() => applyCameraPreset('threeQuarter')}>3/4 View</button>
+      <button type="button" className="control-button" onClick={() => applyCameraPreset('full')}>Full Body</button>
+      <button type="button" className="control-button" onClick={() => applyCameraPreset('profile')}>Profile</button>
+    </div>}
     </>}
     <p id={hintId} className="studio-gesture"><span>{dragMode === 'pan' ? 'DRAG TO MOVE' : 'DRAG TO ORBIT'}</span><i /><span>SHIFT + DRAG TO MOVE</span><i /><span>SCROLL TO ZOOM</span></p>
     {!isItem && animationMessage && <p className="studio-note" role="status">{animationMessage}</p>}

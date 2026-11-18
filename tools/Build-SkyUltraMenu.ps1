@@ -11,10 +11,12 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code ${LASTEXITCODE}: $Program $($Arguments -join ' ')" }
 }
 $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
+$env:BROWSERSLIST_IGNORE_OLD_DATA = '1'
+$env:BASELINE_BROWSER_MAPPING_IGNORE_OLD_DATA = 'true'
 foreach ($project in @('sdk\typescript', 'sdk\ui', 'apps\skyultra-menu')) {
     Push-Location (Join-Path $nativeRoot $project)
     try {
-        if (!$SkipDependencyInstall) { Invoke-Checked $npm @('install') }
+        if (!$SkipDependencyInstall) { Invoke-Checked $npm @('install', '--no-audit', '--no-fund') }
         Invoke-Checked $npm @('run', 'build')
     } finally { Pop-Location }
 }
@@ -39,6 +41,60 @@ if (!$SkipNative) {
     $scripts = Join-Path $nativeRoot 'build\package\Data\Scripts'
     New-Item -ItemType Directory -Path $scripts -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $pexOutput 'SkyUltraNative.pex') -Destination $scripts -Force
+}
+# Prune stale/unused CEF package clutter (old multi-config leftovers, README, PDBs -> Diagnostics/, and non-en-US locales)
+$cefPackageDir = Join-Path $nativeRoot 'build\package\Data\SKSE\Plugins\SkyUltra\CEF'
+if (Test-Path -LiteralPath $cefPackageDir) {
+    $expectedCefDir = [System.IO.Path]::GetFullPath($cefPackageDir)
+    $resolvedCefDir = (Resolve-Path -LiteralPath $cefPackageDir).Path
+    if (![string]::Equals($resolvedCefDir, $expectedCefDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to prune an unexpected CEF package path: $resolvedCefDir"
+    }
+    $checkedCef = Get-Item -LiteralPath $resolvedCefDir -Force
+    while ($null -ne $checkedCef -and ![string]::Equals($checkedCef.FullName, $nativeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($checkedCef.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            throw 'Refusing to prune CEF package files through a linked directory.'
+        }
+        $checkedCef = $checkedCef.Parent
+    }
+    if ($null -eq $checkedCef) {
+        throw 'CEF package directory is outside the source checkout.'
+    }
+    foreach ($staleDir in @('Resources', 'Release')) {
+        $targetDir = Join-Path $resolvedCefDir $staleDir
+        if (Test-Path -LiteralPath $targetDir) { Remove-Item -LiteralPath $targetDir -Recurse -Force }
+    }
+    $staleReadme = Join-Path $resolvedCefDir 'README.txt'
+    if (Test-Path -LiteralPath $staleReadme) { Remove-Item -LiteralPath $staleReadme -Force }
+    $stalePdb = Join-Path $resolvedCefDir 'SkyUltraCefSubprocess.pdb'
+    if (Test-Path -LiteralPath $stalePdb) {
+        $diagnosticsDir = Join-Path $nativeRoot 'build\package\Diagnostics'
+        New-Item -ItemType Directory -Path $diagnosticsDir -Force | Out-Null
+        Move-Item -LiteralPath $stalePdb -Destination (Join-Path $diagnosticsDir 'SkyUltraCefSubprocess.pdb') -Force
+    }
+    $cefLocalesDir = Join-Path $resolvedCefDir 'locales'
+    if (Test-Path -LiteralPath $cefLocalesDir) {
+        Get-ChildItem -LiteralPath $cefLocalesDir -Filter '*.pak' -File | Where-Object { $_.Name -ne 'en-US.pak' } | Remove-Item -Force
+    }
+}
+$legacyPluginFilesDir = Join-Path $nativeRoot 'build\package\Data\SKSE\Plugins\resources\SkyUltra\Files'
+if (Test-Path -LiteralPath $legacyPluginFilesDir) {
+    $expectedLegacyFiles = [System.IO.Path]::GetFullPath($legacyPluginFilesDir)
+    $resolvedLegacyFiles = (Resolve-Path -LiteralPath $legacyPluginFilesDir).Path
+    if (![string]::Equals($resolvedLegacyFiles, $expectedLegacyFiles, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove an unexpected legacy files path: $resolvedLegacyFiles"
+    }
+    $checkedLegacy = Get-Item -LiteralPath $resolvedLegacyFiles -Force
+    while ($null -ne $checkedLegacy -and ![string]::Equals($checkedLegacy.FullName, $nativeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($checkedLegacy.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            throw 'Refusing to remove legacy files through a linked directory.'
+        }
+        $checkedLegacy = $checkedLegacy.Parent
+    }
+    if ($null -eq $checkedLegacy) {
+        throw 'Legacy resources/SkyUltra/Files directory is outside the source checkout.'
+    }
+    Remove-Item -LiteralPath $resolvedLegacyFiles -Recurse -Force
 }
 $menuOutput = Join-Path $nativeRoot 'build\package\Data\SkyUltra\skyultra.menu'
 New-Item -ItemType Directory -Path $menuOutput -Force | Out-Null

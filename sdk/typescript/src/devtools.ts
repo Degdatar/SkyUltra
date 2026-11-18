@@ -6,6 +6,9 @@ export const skyUltraDevToolsMethods = [
   'ui.exportHudMod',
   'ui.manageDiagnosticSample',
   'ui.manageModRuntime',
+  'ui.clearBridgeLog',
+  'ui.setModViewState',
+  'ui.evalInView',
 ] as const;
 
 export type SkyUltraDevToolsMethod = (typeof skyUltraDevToolsMethods)[number];
@@ -67,7 +70,7 @@ export interface SkyUltraDeveloperBridgeEntry {
   timeMs: number;
   viewId: number;
   modId: string;
-  kind: 'request' | 'event' | 'cancel' | 'permission-denied' | 'error';
+  kind: 'request' | 'event' | 'cancel' | 'permission-denied' | 'error' | 'dev-probe';
   method: string;
   status: 'ok' | 'error' | 'denied' | 'pending';
   durationMs: number;
@@ -308,4 +311,102 @@ export async function manageSkyUltraDiagnosticSample(
     throw new Error(`Unknown diagnostic sample action '${String(action)}'.`);
   }
   return bridge.request<SkyUltraDiagnosticSampleResult>('ui.manageDiagnosticSample', { action }, options);
+}
+
+export interface SkyUltraClearBridgeLogResult {
+  cleared: boolean;
+  removed?: number;
+  remaining?: number;
+}
+
+export function clearSkyUltraBridgeLog(
+  modId?: string,
+  bridge: SkyWebViewAPI = getSkyWebView(),
+  options?: SkyUltraRequestOptions,
+): Promise<SkyUltraClearBridgeLogResult> {
+  const payload: Record<string, JsonValue> = {};
+  if (typeof modId === 'string' && modId.trim()) {
+    payload.modId = modId.trim();
+  }
+  return bridge.request<SkyUltraClearBridgeLogResult>('ui.clearBridgeLog', payload, options);
+}
+
+export interface SkyUltraModViewStateInput {
+  viewId: number;
+  visible?: boolean;
+  focused?: boolean;
+  reload?: boolean;
+}
+
+export interface SkyUltraModViewStateResult {
+  updated: boolean;
+  viewId?: number;
+  visible?: boolean;
+  focused?: boolean;
+  message?: string;
+}
+
+export function setSkyUltraModViewState(
+  input: SkyUltraModViewStateInput,
+  bridge: SkyWebViewAPI = getSkyWebView(),
+  options?: SkyUltraRequestOptions,
+): Promise<SkyUltraModViewStateResult> {
+  if (!input || !Number.isInteger(input.viewId) || input.viewId <= 0) {
+    throw new TypeError('A positive numeric viewId is required.');
+  }
+  const payload: Record<string, JsonValue> = { viewId: input.viewId };
+  if (typeof input.visible === 'boolean') payload.visible = input.visible;
+  if (typeof input.focused === 'boolean') payload.focused = input.focused;
+  if (typeof input.reload === 'boolean') payload.reload = input.reload;
+  return bridge.request<SkyUltraModViewStateResult>('ui.setModViewState', payload, options);
+}
+
+export interface SkyUltraViewProbeInput {
+  viewId?: number;
+  eventName?: string;
+  payload?: JsonValue;
+}
+
+export interface SkyUltraViewProbeResult {
+  accepted: boolean;
+  dispatched: boolean;
+  viewId?: number;
+  eventName?: string;
+  message?: string;
+}
+
+export function runSkyUltraViewProbe(
+  input: SkyUltraViewProbeInput,
+  bridge: SkyWebViewAPI = getSkyWebView(),
+  options?: SkyUltraRequestOptions,
+): Promise<SkyUltraViewProbeResult> {
+  const payload: Record<string, JsonValue> = {};
+  if (typeof input?.viewId === 'number' && Number.isInteger(input.viewId) && input.viewId > 0) {
+    payload.viewId = input.viewId;
+  }
+  if (typeof input?.eventName === 'string' && input.eventName.trim()) {
+    payload.eventName = input.eventName.trim().slice(0, 128);
+  }
+  if (input?.payload !== undefined) {
+    payload.payload = input.payload;
+  }
+  return bridge.request<SkyUltraViewProbeResult>('ui.evalInView', payload, options);
+}
+
+/** Generate ready-to-paste TypeScript SDK, Vanilla JS, or Papyrus snippets for a bridge call. */
+export function generateSkyUltraBridgeCallSnippet(
+  target: 'ts' | 'js' | 'papyrus',
+  method: string,
+  payload: JsonValue = {},
+): string {
+  const serialized = JSON.stringify(payload ?? {}, null, 2);
+  const compact = JSON.stringify(payload ?? {});
+  if (target === 'js') {
+    return `const result = await window.SkyWebView.request(${JSON.stringify(method)}, ${serialized});\nconsole.log(result);`;
+  }
+  if (target === 'papyrus') {
+    const escaped = compact.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return `Event OnSkyUltraRequest(Int viewHandle, String requestId, String methodName, String paramsJson)\n    If methodName == "${method}"\n        SkyUltraNative.CompletePageRequest(viewHandle, requestId, True, "${escaped}", "")\n    EndIf\nEndEvent`;
+  }
+  return `import { getSkyWebView } from '@skyultra/sdk';\n\nconst bridge = getSkyWebView();\nconst result = await bridge.request(${JSON.stringify(method)}, ${serialized});`;
 }

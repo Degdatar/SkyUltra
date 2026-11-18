@@ -47,6 +47,7 @@ import { useCadence, usePlayer } from "./useFieldData.js";
 
 import { focusMenuSearch, isMenuSearchKey, loadMenuPage, preloadMenuPage } from "./menuNavigation.js";
 import { leaveMenuPage } from "./previewLifecycle.js";
+import { TabSplash } from "./TabSplash.js";
 
 const RawActorsPage = lazy(() => loadMenuPage("actors"));
 const ActorsPage = React.memo(
@@ -70,6 +71,58 @@ const DevStudioPage = lazy(() => loadMenuPage("devtools"));
 const GuidePage = lazy(() => loadMenuPage("guide"));
 const FieldOverlays = lazy(() => import("./FieldOverlays.js"));
 const appModuleStartedAt = performance.now();
+const HOST_SETTINGS_CACHE_KEY = "skyultra.hostSettingsCache.v1";
+
+function readCachedHostSettings(): SkyUltraSettings {
+  try {
+    if (typeof window === "undefined") return defaultSkyUltraSettings;
+    const raw = window.localStorage.getItem(HOST_SETTINGS_CACHE_KEY);
+    if (!raw) return defaultSkyUltraSettings;
+    const parsed = JSON.parse(raw) as Partial<SkyUltraSettings>;
+    if (!parsed || typeof parsed !== "object") return defaultSkyUltraSettings;
+    return { ...defaultSkyUltraSettings, ...parsed };
+  } catch {
+    return defaultSkyUltraSettings;
+  }
+}
+
+function writeCachedHostSettings(settings: SkyUltraSettings): void {
+  try {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(HOST_SETTINGS_CACHE_KEY, JSON.stringify(settings));
+  } catch {
+    // Ignore storage quota or private-mode failures.
+  }
+}
+
+function SessionReadyBeacon({ epoch, bridge }: { epoch: number; bridge: ReturnType<typeof getSkyWebView> }): null {
+  useEffect(() => {
+    let cancelled = false;
+    let raf1 = 0;
+    let raf2 = 0;
+    let fallback = 0;
+    let signaled = false;
+    const done = (): void => {
+      if (cancelled || signaled) return;
+      signaled = true;
+      void markSkyUltraPageReady(bridge, epoch > 0 ? { epoch } : undefined).catch(() => undefined);
+    };
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(done);
+    });
+    if (epoch === 0) {
+      fallback = window.setTimeout(done, 60);
+    }
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+      if (fallback) window.clearTimeout(fallback);
+    };
+  }, [bridge, epoch]);
+  return null;
+}
+
 const navigation: Array<{ id: Route; title: string; note: string; icon: IconName }> = [
   { id: "overview", title: "Overview", note: "Dossier, vitals & armory", icon: "overview" },
   { id: "actors", title: "Actor observatory", note: "Portraits, 3D & dress-up", icon: "actors" },
@@ -108,17 +161,38 @@ export function App(): React.JSX.Element {
   });
   const [themeOpen, setThemeOpen] = useState(false);
   const [previewEngine, setPreviewEngine] = useState("CEF");
-  const [hostSettings, setHostSettings] = useState<SkyUltraSettings>(defaultSkyUltraSettings);
+  const [hostSettings, setHostSettings] = useState<SkyUltraSettings>(() => readCachedHostSettings());
   const [initialItemId, setInitialItemId] = useState("");
   const [initialCategory, setInitialCategory] = useState("all");
   const [inspectModRequest, setInspectModRequest] = useState<{ modId: string; nonce: number } | null>(null);
   const routeRef = useRef(route);
+  const sessionEpochRef = useRef(0);
+  const [sessionReadyEpoch, setSessionReadyEpoch] = useState(0);
+  const [sessionDormant, setSessionDormant] = useState(false);
+  const [closingStandalone, setClosingStandalone] = useState(false);
+  const [tabTransitionSplash, setTabTransitionSplash] = useState<string | null>(null);
+  const [splashPreviewOpen, setSplashPreviewOpen] = useState(false);
+  const tabTransitionTimerRef = useRef(0);
+  const tabTransitionPrefRef = useRef(uiPrefs.tabTransition);
+  const motionPrefRef = useRef(uiPrefs.motion);
+  tabTransitionPrefRef.current = uiPrefs.tabTransition;
+  motionPrefRef.current = uiPrefs.motion;
   const setRoute = useCallback((next: Route): void => {
     if (next === routeRef.current) return;
     leaveMenuPage();
     preloadMenuPage(next);
     routeRef.current = next;
     setRouteState(next);
+    window.clearTimeout(tabTransitionTimerRef.current);
+    if (tabTransitionPrefRef.current === "cinematic" && motionPrefRef.current !== "reduced") {
+      const targetTitle = navigation.find((item) => item.id === next)?.title ?? next;
+      setTabTransitionSplash(targetTitle);
+      tabTransitionTimerRef.current = window.setTimeout(() => {
+        setTabTransitionSplash(null);
+      }, 165);
+    } else {
+      setTabTransitionSplash(null);
+    }
   }, []);
   const [openingDataMs, setOpeningDataMs] = useState<number | null>(null);
   const playerAvailable = useRef(false);
@@ -325,10 +399,12 @@ export function App(): React.JSX.Element {
       profileState: profileStore as unknown as Record<string, unknown>,
     };
     setHostSettings(nextSettings);
+    writeCachedHostSettings(nextSettings);
     window.dispatchEvent(new CustomEvent("skyultra:settings-updated", { detail: nextSettings }));
     void updateSkyUltraSettings(nextSettings, bridge)
       .then((persisted) => {
         setHostSettings(persisted);
+        writeCachedHostSettings(persisted);
         window.dispatchEvent(new CustomEvent("skyultra:settings-updated", { detail: persisted }));
       })
       .catch(() => undefined);
@@ -389,8 +465,15 @@ export function App(): React.JSX.Element {
         setUiPrefs(detail);
       }
     };
+    const onPreviewSplash = (): void => {
+      setSplashPreviewOpen(true);
+    };
     window.addEventListener("skyultra:ui-prefs", onUiPrefs);
-    return () => window.removeEventListener("skyultra:ui-prefs", onUiPrefs);
+    window.addEventListener("skyultra:preview-tab-splash", onPreviewSplash);
+    return () => {
+      window.removeEventListener("skyultra:ui-prefs", onUiPrefs);
+      window.removeEventListener("skyultra:preview-tab-splash", onPreviewSplash);
+    };
   }, []);
 
   useEffect(() => {
@@ -401,6 +484,7 @@ export function App(): React.JSX.Element {
       .then((s) => {
         if (!active) return;
         setHostSettings(s);
+        writeCachedHostSettings(s);
         if (s.hotkey) setHotkey(s.hotkey);
         if (s.keyboardHotkey) setKeyboardHotkey(s.keyboardHotkey);
         if (s.menuEngine === "cef") setPreviewEngine("CEF");
@@ -422,7 +506,13 @@ export function App(): React.JSX.Element {
     };
     const onSettingsUpdated = (event: Event): void => {
       const detail = (event as CustomEvent<Partial<SkyUltraSettings>>).detail;
-      if (detail) setHostSettings((prev) => ({ ...prev, ...detail }));
+      if (detail) {
+        setHostSettings((prev) => {
+          const next = { ...prev, ...detail };
+          writeCachedHostSettings(next);
+          return next;
+        });
+      }
     };
     window.addEventListener("skyultra:hotkey-updated", onHotkeyUpdated);
     window.addEventListener("skyultra:keyboard-hotkey-updated", onKeyboardHotkeyUpdated);
@@ -566,10 +656,132 @@ export function App(): React.JSX.Element {
         setVirtualKeyboardStandalone(Boolean(ev?.standalone && nextOpen));
       },
     );
+    const offMenuSession = bridge.on<{
+      epoch?: number;
+      visible?: boolean;
+      virtualKeyboard?: boolean;
+      standalone?: boolean;
+      inventoryMode?: boolean;
+      barterMode?: boolean;
+      magicMode?: boolean;
+      favoritesMode?: boolean;
+      containerMode?: boolean;
+      mannequinMode?: boolean;
+      lootMode?: boolean;
+      pickpocketMode?: boolean;
+      menuDisplayMode?: string;
+      inventoryDisplayMode?: string;
+      barterDisplayMode?: string;
+      magicDisplayMode?: string;
+      favoritesDisplayMode?: string;
+      containerDisplayMode?: string;
+      mannequinDisplayMode?: string;
+      lootDisplayMode?: string;
+      pickpocketDisplayMode?: string;
+      menuPauseWorld?: boolean;
+      inventoryPauseWorld?: boolean;
+      barterPauseWorld?: boolean;
+      magicPauseWorld?: boolean;
+      favoritesPauseWorld?: boolean;
+      containerPauseWorld?: boolean;
+      mannequinPauseWorld?: boolean;
+      lootPauseWorld?: boolean;
+      pickpocketPauseWorld?: boolean;
+    }>("skyultra.menuSession", (ev) => {
+      if (typeof ev?.epoch === "number" && Number.isFinite(ev.epoch)) {
+        const nextEpoch = Math.trunc(ev.epoch);
+        sessionEpochRef.current = nextEpoch;
+        setSessionReadyEpoch(nextEpoch);
+      }
+      setClosingStandalone(false);
+      window.clearTimeout(tabTransitionTimerRef.current);
+      setTabTransitionSplash(null);
+      if (ev?.visible === false) {
+        leaveMenuPage();
+        setSessionDormant(true);
+        setStandaloneInventory(false);
+        setStandaloneBarter(false);
+        setStandaloneMagic(false);
+        setStandaloneFavorites(false);
+        setStandaloneContainer(false);
+        setStandaloneMannequin(false);
+        setStandaloneLoot(false);
+        setStandalonePickpocket(false);
+        setVirtualKeyboardOpen(false);
+        setVirtualKeyboardStandalone(false);
+        setOverlay(null);
+        setThemeOpen(false);
+        return;
+      }
+      setSessionDormant(false);
+      const modePatch: Partial<SkyUltraSettings> = {};
+      if (ev?.menuDisplayMode === "windowed" || ev?.menuDisplayMode === "fullscreen") modePatch.menuDisplayMode = ev.menuDisplayMode;
+      if (ev?.inventoryDisplayMode === "windowed" || ev?.inventoryDisplayMode === "fullscreen") modePatch.inventoryDisplayMode = ev.inventoryDisplayMode;
+      if (ev?.barterDisplayMode === "half" || ev?.barterDisplayMode === "full" || ev?.barterDisplayMode === "windowed") modePatch.barterDisplayMode = ev.barterDisplayMode;
+      if (ev?.magicDisplayMode === "half" || ev?.magicDisplayMode === "full" || ev?.magicDisplayMode === "windowed") modePatch.magicDisplayMode = ev.magicDisplayMode;
+      if (ev?.favoritesDisplayMode === "half" || ev?.favoritesDisplayMode === "full" || ev?.favoritesDisplayMode === "windowed") modePatch.favoritesDisplayMode = ev.favoritesDisplayMode;
+      if (ev?.containerDisplayMode === "half" || ev?.containerDisplayMode === "full" || ev?.containerDisplayMode === "windowed") modePatch.containerDisplayMode = ev.containerDisplayMode;
+      if (ev?.mannequinDisplayMode === "half" || ev?.mannequinDisplayMode === "full" || ev?.mannequinDisplayMode === "windowed") modePatch.mannequinDisplayMode = ev.mannequinDisplayMode;
+      if (ev?.lootDisplayMode === "half" || ev?.lootDisplayMode === "full" || ev?.lootDisplayMode === "windowed") modePatch.lootDisplayMode = ev.lootDisplayMode;
+      if (ev?.pickpocketDisplayMode === "half" || ev?.pickpocketDisplayMode === "full" || ev?.pickpocketDisplayMode === "windowed") modePatch.pickpocketDisplayMode = ev.pickpocketDisplayMode;
+      if (typeof ev?.menuPauseWorld === "boolean") modePatch.menuPauseWorld = ev.menuPauseWorld;
+      if (typeof ev?.inventoryPauseWorld === "boolean") modePatch.inventoryPauseWorld = ev.inventoryPauseWorld;
+      if (typeof ev?.barterPauseWorld === "boolean") modePatch.barterPauseWorld = ev.barterPauseWorld;
+      if (typeof ev?.magicPauseWorld === "boolean") modePatch.magicPauseWorld = ev.magicPauseWorld;
+      if (typeof ev?.favoritesPauseWorld === "boolean") modePatch.favoritesPauseWorld = ev.favoritesPauseWorld;
+      if (typeof ev?.containerPauseWorld === "boolean") modePatch.containerPauseWorld = ev.containerPauseWorld;
+      if (typeof ev?.mannequinPauseWorld === "boolean") modePatch.mannequinPauseWorld = ev.mannequinPauseWorld;
+      if (typeof ev?.lootPauseWorld === "boolean") modePatch.lootPauseWorld = ev.lootPauseWorld;
+      if (typeof ev?.pickpocketPauseWorld === "boolean") modePatch.pickpocketPauseWorld = ev.pickpocketPauseWorld;
+      if (Object.keys(modePatch).length > 0) {
+        setHostSettings((prev) => {
+          const next = { ...prev, ...modePatch };
+          writeCachedHostSettings(next);
+          return next;
+        });
+      }
+      const nextInventory = Boolean(ev?.inventoryMode);
+      const nextBarter = Boolean(ev?.barterMode);
+      const nextMagic = Boolean(ev?.magicMode);
+      const nextFavorites = Boolean(ev?.favoritesMode);
+      const nextContainer = Boolean(ev?.containerMode);
+      const nextMannequin = Boolean(ev?.mannequinMode);
+      const nextLoot = Boolean(ev?.lootMode);
+      const nextPickpocket = Boolean(ev?.pickpocketMode);
+      setStandaloneInventory(nextInventory);
+      setStandaloneBarter(nextBarter);
+      setStandaloneMagic(nextMagic);
+      setStandaloneFavorites(nextFavorites);
+      setStandaloneContainer(nextContainer);
+      setStandaloneMannequin(nextMannequin);
+      setStandaloneLoot(nextLoot);
+      setStandalonePickpocket(nextPickpocket);
+      setVirtualKeyboardOpen(Boolean(ev?.virtualKeyboard));
+      setVirtualKeyboardStandalone(Boolean(ev?.virtualKeyboard && ev?.standalone));
+      if (
+        nextInventory ||
+        nextBarter ||
+        nextMagic ||
+        nextFavorites ||
+        nextContainer ||
+        nextMannequin ||
+        nextLoot ||
+        nextPickpocket
+      ) {
+        setOverlay(null);
+        setThemeOpen(false);
+      }
+      if (nextInventory) {
+        preloadMenuPage("inventory");
+        routeRef.current = "inventory";
+        setRouteState("inventory");
+      }
+    });
     const offInventoryMode = bridge.on<{ active?: boolean }>(
       "skyultra.inventoryMode",
       (ev) => {
         const nextActive = Boolean(ev?.active);
+        setClosingStandalone(false);
         setStandaloneInventory(nextActive);
         if (nextActive) {
           setStandaloneBarter(false);
@@ -589,6 +801,7 @@ export function App(): React.JSX.Element {
       "skyultra.barterMode",
       (ev) => {
         const nextActive = Boolean(ev?.active);
+        setClosingStandalone(false);
         setStandaloneBarter(nextActive);
         if (nextActive) {
           setStandaloneInventory(false);
@@ -605,6 +818,7 @@ export function App(): React.JSX.Element {
     );
     const offMagicMode = bridge.on<{ active?: boolean }>("skyultra.magicMode", (ev) => {
       const nextActive = Boolean(ev?.active);
+      setClosingStandalone(false);
       setStandaloneMagic(nextActive);
       if (nextActive) {
         setStandaloneInventory(false);
@@ -620,6 +834,7 @@ export function App(): React.JSX.Element {
     });
     const offFavoritesMode = bridge.on<{ active?: boolean }>("skyultra.favoritesMode", (ev) => {
       const nextActive = Boolean(ev?.active);
+      setClosingStandalone(false);
       setStandaloneFavorites(nextActive);
       if (nextActive) {
         setStandaloneInventory(false);
@@ -635,6 +850,7 @@ export function App(): React.JSX.Element {
     });
     const offContainerMode = bridge.on<{ active?: boolean }>("skyultra.containerMode", (ev) => {
       const nextActive = Boolean(ev?.active);
+      setClosingStandalone(false);
       setStandaloneContainer(nextActive);
       if (nextActive) {
         setStandaloneInventory(false);
@@ -650,6 +866,7 @@ export function App(): React.JSX.Element {
     });
     const offMannequinMode = bridge.on<{ active?: boolean }>("skyultra.mannequinMode", (ev) => {
       const nextActive = Boolean(ev?.active);
+      setClosingStandalone(false);
       setStandaloneMannequin(nextActive);
       if (nextActive) {
         setStandaloneInventory(false);
@@ -665,6 +882,7 @@ export function App(): React.JSX.Element {
     });
     const offLootMode = bridge.on<{ active?: boolean }>("skyultra.lootMode", (ev) => {
       const nextActive = Boolean(ev?.active);
+      setClosingStandalone(false);
       setStandaloneLoot(nextActive);
       if (nextActive) {
         setStandaloneInventory(false);
@@ -680,6 +898,7 @@ export function App(): React.JSX.Element {
     });
     const offPickpocketMode = bridge.on<{ active?: boolean }>("skyultra.pickpocketMode", (ev) => {
       const nextActive = Boolean(ev?.active);
+      setClosingStandalone(false);
       setStandalonePickpocket(nextActive);
       if (nextActive) {
         setStandaloneInventory(false);
@@ -728,6 +947,7 @@ export function App(): React.JSX.Element {
       offSounds();
       offInputToken();
       offVirtualKeyboard();
+      offMenuSession();
       offInventoryMode();
       offBarterMode();
       offMagicMode();
@@ -845,23 +1065,24 @@ export function App(): React.JSX.Element {
     };
   }, [virtualCursor.enabled, virtualCursor.x, virtualCursor.y]);
   useEffect(() => {
-    let second = 0;
-    let signaled = false;
-    const done = (): void => {
-      if (signaled) return;
-      signaled = true;
-      void markSkyUltraPageReady(bridge).catch(() => undefined);
-    };
-    const first = requestAnimationFrame(() => {
-      second = requestAnimationFrame(done);
-    });
-    const fallback = window.setTimeout(done, 60);
     let cancelled = false;
-    // Keep the original replacement-menu working set. Other main-menu pages
-    // preload on navigation intent, without adding idle memory/CPU to every view.
+    // Warm up replacement menus and primary command modules staggered during idle frames
+    // so navigating between tabs avoids cold JS module stalls while staying non-blocking.
     const warmPages = isStandaloneOverlay || keyboardOnly ? [] : [
-      () => loadMenuPage("inventory"), () => import("./BarterPage.js"), () => import("./ContainerPage.js"),
-      () => import("./MannequinPage.js"), () => import("./MagicPage.js"), () => import("./FavoritesPage.js")];
+      () => loadMenuPage("inventory"),
+      () => import("./BarterPage.js"),
+      () => import("./ContainerPage.js"),
+      () => import("./MannequinPage.js"),
+      () => import("./MagicPage.js"),
+      () => import("./FavoritesPage.js"),
+      () => loadMenuPage("actors"),
+      () => loadMenuPage("character"),
+      () => loadMenuPage("settings"),
+      () => loadMenuPage("widgets"),
+      () => loadMenuPage("performance"),
+      () => loadMenuPage("devtools"),
+      () => loadMenuPage("guide"),
+    ];
     let warmIndex = 0;
     let warmTimer = 0;
     let warmIdle = 0;
@@ -871,23 +1092,18 @@ export function App(): React.JSX.Element {
         warmIdle = window.requestIdleCallback(deadline => {
           warmIdle = 0;
           if (deadline.timeRemaining() >= 8) warmNext();
-          else warmTimer = window.setTimeout(scheduleWarmup, 250);
+          else warmTimer = window.setTimeout(scheduleWarmup, 200);
         });
       } else warmNext();
     };
     const warmNext = (): void => {
       if (cancelled || warmIndex >= warmPages.length) return;
-      // Imports evaluate JS. Pace them instead of blocking first paint/input
-      // with six concurrent module evaluations on either browser engine.
       void warmPages[warmIndex++]().catch(() => undefined).finally(() => {
-        if (!cancelled) warmTimer = window.setTimeout(scheduleWarmup, 250);
+        if (!cancelled) warmTimer = window.setTimeout(scheduleWarmup, 200);
       });
     };
     warmTimer = window.setTimeout(scheduleWarmup, 500);
     return () => {
-      cancelAnimationFrame(first);
-      cancelAnimationFrame(second);
-      window.clearTimeout(fallback);
       cancelled = true;
       window.clearTimeout(warmTimer);
       if (warmIdle) window.cancelIdleCallback(warmIdle);
@@ -895,38 +1111,21 @@ export function App(): React.JSX.Element {
   }, [bridge]);
 
   useEffect(() => {
-    let raf1 = 0;
-    let raf2 = 0;
-    const signalReady = (): void => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-      raf1 = requestAnimationFrame(() => {
-        raf2 = requestAnimationFrame(() => {
-          void markSkyUltraPageReady(bridge).catch(() => undefined);
-        });
-      });
-    };
-    signalReady();
     const offVis = bridge.on<{ visible: boolean }>("skyultra.visibility", (ev) => {
-      if (ev?.visible) signalReady();
+      if (ev?.visible) {
+        setClosingStandalone(false);
+        setSessionDormant(false);
+      } else if (ev?.visible === false) {
+        leaveMenuPage();
+        setClosingStandalone(false);
+        setTabTransitionSplash(null);
+        setSessionDormant(true);
+      }
     });
     return () => {
       offVis();
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
     };
-  }, [
-    bridge,
-    standaloneInventory,
-    standaloneBarter,
-    standaloneMagic,
-    standaloneFavorites,
-    standaloneContainer,
-    standaloneMannequin,
-    standaloneLoot,
-    standalonePickpocket,
-    keyboardOnly,
-  ]);
+  }, [bridge]);
 
   useEffect(() => {
     if (!themeOpen) return;
@@ -956,6 +1155,14 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     pageScroll.current?.scrollTo({ top: 0 });
   }, [route]);
+
+  const closeStandaloneSession = (): void => {
+    // Keep a transparent curtain active while C++ hides the view so Main Menu never flashes underneath.
+    setClosingStandalone(true);
+    void closeSkyUltraPage(bridge).catch(() => {
+      setClosingStandalone(false);
+    });
+  };
 
   useEffect(() => {
     const keyboard = (event: KeyboardEvent): void => {
@@ -993,15 +1200,7 @@ export function App(): React.JSX.Element {
         return;
       if (isStandaloneOverlay && event.key === "Tab") {
         event.preventDefault();
-        setStandaloneInventory(false);
-        setStandaloneBarter(false);
-        setStandaloneMagic(false);
-        setStandaloneFavorites(false);
-        setStandaloneContainer(false);
-        setStandaloneMannequin(false);
-        setStandaloneLoot(false);
-        setStandalonePickpocket(false);
-        void closeSkyUltraPage(bridge).catch(() => undefined);
+        closeStandaloneSession();
         return;
       }
       const index = Number(event.key) - 1;
@@ -1060,9 +1259,20 @@ export function App(): React.JSX.Element {
   const activeRouteIndex = Math.max(0, navigation.findIndex((item) => item.id === route));
   const activeRouteItem = navigation[activeRouteIndex] ?? navigation[0];
   const glowFactor = Math.max(0, Math.min(1.5, (uiPrefs.neonGlow ?? 100) / 100));
+  const scaleFactor = Math.max(0.85, Math.min(1.25, uiPrefs.uiScale ?? 1));
   const atlasStyle = {
     "--sky-user-glow": glowFactor.toFixed(2),
+    "--sky-ui-scale": scaleFactor.toFixed(2),
+    ...(scaleFactor !== 1 ? { zoom: scaleFactor } : {}),
   } as React.CSSProperties;
+
+  const pageObscured =
+    sessionDormant ||
+    closingStandalone ||
+    themeOpen ||
+    overlay !== null ||
+    splashPreviewOpen ||
+    Boolean(tabTransitionSplash);
 
   return (
     <SkyCursorScope
@@ -1076,6 +1286,7 @@ export function App(): React.JSX.Element {
         data-theme-family={currentPalette.family}
         data-ui-density={uiPrefs.density}
         data-ui-motion={uiPrefs.motion}
+        data-glass-intensity={uiPrefs.glassIntensity}
         data-ui-grid={uiPrefs.backdropGrid ? "on" : "off"}
         data-ui-scanlines={uiPrefs.scanlines ? "on" : "off"}
         data-display-mode={activeDisplayMode}
@@ -1104,10 +1315,16 @@ export function App(): React.JSX.Element {
           (standaloneMagic ? ` atlas--standalone-magic atlas--magic-${magicDisplayMode}` : "") +
           (standaloneFavorites ? ` atlas--standalone-favorites atlas--favorites-${favoritesDisplayMode}` : "") +
           (activeDisplayMode === "windowed" ? " atlas--windowed" : "") +
-          (keyboardOnly ? " atlas--keyboard-only" : "")
+          (keyboardOnly ? " atlas--keyboard-only" : "") +
+          (sessionDormant || closingStandalone ? " atlas--dormant" : "")
         }
       >
-        {!keyboardOnly && (<>
+        {closingStandalone || sessionDormant ? (
+          <>
+            <div className="sky-standalone-closing-curtain" aria-hidden="true" />
+            <SessionReadyBeacon epoch={sessionReadyEpoch} bridge={bridge} />
+          </>
+        ) : !keyboardOnly && (<>
         {!isStandaloneOverlay && (
           <SkyNavigationRail
             className="app-rail"
@@ -1495,7 +1712,7 @@ export function App(): React.JSX.Element {
                           <span className="overview-armory-card__bezel" aria-hidden="true">
                             <span className="overview-armory-card__art">
                               {item ? (
-                                <ItemThumbnail item={item} bridge={bridge} paused={themeOpen || overlay !== null} />
+                                <ItemThumbnail item={item} bridge={bridge} paused={pageObscured} />
                               ) : (
                                 <EquipmentGlyph slot={slot.id} />
                               )}
@@ -1598,7 +1815,7 @@ export function App(): React.JSX.Element {
                         onClick={() => inspectInventory(item.id, item.category)}
                       >
                         <span className="overview-pack-item__art" aria-hidden="true">
-                          <ItemThumbnail item={item} bridge={bridge} paused={themeOpen || overlay !== null} />
+                          <ItemThumbnail item={item} bridge={bridge} paused={pageObscured} />
                         </span>
                         <span className="overview-pack-item__copy">
                           <strong>{item.name}</strong>
@@ -1623,113 +1840,108 @@ export function App(): React.JSX.Element {
             </section>
           </div>
         </div>}
-        <Suspense fallback={<div className="page"><section className="surface"><Empty title="Opening SkyUltra Interface" detail="Preparing this section…" /></section></div>}>
+        <Suspense
+          fallback={
+            <TabSplash
+              tabOverlay
+              title={isStandaloneOverlay ? "Opening Skyrim Interface" : activeRouteItem.title}
+              subtitle={isStandaloneOverlay ? "Synchronizing live container & inventory state" : `Initializing ${activeRouteItem.note.toLowerCase()}`}
+              stageLabel="LOADING MODULE"
+              theme={theme}
+              mode={uiPrefs.tabTransition}
+              reducedMotion={uiPrefs.motion === "reduced"}
+            />
+          }
+        >
+          <SessionReadyBeacon epoch={sessionReadyEpoch} bridge={bridge} />
           {standaloneMagic ? (
             <MagicPage
               player={player}
               bridge={bridge}
-              obscured={themeOpen || overlay !== null}
+              obscured={pageObscured}
               displayMode={magicDisplayMode}
               pauseWorld={magicPauseWorld}
               onChangeDisplayMode={(nextMode) => updateHostSettingsPatch({ magicDisplayMode: nextMode })}
               onTogglePauseWorld={() => updateHostSettingsPatch({ magicPauseWorld: !magicPauseWorld })}
-              onClose={() => {
-                setStandaloneMagic(false);
-                void closeSkyUltraPage(bridge).catch(() => undefined);
-              }}
+              onClose={closeStandaloneSession}
             />
           ) : standaloneFavorites ? (
             <FavoritesPage
               player={player}
               bridge={bridge}
-              obscured={themeOpen || overlay !== null}
+              obscured={pageObscured}
               displayMode={favoritesDisplayMode}
               pauseWorld={favoritesPauseWorld}
               onChangeDisplayMode={(nextMode) => updateHostSettingsPatch({ favoritesDisplayMode: nextMode })}
               onTogglePauseWorld={() => updateHostSettingsPatch({ favoritesPauseWorld: !favoritesPauseWorld })}
-              onClose={() => {
-                setStandaloneFavorites(false);
-                void closeSkyUltraPage(bridge).catch(() => undefined);
-              }}
+              onClose={closeStandaloneSession}
             />
           ) : standaloneContainer ? (
             <ContainerPage
+              key="container"
               player={player}
               bridge={bridge}
-              obscured={themeOpen || overlay !== null}
+              obscured={pageObscured}
               variant="container"
               displayMode={containerDisplayMode}
               pauseWorld={containerPauseWorld}
               onChangeDisplayMode={(nextMode) => updateHostSettingsPatch({ containerDisplayMode: nextMode })}
               onTogglePauseWorld={() => updateHostSettingsPatch({ containerPauseWorld: !containerPauseWorld })}
-              onClose={() => {
-                setStandaloneContainer(false);
-                void closeSkyUltraPage(bridge).catch(() => undefined);
-              }}
+              onClose={closeStandaloneSession}
             />
           ) : standaloneLoot ? (
             <ContainerPage
+              key="loot"
               player={player}
               bridge={bridge}
-              obscured={themeOpen || overlay !== null}
+              obscured={pageObscured}
               variant="loot"
               displayMode={lootDisplayMode}
               pauseWorld={lootPauseWorld}
               onChangeDisplayMode={(nextMode) => updateHostSettingsPatch({ lootDisplayMode: nextMode })}
               onTogglePauseWorld={() => updateHostSettingsPatch({ lootPauseWorld: !lootPauseWorld })}
-              onClose={() => {
-                setStandaloneLoot(false);
-                void closeSkyUltraPage(bridge).catch(() => undefined);
-              }}
+              onClose={closeStandaloneSession}
             />
           ) : standalonePickpocket ? (
             <ContainerPage
+              key="pickpocket"
               player={player}
               bridge={bridge}
-              obscured={themeOpen || overlay !== null}
+              obscured={pageObscured}
               variant="pickpocket"
               displayMode={pickpocketDisplayMode}
               pauseWorld={pickpocketPauseWorld}
               onChangeDisplayMode={(nextMode) => updateHostSettingsPatch({ pickpocketDisplayMode: nextMode })}
               onTogglePauseWorld={() => updateHostSettingsPatch({ pickpocketPauseWorld: !pickpocketPauseWorld })}
-              onClose={() => {
-                setStandalonePickpocket(false);
-                void closeSkyUltraPage(bridge).catch(() => undefined);
-              }}
+              onClose={closeStandaloneSession}
             />
           ) : standaloneMannequin ? (
             <MannequinPage
               player={player}
               bridge={bridge}
-              obscured={themeOpen || overlay !== null}
+              obscured={pageObscured}
               displayMode={mannequinDisplayMode}
               pauseWorld={mannequinPauseWorld}
               onChangeDisplayMode={(nextMode) => updateHostSettingsPatch({ mannequinDisplayMode: nextMode })}
               onTogglePauseWorld={() => updateHostSettingsPatch({ mannequinPauseWorld: !mannequinPauseWorld })}
-              onClose={() => {
-                setStandaloneMannequin(false);
-                void closeSkyUltraPage(bridge).catch(() => undefined);
-              }}
+              onClose={closeStandaloneSession}
             />
           ) : standaloneBarter ? (
             <BarterPage
               player={player}
               bridge={bridge}
-              obscured={themeOpen || overlay !== null}
+              obscured={pageObscured}
               displayMode={barterDisplayMode}
               pauseWorld={barterPauseWorld}
               onChangeDisplayMode={(nextMode) => updateHostSettingsPatch({ barterDisplayMode: nextMode })}
               onTogglePauseWorld={() => updateHostSettingsPatch({ barterPauseWorld: !barterPauseWorld })}
-              onClose={() => {
-                setStandaloneBarter(false);
-                void closeSkyUltraPage(bridge).catch(() => undefined);
-              }}
+              onClose={closeStandaloneSession}
             />
           ) : standaloneInventory ? (
             <InventoryPage
               player={player}
               bridge={bridge}
-              obscured={themeOpen || overlay !== null}
+              obscured={pageObscured}
               standalone
               displayMode={inventoryDisplayMode}
               pauseWorld={inventoryPauseWorld}
@@ -1739,19 +1951,16 @@ export function App(): React.JSX.Element {
                 })
               }
               onTogglePauseWorld={() => updateHostSettingsPatch({ inventoryPauseWorld: !inventoryPauseWorld })}
-              onClose={() => {
-                setStandaloneInventory(false);
-                void closeSkyUltraPage(bridge).catch(() => undefined);
-              }}
+              onClose={closeStandaloneSession}
             />
           ) : (
             <>
-              {route === "actors" && <ActorsPage player={player} bridge={bridge} obscured={themeOpen || overlay !== null} />}
+              {route === "actors" && <ActorsPage player={player} bridge={bridge} obscured={pageObscured} />}
               {route === "inventory" && (
                 <InventoryPage
                   player={player}
                   bridge={bridge}
-                  obscured={themeOpen || overlay !== null}
+                  obscured={pageObscured}
                   initialCategory={initialCategory}
                   initialId={initialItemId}
                   displayMode={menuDisplayMode}
@@ -1773,6 +1982,17 @@ export function App(): React.JSX.Element {
             </>
           )}
         </Suspense>
+        {tabTransitionSplash && !isStandaloneOverlay && uiPrefs.tabTransition === "cinematic" && uiPrefs.motion !== "reduced" && (
+          <TabSplash
+            tabOverlay
+            title={tabTransitionSplash}
+            subtitle="Streaming GPU view surface & Skyrim bridge data"
+            stageLabel="SWITCHING MODULE"
+            theme={theme}
+            mode={uiPrefs.tabTransition}
+            reducedMotion={false}
+          />
+        )}
       </main>
       <footer className="app-footer">
         <span className="app-footer__brand">
@@ -1844,6 +2064,7 @@ export function App(): React.JSX.Element {
       </footer>
     </div>
     </>)}
+    {keyboardOnly && <SessionReadyBeacon epoch={sessionReadyEpoch} bridge={bridge} />}
     {virtualCursor.enabled && (
       <div
         className="sky-virtual-cursor"
@@ -2160,5 +2381,17 @@ export function App(): React.JSX.Element {
       </div>
     )}
     {overlay && <Suspense fallback={null}><FieldOverlays mode={overlay} route={route} onDismiss={() => setOverlay(null)} onNavigate={navigate} /></Suspense>}
+    {splashPreviewOpen && (
+      <TabSplash
+        preview
+        title={activeRouteItem.title}
+        subtitle="Theme-synchronized transition crest & loading bar preview"
+        stageLabel="SPLASH PREVIEW"
+        theme={theme}
+        mode={uiPrefs.tabTransition}
+        reducedMotion={uiPrefs.motion === "reduced"}
+        onDismiss={() => setSplashPreviewOpen(false)}
+      />
+    )}
   </SkyThemeScope></SkyCursorScope>);
 }

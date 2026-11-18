@@ -32,6 +32,40 @@ type ActorLineage =
   | "draconic";
 
 type DragState = { item: Item; pointer: number; x: number; y: number; active: boolean };
+type ActorFilter = "all" | "followers" | "unique" | "essential" | "combat" | "pinned";
+type ActorSort = "distance" | "name" | "level" | "health";
+
+const PINNED_ACTORS_KEY = "skyultra.pinnedActors.v1";
+
+function readPinnedActors(): string[] {
+  try {
+    const raw = typeof window !== "undefined" ? window.localStorage?.getItem(PINNED_ACTORS_KEY) : null;
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePinnedActors(ids: string[]): void {
+  try {
+    if (typeof window !== "undefined") {
+      window.localStorage?.setItem(PINNED_ACTORS_KEY, JSON.stringify(ids));
+    }
+  } catch {
+    // Ignore storage errors inside headless or restricted views
+  }
+}
+
+function relationshipLabel(rank?: number): string {
+  if (rank === undefined || !Number.isFinite(rank) || rank === 0) return "";
+  if (rank >= 4) return "LOVER";
+  if (rank === 3) return "ALLY";
+  if (rank === 2) return "CONFIDANT";
+  if (rank === 1) return "FRIEND";
+  return "RIVAL";
+}
 
 const wardrobePageSize = 24;
 
@@ -70,6 +104,28 @@ function hashSeed(value: string): number {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+const SHORT_WARDROBE_SLOT: Record<string, string> = {
+  mainHand: "MAIN",
+  offHand: "OFF",
+  head: "HEAD",
+  body: "BODY",
+  hands: "HANDS",
+  feet: "FEET",
+  neck: "NECK",
+  ring: "RING",
+  ammo: "AMMO",
+  cape: "CAPE",
+  lantern: "LAMP",
+  auto: "GEAR",
+};
+
+function formatCompactGold(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 100_000) return `${Math.round(value / 1_000)}K`;
+  return value.toLocaleString();
 }
 
 function ActorFaceSvg({ actor }: { actor: Npc }): React.JSX.Element {
@@ -363,6 +419,10 @@ export default function ActorsPage({
   const [layout, setLayout] = useState<"grid" | "list">("grid");
   const [radius, setRadius] = useState(6000);
   const [query, setQuery] = useState("");
+  const [actorFilter, setActorFilter] = useState<ActorFilter>("all");
+  const [actorSort, setActorSort] = useState<ActorSort>("distance");
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => readPinnedActors());
+  const [resettingPortrait, setResettingPortrait] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [poseDrawer, setPoseDrawer] = useState(false);
 
@@ -397,12 +457,57 @@ export default function ActorsPage({
 
   const data = useActors(bridge, "actors", radius, mode, query);
   const followerCount = data.actors.filter((actor) => actor.follower).length;
-  const rows = (mode === "search" ? data.results : data.actors.filter((actor) => mode !== "followers" || actor.follower)).filter(
-    (actor) =>
-      mode === "search" ||
-      !query.trim() ||
-      (actor.name + " " + actorRaceName(actor) + " " + actor.sex).toLowerCase().includes(query.trim().toLowerCase()),
-  );
+  const togglePinnedActor = (key: string): void => {
+    if (!key) return;
+    setPinnedIds((prev) => {
+      const next = prev.includes(key) ? prev.filter((id) => id !== key) : [key, ...prev];
+      writePinnedActors(next);
+      return next;
+    });
+  };
+  const copyActorId = (label: string, value: string): void => {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        void navigator.clipboard.writeText(value);
+      }
+      setEquipMessage(`Copied ${label}: ${value}`);
+    } catch {
+      setEquipMessage(`${label}: ${value}`);
+    }
+  };
+  const rows = useMemo(() => {
+    const base = (mode === "search" ? data.results : data.actors.filter((actor) => mode !== "followers" || actor.follower)).filter(
+      (actor) =>
+        mode === "search" ||
+        !query.trim() ||
+        (actor.name + " " + actorRaceName(actor) + " " + actor.sex).toLowerCase().includes(query.trim().toLowerCase()),
+    );
+    const filtered = base.filter((actor) => {
+      const key = actor.referenceId ?? actor.baseFormId;
+      if (actorFilter === "followers") return Boolean(actor.follower);
+      if (actorFilter === "unique") return Boolean(actor.isUnique);
+      if (actorFilter === "essential") return Boolean(actor.isEssential);
+      if (actorFilter === "combat") return actor.combatState === "combat" || actor.combatState === "searching";
+      if (actorFilter === "pinned") return pinnedIds.includes(key);
+      return true;
+    });
+    if (actorSort === "distance" && !filtered.some((actor) => actor.distance !== undefined) && pinnedIds.length === 0) {
+      return filtered;
+    }
+    return [...filtered].sort((a, b) => {
+      const keyA = a.referenceId ?? a.baseFormId;
+      const keyB = b.referenceId ?? b.baseFormId;
+      const pinDelta = (pinnedIds.includes(keyB) ? 1 : 0) - (pinnedIds.includes(keyA) ? 1 : 0);
+      if (pinDelta !== 0) return pinDelta;
+      if (actorSort === "distance") {
+        if (a.distance === undefined && b.distance === undefined) return 0;
+        return (a.distance ?? Number.MAX_SAFE_INTEGER) - (b.distance ?? Number.MAX_SAFE_INTEGER);
+      }
+      if (actorSort === "name") return a.name.localeCompare(b.name);
+      if (actorSort === "level") return (b.level ?? 0) - (a.level ?? 0);
+      return (b.health ?? 0) - (a.health ?? 0);
+    });
+  }, [mode, data.results, data.actors, query, actorFilter, actorSort, pinnedIds]);
   const selected = rows.find((actor) => (actor.referenceId ?? actor.baseFormId) === selectedId) ?? rows[0] ?? null;
   const selectedKey = selected ? selected.referenceId ?? selected.baseFormId : "";
   const totalCount = mode === "search" ? data.searchCount : mode === "followers" ? followerCount : data.count;
@@ -823,10 +928,55 @@ export default function ActorsPage({
               </div>
             )}
 
+            <div className="smart-filter-chips actors-filter-bar" role="group" aria-label="Filter and sort actors">
+              {(
+                [
+                  { id: "all", label: "All" },
+                  { id: "followers", label: "Followers" },
+                  { id: "unique", label: "Unique" },
+                  { id: "essential", label: "Essential" },
+                  { id: "combat", label: "In Combat" },
+                  { id: "pinned", label: `Pinned (${pinnedIds.length})` },
+                ] as const
+              ).map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  className={"smart-chip" + (actorFilter === chip.id ? " is-active" : "")}
+                  aria-pressed={actorFilter === chip.id}
+                  onClick={() => setActorFilter(chip.id)}
+                >
+                  {chip.label}
+                </button>
+              ))}
+              <span className="actors-sort-group">
+                {(
+                  [
+                    { id: "distance", label: "Dist" },
+                    { id: "name", label: "Name" },
+                    { id: "level", label: "Lvl" },
+                    { id: "health", label: "HP" },
+                  ] as const
+                ).map((sortOpt) => (
+                  <button
+                    key={sortOpt.id}
+                    type="button"
+                    className={"smart-chip" + (actorSort === sortOpt.id ? " is-active" : "")}
+                    aria-pressed={actorSort === sortOpt.id}
+                    onClick={() => setActorSort(sortOpt.id)}
+                  >
+                    {sortOpt.label}
+                  </button>
+                ))}
+              </span>
+            </div>
+
             <div className={"actor-roster actor-roster--" + layout}>
               {rows.length ? (
                 rows.map((actor) => {
                   const active = actor === selected;
+                  const actorRowKey = actor.referenceId ?? actor.baseFormId;
+                  const rowPinned = pinnedIds.includes(actorRowKey);
                   const lineage = classifyLineage(actor);
                   const raceLabel = actorRaceName(actor);
                   const distanceText =
@@ -841,11 +991,12 @@ export default function ActorsPage({
                         layout +
                         (active ? " is-active" : "") +
                         (actor.follower ? " is-follower" : "") +
-                        (actor.dead ? " is-dead" : "")
+                        (actor.dead ? " is-dead" : "") +
+                        (rowPinned ? " is-pinned" : "")
                       }
                       data-lineage={lineage}
-                      key={actor.referenceId ?? actor.baseFormId}
-                      onClick={() => setSelectedId(actor.referenceId ?? actor.baseFormId)}
+                      key={actorRowKey}
+                      onClick={() => setSelectedId(actorRowKey)}
                     >
                       <div className="actor-row__art">
                         <ActorPortrait
@@ -855,9 +1006,11 @@ export default function ActorsPage({
                           refreshToken={active ? revision : 0}
                         />
                         {layout === "grid" && (
-                          <>
+                          <div>
                             <div className="actor-card__top">
-                              {actor.follower ? (
+                              {rowPinned ? (
+                                <span className="actor-badge">PINNED</span>
+                              ) : actor.follower ? (
                                 <span className="actor-badge actor-badge--follower">FOLLOWER</span>
                               ) : actor.dead ? (
                                 <span className="actor-badge actor-badge--dead">DECEASED</span>
@@ -869,7 +1022,7 @@ export default function ActorsPage({
                               )}
                             </div>
                             <span className="actor-card__distance">{distanceText}</span>
-                          </>
+                          </div>
                         )}
                       </div>
                       <span className="actor-row__body">
@@ -881,7 +1034,9 @@ export default function ActorsPage({
                       </span>
                       {layout === "list" && (
                         <span className="actor-row__end">
-                          {actor.follower ? (
+                          {rowPinned ? (
+                            <b className="follower-label">PINNED</b>
+                          ) : actor.follower ? (
                             <b className="follower-label">FOLLOWER</b>
                           ) : actor.dead ? (
                             <b className="dead-label">DECEASED</b>
@@ -1040,16 +1195,16 @@ export default function ActorsPage({
                       <span className="item-tile__top">
                         <small>
                           {wornByActor ? (
-                            <>
+                            <span className="wardrobe-worn-tag">
                               <Icon name="check" size={9} />
                               WORN
-                            </>
+                            </span>
                           ) : (
-                            slotTag
+                            SHORT_WARDROBE_SLOT[slotTag] ?? slotTag
                           )}
                         </small>
-                        <span>
-                          {item.value.toLocaleString()}
+                        <span title={`${item.value.toLocaleString()} gold`}>
+                          {formatCompactGold(item.value)}
                           <Icon name="gold" size={9} />
                         </span>
                       </span>
@@ -1122,6 +1277,18 @@ export default function ActorsPage({
                   <span className="eyebrow">{selected.referenceId ? "CHARACTER STUDIO & EQUIPMENT" : "NPC BASE RECORD"}</span>
                   {selected.follower && <span className="actor-status-pill actor-status-pill--follower">FOLLOWER</span>}
                   {selected.dead && <span className="actor-status-pill actor-status-pill--dead">DECEASED</span>}
+                  {selected.isEssential && <span className="actor-status-pill">ESSENTIAL</span>}
+                  {selected.isUnique && <span className="actor-status-pill">UNIQUE</span>}
+                  {selected.combatState === "combat" && (
+                    <span className="actor-status-pill actor-status-pill--dead">IN COMBAT</span>
+                  )}
+                  {selected.combatState === "searching" && <span className="actor-status-pill">ALERT</span>}
+                  {selected.className && <span className="actor-status-pill">{selected.className.toUpperCase()}</span>}
+                  {relationshipLabel(selected.relationshipRank) && (
+                    <span className="actor-status-pill actor-status-pill--follower">
+                      {relationshipLabel(selected.relationshipRank)}
+                    </span>
+                  )}
                 </div>
                 <h2 title={selected.name}>{selected.name}</h2>
                 <p>
@@ -1129,16 +1296,57 @@ export default function ActorsPage({
                   <span>·</span>
                   {selected.sex}
                   {selected.distance !== undefined && (
-                    <>
-                      <span>·</span>
+                    <span>
+                      <span> · </span>
                       {Math.round(selected.distance).toLocaleString()} u away
-                    </>
+                    </span>
                   )}
                   <span>·</span>
                   {occupiedCount} / {equipmentSlots.length} slots equipped
                 </p>
               </div>
               <div className="actor-studio-head-tools">
+                <button
+                  type="button"
+                  className={"control-button" + (pinnedIds.includes(selectedKey) ? " is-active" : "")}
+                  aria-pressed={pinnedIds.includes(selectedKey)}
+                  onClick={() => togglePinnedActor(selectedKey)}
+                >
+                  <Icon name="pin" size={13} />
+                  {pinnedIds.includes(selectedKey) ? "Pinned" : "Pin"}
+                </button>
+                <button
+                  type="button"
+                  className="control-button"
+                  disabled={resettingPortrait || obscured}
+                  title="Clear custom portrait override and regenerate default actor portrait"
+                  onClick={() => {
+                    if (resettingPortrait || obscured) return;
+                    setResettingPortrait(true);
+                    const portraitKey = (selected.referenceId ?? "") + ":" + (selected.baseFormId ?? "");
+                    actorThumbnailQueue(bridge).clear(portraitKey);
+                    void game
+                      .actorThumbnail({
+                        ...(selected.referenceId ? { referenceId: selected.referenceId } : {}),
+                        ...(selected.baseFormId ? { baseFormId: selected.baseFormId } : {}),
+                        clearOverride: true,
+                      })
+                      .then((res) => {
+                        if (res.available && res.dataUrl) {
+                          actorThumbnailQueue(bridge).set(portraitKey, res.dataUrl);
+                        }
+                        setRevision((v) => v + 1);
+                        setEquipMessage(`Reset ${selected.name}'s portrait to default.`);
+                      })
+                      .catch((error) => {
+                        setEquipMessage(error instanceof Error ? error.message : "Could not reset actor portrait.");
+                      })
+                      .finally(() => setResettingPortrait(false));
+                  }}
+                >
+                  <Icon name="rotate" size={13} />
+                  {resettingPortrait ? "Resetting…" : "Reset portrait"}
+                </button>
                 <button
                   type="button"
                   className={"control-button actor-pose-toggle" + (poseDrawer ? " is-active" : "")}
@@ -1156,25 +1364,68 @@ export default function ActorsPage({
             </div>
 
             <div className="outfit-vitals actor-outfit-vitals" aria-label="Actor vital signs">
-              <div className="outfit-vital outfit-vital--health" role="meter" aria-label="Health">
-                <span>
-                  Vitality / Health
+              <div className="actor-trivitals">
+                <div className="actor-vital-bar" role="meter" aria-label="Health">
+                  <span>HEALTH</span>
+                  <div className="actor-vital-track">
+                    <div
+                      className="actor-vital-fill is-health"
+                      style={{
+                        width:
+                          (selected.health !== undefined
+                            ? Math.max(0, Math.min(100, (selected.health / Math.max(1, selected.healthMax ?? 1)) * 100))
+                            : 100) + "%",
+                      }}
+                    />
+                  </div>
                   <b>
                     {selected.health !== undefined
                       ? `${Math.round(selected.health).toLocaleString()} / ${Math.round(selected.healthMax ?? selected.health).toLocaleString()}`
                       : "Base Record"}
                   </b>
-                </span>
-                <div>
-                  <i
-                    style={{
-                      width:
-                        (selected.health !== undefined
-                          ? Math.max(0, Math.min(100, (selected.health / Math.max(1, selected.healthMax ?? 1)) * 100))
-                          : 100) + "%",
-                    }}
-                  />
                 </div>
+                {selected.magicka !== undefined && (
+                  <div className="actor-vital-bar" role="meter" aria-label="Magicka">
+                    <span>MAGICKA</span>
+                    <div className="actor-vital-track">
+                      <div
+                        className="actor-vital-fill is-magicka"
+                        style={{
+                          width:
+                            Math.max(
+                              0,
+                              Math.min(100, (selected.magicka.current / Math.max(1, selected.magicka.max || 1)) * 100),
+                            ) + "%",
+                        }}
+                      />
+                    </div>
+                    <b>
+                      {Math.round(selected.magicka.current).toLocaleString()} /{" "}
+                      {Math.round(selected.magicka.max).toLocaleString()}
+                    </b>
+                  </div>
+                )}
+                {selected.stamina !== undefined && (
+                  <div className="actor-vital-bar" role="meter" aria-label="Stamina">
+                    <span>STAMINA</span>
+                    <div className="actor-vital-track">
+                      <div
+                        className="actor-vital-fill is-stamina"
+                        style={{
+                          width:
+                            Math.max(
+                              0,
+                              Math.min(100, (selected.stamina.current / Math.max(1, selected.stamina.max || 1)) * 100),
+                            ) + "%",
+                        }}
+                      />
+                    </div>
+                    <b>
+                      {Math.round(selected.stamina.current).toLocaleString()} /{" "}
+                      {Math.round(selected.stamina.max).toLocaleString()}
+                    </b>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1214,13 +1465,30 @@ export default function ActorsPage({
               </span>
               <span>
                 <Icon name="actors" size={17} />
-                <small>BASE FORM</small>
-                <strong>{formId(selected.baseFormId)}</strong>
+                <small>BASE FORM (COPY)</small>
+                <button
+                  type="button"
+                  style={{ background: "none", border: 0, padding: 0, textAlign: "left", color: "inherit", cursor: "pointer" }}
+                  title="Copy Base FormID"
+                  onClick={() => copyActorId("Base FormID", formId(selected.baseFormId))}
+                >
+                  <strong>{formId(selected.baseFormId)}</strong>
+                </button>
               </span>
               <span>
                 <Icon name="rune" size={17} />
-                <small>REFERENCE ID</small>
-                <strong>{selected.referenceId ? formId(selected.referenceId) : "BASE RECORD"}</strong>
+                <small>REFERENCE ID (COPY)</small>
+                <button
+                  type="button"
+                  style={{ background: "none", border: 0, padding: 0, textAlign: "left", color: "inherit", cursor: "pointer" }}
+                  disabled={!selected.referenceId}
+                  title={selected.referenceId ? "Copy Reference ID" : "Base record only"}
+                  onClick={() => {
+                    if (selected.referenceId) copyActorId("Reference ID", formId(selected.referenceId));
+                  }}
+                >
+                  <strong>{selected.referenceId ? formId(selected.referenceId) : "BASE RECORD"}</strong>
+                </button>
               </span>
             </div>
           </section>

@@ -81,10 +81,12 @@ unless needed. A manifest declares content and permissions; it does not itself
 start a quest or auto-open a mod. Custom request methods still need a Papyrus or
 native handler. Renderer/game/UI methods above are handled by the framework.
 
-Call `markSkyUltraPageReady()` after your first committed UI frame; the host can
-keep a loading cover until then. Mods without that method release the global
+Call `markSkyUltraPageReady(bridge, { epoch })` (or `markSkyUltraPageReady()`) after your first committed UI frame; the host can
+keep a loading cover until then and uses session `epoch` matching to prevent stale frames from overlapping across menu switches. Mods without that method release the global
 until-ready splash screen when they produce a drawable frame. Pinned HUDs do not replay
 the splash screen. A mod never needs to bundle its own copy of SkyUltraSplash.mp4.
+
+Developer Studio also exposes privileged runtime & workbench helpers via `@skyultra/sdk`: `clearSkyUltraBridgeLog`, `setSkyUltraModViewState`, `runSkyUltraViewProbe`, and `generateSkyUltraBridgeCallSnippet`.
 
 ## Actor renderer in TypeScript, Vue, Svelte or vanilla DOM
 

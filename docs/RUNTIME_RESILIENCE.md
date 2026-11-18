@@ -53,6 +53,10 @@ The CEF subprocess observes WebGL context-loss notifications without cancelling 
 
 SkyUltra no longer overrides Chromium's renderer/background-window scheduling with blanket background-priority switches. Hidden views still use `WasHidden`, and explicit Suspend unloads pages so their scripts stop too. CEF's **120 FPS maximum**, normal lower per-view caps, and Ultralight pacing remain unchanged. These changes need in-game profiling; source checks alone do not establish a performance improvement.
 
+## Compact CEF runtime layout
+
+Packaged releases trim the CEF runtime under `SKSE/Plugins/SkyUltra/CEF/` to **16 runtime files** by keeping only `locales/en-US.pak` (aligned with `settings.locale = "en-US"`) and staging `SkyUltraCefSubprocess.pdb` separately under `Diagnostics/`. Keeping `SkyUltraCefSubprocess.pdb` alongside release artifacts outside the player's `Data/` mod tree lets developers symbolicate crash dumps without shipping extra locales or PDB bloat inside normal gameplay installs.
+
 ## Optional local CEF crash dumps
 
 CEF/Crashpad reads `crash_reporter.cfg` beside the **game executable**, not SkyUltra's settings JSON or the plugin DLL. Because that location is shared with other integrations, crash reporting is an explicit optional setup. SkyUltra does not silently overwrite another application's configuration. `SkyUltra.ini` remains retired.

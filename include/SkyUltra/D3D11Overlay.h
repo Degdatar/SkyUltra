@@ -45,11 +45,12 @@ void SetOverlayViews(std::vector<OverlayView> views) noexcept;
 void SetOverlayRuntime(IWebRuntime* runtime) noexcept;
 void SetOverlayVisible(bool visible) noexcept;
 // Opt-in page readiness keeps the GPU logo visible until ui.pageReady arrives.
-void BeginOverlayPageLoad(ViewId view);
+void BeginOverlayPageLoad(ViewId view, std::uint64_t min_paint_sequence = 0);
 [[nodiscard]] bool OverlayPageAwaitingReady(ViewId view);
 [[nodiscard]] bool OverlayViewHasPainted(ViewId view);
-void CompleteOverlayPageLoad(ViewId view);
+void CompleteOverlayPageLoad(ViewId view, std::uint64_t current_paint_sequence = UINT64_MAX);
 void CancelOverlayPageLoad(ViewId view);
+void ClearOverlayViewCachedFrames(ViewId view, std::string_view config_id = {}) noexcept;
 void CancelOverlaySplash(std::string_view view_key);
 // Starts host work on the game task queue after its pending logo was drawn.
 void RunAfterOverlaySplash(std::string view_key, std::function<void()> task);

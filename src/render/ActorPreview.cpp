@@ -176,6 +176,9 @@ struct PacketBuffers {
     ComPtr<ID3D11Buffer> skin;
     UINT vertex_capacity{}, index_capacity{}, dynamic_capacity{}, skin_capacity{};
     bool valid{};
+    ID3D11Device* validated_device{};
+    bool validated_geometry{};
+    std::array<bool, TextureCount> validated_textures{};
 };
 
 // Immutable copies for item redraws. Keep these independently of a target's
@@ -2248,6 +2251,9 @@ public:
             for (std::size_t index = 0; index < work.scene->packets.size(); ++index) {
                 const auto& packet = work.scene->packets[index];
                 auto& cached = frame.packet_buffers[index];
+                cached.validated_device = nullptr;
+                cached.validated_geometry = false;
+                cached.validated_textures.fill(false);
                 cached.valid = true;
                 if (packet.vertices == nullptr) cached.valid = UpdateBuffer(context, packet.vertex_bytes.data(),
                     packet.vertex_bytes.size(), D3D11_BIND_VERTEX_BUFFER, cached.vertices, cached.vertex_capacity);
@@ -2316,7 +2322,22 @@ public:
             if (!cached.valid) continue;
             auto vb = !private_meshes && packet.vertices != nullptr ? packet.vertices : cached.vertices;
             auto ib = !private_meshes && packet.indices != nullptr ? packet.indices : cached.indices;
-            if (!vb || !ib || !ResourceOnDevice(vb.Get()) || !ResourceOnDevice(ib.Get())) continue;
+            if (!vb || !ib) continue;
+            if (!private_meshes) {
+                auto& mutable_cached = frame.packet_buffers[index];
+                if (mutable_cached.validated_device != device_.Get()) {
+                    mutable_cached.validated_device = device_.Get();
+                    mutable_cached.validated_geometry = ResourceOnDevice(vb.Get()) && ResourceOnDevice(ib.Get());
+                    const auto& source_textures = packet.textures;
+                    for (std::size_t slot = 0; slot < TextureCount; ++slot) {
+                        mutable_cached.validated_textures[slot] =
+                            (packet.has_uv || slot == Environment) &&
+                            source_textures[slot] != nullptr &&
+                            ResourceOnDevice(source_textures[slot].Get());
+                    }
+                }
+                if (!mutable_cached.validated_geometry) continue;
+            }
             auto dynamic = cached.dynamic;
             const auto variant = static_cast<unsigned>(packet.skinned) | (packet.has_uv ? 2U : 0U) | (packet.has_normal ? 4U : 0U) | (packet.has_colors ? 8U : 0U);
             auto layout = InputLayout(packet, variant, dynamic != nullptr);
@@ -2336,7 +2357,10 @@ public:
             for (std::size_t slot=0;slot<TextureCount;++slot) {
                 // Item redraws must never revisit views from the game's model.
                 // Only the private snapshot's views reach device checks/binds.
-                if (ResourceOnDevice(source_textures[slot].Get()) && (packet.has_uv || slot == Environment))
+                const bool slot_ok = private_meshes
+                    ? ((packet.has_uv || slot == Environment) && source_textures[slot] != nullptr)
+                    : frame.packet_buffers[index].validated_textures[slot];
+                if (slot_ok)
                     textures[slot]=source_textures[slot].Get();
                 if (textures[slot]==nullptr) data.material.features[1] &= ~(1U << slot);
             }
@@ -2945,6 +2969,19 @@ ActorPreviewStatus GetActorPreviewStatus(ViewId owner)
     return {false,false,0,0,0,"No actor preview is attached to this view."};
 }
 
+void HideActorPreviewImmediate(ViewId owner) noexcept {
+    std::shared_ptr<RenderedFrame> discarded_frame;
+    {
+        const std::scoped_lock lock(g_mutex);
+        if (const auto it = g_previews.find(owner); it != g_previews.end()) {
+            it->second.request.visible = false;
+            it->second.compositor_visible = false;
+            discarded_frame = std::move(it->second.frame);
+            it->second.status.ready = false;
+        }
+    }
+}
+
 void RemoveActorPreview(ViewId owner) noexcept {
     PreviewState removed;
     {
@@ -3255,7 +3292,7 @@ void RenderActorPreviews(void* raw_device, void* raw_context, std::span<const Vi
                     for (const auto& packet : item.scene->packets) {
                         if ((packet.material.features[0]&(HairTint|FaceRgbTint))==0) continue;
                         const auto& tint=packet.material.tint;
-                        SKSE::log::info("SkyUltra actor tint: flags {:08X}, RGB {:.4f}/{:.4f}/{:.4f}, texture mask {:03X}, sRGB mask {:03X}.",
+                        SKSE::log::debug("SkyUltra actor tint: flags {:08X}, RGB {:.4f}/{:.4f}/{:.4f}, texture mask {:03X}, sRGB mask {:03X}.",
                             packet.material.features[0],tint.x,tint.y,tint.z,packet.material.features[1],packet.material.features[2]);
                     }
                 }

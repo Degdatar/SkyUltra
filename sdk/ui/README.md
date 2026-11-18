@@ -23,9 +23,9 @@ Confirm the target item's model/materials in game; source checks do not establis
 visual correctness for every modded item.
 
 `@skyultra/ui` is the reusable React component set for SkyUltra web mods. It
-ships eleven palettes (the original Frost, Dragonstone, and Arcane remain
-available), buttons and icon buttons, cards and panels, HUD stats, sidebar
-navigation, inventory grids, equipment slots, game-style item tooltips,
+ships **17 built-in themes** across four families (**Dark Mode**, **Classic**, **Celestial**, and **Neon** — with Frost, Dragonstone, and Arcane remaining
+default classics), buttons and icon buttons, cards and panels, HUD stats, sidebar
+navigation, inventory grids, equipment slots, game-style item tooltips, a theme-reactive 7-design Book Reader (`Auto`, `Codex`, `Scroll`, `Grimoire`, `Dwemer`, `Scholar`, `Datapad`), a motion logo `TabSplash` indicator,
 notices and dismissible toasts, form controls, controller prompts, and
 accessible Radix dialogs, tabs, dropdowns, context menus, and tooltips. It also
 exports Lucide React icons and an entrance-animation component. `SkyProgress`
@@ -89,8 +89,7 @@ export function ModPage() {
 }
 ```
 
-Available themes are `frost`, `dragonstone`, `arcane`, `aurora`, `ember`,
-`glacier`, `verdant`, `aether`, `dwemer`, `sunspire`, and `obsidian`. Components expose
+Available themes across 4 families are `darkmode` (Dark Mode), `obsidian`, `dragonstone`, `dwemer`, `sunspire`, `ember`, `verdant` (Classic), `aurora`, `glacier`, `frost`, `aether`, `arcane` (Celestial), and `cyberneon`, `synthwave`, `venomneon`, `plasmaneon`, `crimsonneon` (Neon). Components expose
 normal React props and `className` for customization. Icon-only buttons require
 an accessible `label`; Radix dialogs should include `SkyDialogTitle` and, when
 useful, `SkyDialogDescription` for accessible naming and context.
@@ -243,9 +242,8 @@ texture; there is no mousemove React state or per-frame bridge request.
 All paths below are relative to Skyrim's **Data** directory:
 
 - `SKSE/Plugins/SkyUltra.dll`: framework plugin.
-- `SKSE/Plugins/resources/SkyUltra/Files/SkyUltraSplash.mp4`: original splash screen
-  and soundtrack, shared by CEF and Ultralight.
-- `SkyUltra/skyultra.menu/`: complete built-in menu, manifest and Files tree.
+- `SKSE/Plugins/resources/SkyUltra/Ultralight/`: Ultralight ICU and TLS certificate data (`icudt67l.dat`, `cacert.pem`).
+- `SkyUltra/skyultra.menu/`: complete built-in menu, manifest and `Files/` tree (including `SkyUltraSplash.mp4`, logos, `SkyUltraBridge.js` and bundled assets).
 - `SkyUltra/[Mod Name]/manifest.json`: a custom mod's manifest.
 - `SkyUltra/[Mod Name]/index.html` and `SkyUltra/[Mod Name]/Files/`: its entry
   and local web assets (or the equivalent entry named by its manifest).

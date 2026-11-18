@@ -15,7 +15,6 @@ import {
   Search,
   Settings2,
   Shield,
-  Sparkles,
   Star,
   Swords,
   Weight,
@@ -524,9 +523,9 @@ export function App(): React.JSX.Element {
           <label className="command-search"><Search size={17} /><input ref={commandInputRef} value={commandQuery} onChange={(event) => setCommandQuery(event.currentTarget.value)} placeholder="Search sections, items, themes..." aria-label="Search quick actions" /><kbd>CTRL K</kbd></label>
           <div className="command-results" role="group" aria-label="Quick navigation results">
             {matchingPages.length > 0 && <div className="command-group"><small>SECTIONS</small>{matchingPages.map((item) => <button key={`page-${item.value}`} type="button" className="command-row" onClick={() => runCommand(() => setPage(item.value))}><span className="command-row-icon">{item.icon}</span><span><strong>{item.label}</strong><small>Open archive section</small></span><kbd>{archivePages.indexOf(item) + 1}</kbd></button>)}</div>}
-            {matchingItems.length > 0 && <div className="command-group"><small>ITEMS</small>{matchingItems.map((item) => <button key={`item-${item.id}`} type="button" className="command-row" onClick={() => runCommand(() => { setSelectedId(item.id); setCategory("all"); setFavoriteOnly(false); setQuery(""); setPage("armory"); })}><span className="command-row-icon">{item.category === "weapons" ? <Swords /> : item.category === "apparel" ? <Shield /> : <Sparkles />}</span><span><strong>{item.name}</strong><small>{item.rarity} · {item.kind}</small></span><span className="command-result-arrow">↗</span></button>)}</div>}
+            {matchingItems.length > 0 && <div className="command-group"><small>ITEMS</small>{matchingItems.map((item) => <button key={`item-${item.id}`} type="button" className="command-row" onClick={() => runCommand(() => { setSelectedId(item.id); setCategory("all"); setFavoriteOnly(false); setQuery(""); setPage("armory"); })}><span className="command-row-icon">{item.category === "weapons" ? <Swords /> : item.category === "apparel" ? <Shield /> : <Backpack />}</span><span><strong>{item.name}</strong><small>{item.rarity} · {item.kind}</small></span><span className="command-result-arrow">↗</span></button>)}</div>}
             {matchingThemes.length > 0 && <div className="command-group"><small>PALETTES</small>{matchingThemes.map((item) => <button key={`theme-${item.value}`} type="button" className="command-row" onClick={() => runCommand(() => setPalette(item.value))}><span className="command-swatch" style={{ background: item.swatch }} /><span><strong>{item.label}</strong><small>Change archive colors</small></span><span className="command-result-arrow">↗</span></button>)}</div>}
-            {!hasCommandResults && <div className="command-empty"><Sparkles size={18} /><strong>No matching records</strong><span>Try a section, item, or palette name.</span></div>}
+            {!hasCommandResults && <div className="command-empty"><Search size={18} /><strong>No matching records</strong><span>Try a section, item, or palette name.</span></div>}
           </div>
           <div className="command-footer"><span><kbd>CTRL</kbd> + <kbd>K</kbd> TO OPEN</span><span>LOCAL ARCHIVE SEARCH</span></div>
         </SkyDialogContent>
@@ -550,7 +549,7 @@ export function App(): React.JSX.Element {
               <div><small>WEIGHT CHANGE</small><strong>{formatSigned(selectedItem.weight - compareItem.weight, 1)} WT</strong></div>
               <div><small>VALUE CHANGE</small><strong>{formatSigned(selectedItem.value - compareItem.value)} G</strong></div>
             </section>
-          </> : <div className="compare-empty"><Sparkles /><strong>No matching reference</strong><span>Choose another item to compare its category.</span></div>}
+          </> : <div className="compare-empty"><Shield /><strong>No matching reference</strong><span>Choose another item to compare its category.</span></div>}
           <div className="compare-footer">
             <small>PREVIEW ONLY · DOES NOT CHANGE SKYRIM</small>
             {compareItem && <button type="button" className="compare-stage" onClick={() => { if (!equippedIds.has(selectedItem.id)) toggleEquipped(selectedItem.id); setCompareOpen(false); }}>
@@ -596,7 +595,7 @@ export function App(): React.JSX.Element {
       </SkyDialogRoot>
 
       {eventToast && <aside key={eventToast.id} className="event-toast" role="status" aria-live="polite">
-        <span className="toast-rune"><Sparkles size={17} /></span>
+        <span className="toast-rune"><Compass size={17} /></span>
         <div className="toast-copy"><small>FIELD UPDATE · JUST NOW</small><strong>{eventToast.title}</strong><p>{eventToast.detail}</p></div>
         <button className="toast-open" type="button" onClick={() => { setPage(eventToast.page); setEventToast(null); }}>OPEN</button>
         <button className="toast-dismiss" type="button" aria-label="Dismiss field update" onClick={() => setEventToast(null)}><X size={14} /></button>
@@ -647,7 +646,7 @@ export function App(): React.JSX.Element {
 
         <section className="vitals-grid" aria-label="Current expedition status">
           <MetricCard icon={<Heart />} label="HEALTH" value={`${companion.health} / ${companion.healthMax}`} detail={healthPercent >= 75 ? "READY FOR THE ROAD" : healthPercent >= 35 ? "TAKE CARE OUT THERE" : "NEEDS ATTENTION"} percent={healthPercent} tone="coral" />
-          <MetricCard icon={<Sparkles />} label="STAMINA" value={`${companion.stamina} / ${companion.staminaMax}`} detail="COMPANION VITALS" percent={percentage(companion.stamina, companion.staminaMax)} tone="lime" />
+          <MetricCard icon={<Shield />} label="STAMINA" value={`${companion.stamina} / ${companion.staminaMax}`} detail="COMPANION VITALS" percent={percentage(companion.stamina, companion.staminaMax)} tone="lime" />
           <MetricCard icon={<Compass />} label="MAGICKA" value={`${companion.magicka} / ${companion.magickaMax}`} detail="COMPANION VITALS" percent={percentage(companion.magicka, companion.magickaMax)} tone="violet" />
           <MetricCard icon={<Weight />} label="PACK LOAD" value="142 / 300" detail={`${itemCount} OBJECTS · 47% CAPACITY`} percent={47} tone="gold" />
         </section>
@@ -684,7 +683,7 @@ export function App(): React.JSX.Element {
                   onSelect={() => setSelectedId(item.id)}
                   onFavorite={() => toggleFavorite(item.id)}
                 />
-              )) : <div className="empty-result"><Sparkles /><strong>No relics found</strong><span>Clear your search or change the active filters.</span><button type="button" onClick={() => { setQuery(""); setFavoriteOnly(false); setCategory("all"); }}>RESET FILTERS</button></div>}
+              )) : <div className="empty-result"><Search /><strong>No relics found</strong><span>Clear your search or change the active filters.</span><button type="button" onClick={() => { setQuery(""); setFavoriteOnly(false); setCategory("all"); }}>RESET FILTERS</button></div>}
             </div>
           </section>
 
@@ -711,7 +710,7 @@ export function App(): React.JSX.Element {
               <div className="mini-heading"><span>QUICK KIT</span><span>{equippedItems.length} STAGED</span></div>
               <GearRow icon={<Swords />} slot="WEAPON" item={equippedWeapon?.name ?? "No weapon slotted"} color="coral" filled={Boolean(equippedWeapon)} onClick={() => setSlotPicker("weapons")} />
               <GearRow icon={<Shield />} slot="ARMOR" item={equippedArmor?.name ?? "No armor slotted"} color="cyan" filled={Boolean(equippedArmor)} onClick={() => setSlotPicker("apparel")} />
-              <GearRow icon={<Sparkles />} slot="SUPPLY" item={equippedSupply?.name ?? "No supply slotted"} color="violet" filled={Boolean(equippedSupply)} onClick={() => setSlotPicker("alchemy")} />
+              <GearRow icon={<Backpack />} slot="SUPPLY" item={equippedSupply?.name ?? "No supply slotted"} color="violet" filled={Boolean(equippedSupply)} onClick={() => setSlotPicker("alchemy")} />
             </section>
 
             <section className="loadout-shelf" aria-label="Saved loadouts">
@@ -763,7 +762,7 @@ export function App(): React.JSX.Element {
         {page === "chronicle" && <ChroniclePage key={page} liveEvents={liveChronicles} setPage={setPage} selectItem={(id) => { setSelectedId(id); setPage("armory"); }} />}
         {page === "wayfinder" && <WayfinderPage key={page} location={mapLocation} trackedQuestId={trackedQuestId} questProgress={questProgress} onSelect={selectMapLocation} onTrackQuest={setTrackedQuestId} onToggleObjective={toggleQuestObjective} />}
 
-        <footer className="archive-footer"><span><span className="footer-seal">✦</span> SKYULTRA <i /> FIELD ARCHIVE <i /> {(runtime.browserEngine ?? "unknown").toUpperCase()}</span><span><kbd>1–4</kbd> SECTIONS <b>·</b> <kbd>/</kbd> SEARCH <b>·</b> LOCAL PREVIEW DATA</span></footer>
+        <footer className="archive-footer"><span><span className="footer-seal">◆</span> SKYULTRA <i /> FIELD ARCHIVE <i /> {(runtime.browserEngine ?? "unknown").toUpperCase()}</span><span><kbd>1–4</kbd> SECTIONS <b>·</b> <kbd>/</kbd> SEARCH <b>·</b> LOCAL PREVIEW DATA</span></footer>
       </main>
     </SkyThemeProvider>
   );
@@ -803,7 +802,7 @@ function PartyPage({ companion, portraitUrl, portraitCredit, eventsReady, onNavi
           <div className="party-vitals-heading"><div><span className="section-eyebrow">COMPANION SIGNAL</span><h3>Field condition</h3></div><span className={eventsReady ? "party-sync-state" : "party-sync-state party-sync-state--waiting"}><i /> {eventsReady ? "EVENT READY" : "AWAITING EVENT"}</span></div>
           <p className="party-vitals-copy">Current readings from the companion event bridge.</p>
           <PartyVital icon={<Heart />} label="HEALTH" value={companion.health} max={companion.healthMax} tone="coral" />
-          <PartyVital icon={<Sparkles />} label="STAMINA" value={companion.stamina} max={companion.staminaMax} tone="lime" />
+          <PartyVital icon={<Shield />} label="STAMINA" value={companion.stamina} max={companion.staminaMax} tone="lime" />
           <PartyVital icon={<Compass />} label="MAGICKA" value={companion.magicka} max={companion.magickaMax} tone="violet" />
           <button type="button" className="party-location-card" onClick={() => onNavigate("wayfinder")}>
             <span className="party-location-icon"><MapPin size={17} /></span>
@@ -918,7 +917,7 @@ function ChronicleGlyph({ kind, size }: { kind: ChronicleKind; size?: number }):
   const iconProps = { size: size ?? 15, strokeWidth: 1.7 };
   if (kind === "gear") return <Swords {...iconProps} />;
   if (kind === "journey") return <MapPin {...iconProps} />;
-  if (kind === "quest") return <Sparkles {...iconProps} />;
+  if (kind === "quest") return <BookOpen {...iconProps} />;
   return <Users {...iconProps} />;
 }
 
@@ -1021,7 +1020,7 @@ function WayfinderPage({ location, trackedQuestId, questProgress, onSelect, onTr
             <div className="quest-progress-copy"><span>{completed.length} / {activeQuest.objectives.length} OBJECTIVES</span><strong>{questPercent}%</strong></div>
             <SkyProgress className="quest-progress-track" label={`${activeQuest.title} objectives completed`} value={completed.length} max={activeQuest.objectives.length} size="sm" />
             <div className="quest-objectives">{activeQuest.objectives.map((objective, index) => { const checked = completed.includes(index); return <button key={`${activeQuest.id}-${index}`} type="button" className={checked ? "quest-objective quest-objective--complete" : "quest-objective"} onClick={() => onToggleObjective(activeQuest.id, index)} aria-checked={checked} role="checkbox"><span className="quest-check">{checked && <Check size={11} />}</span><span>{objective}</span></button>; })}</div>
-            <div className="quest-reward"><Sparkles size={13} /><span>FIELD REWARD</span><strong>{activeQuest.reward}</strong></div>
+            <div className="quest-reward"><Coins size={13} /><span>FIELD REWARD</span><strong>{activeQuest.reward}</strong></div>
           </div>
         </aside>
       </div>

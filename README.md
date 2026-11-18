@@ -24,11 +24,12 @@ Install the release through your mod manager, enable it, and start Skyrim with S
 
 ## What is included
 
-- **Command deck:** overview, Actor Observatory, inventory, character sheet, settings, HUD workshop, Performance Lab, Developer Studio and the in-game guide.
-- **Actor and item studios:** native model previews, creature portraits, captured animation frames, equipment inspection, lighting controls and PNG exports. Icons and portraits cache under `Data/SkyUltra/Cache/` (usually redirected to MO2 Overwrite or a configured output mod).
-- **Menu replacements:** individual settings for inventory, barter, containers, corpse looting, pickpocketing, mannequins, magic and favorites.
+- **Command deck:** overview, Actor Observatory (with tri-vitals, pinning, filters/sort & camera presets), inventory (smart chips, `V/W` sort, inline renaming & 4 quick loadouts), character sheet, settings (17 themes across 4 families, motion tab splash, glass intensity & 7-design Book Reader), HUD workshop, Performance Lab, Developer Studio (with Modder Workbench) and the in-game guide.
+- **Actor and item studios:** native model previews, creature portraits, captured animation frames, camera presets, equipment inspection, lighting controls and PNG exports. Icons and portraits cache under `Data/SkyUltra/Cache/` (usually redirected to MO2 Overwrite or a configured output mod).
+- **Zero-overlap menu & HUD carriers:** individual settings for inventory, barter, containers, corpse looting (`Smart Loot Valuables` & `Take & Equip/Consume/Read`), pickpocketing (live `%` chance badges & stolen protection), mannequins, magic, favorites and compass HUD, backed by session-epoch transition gating so switching windows never leaves stale frames overlapping.
 - **HUD workshop:** visual widgets, a live code editor and manifest-based web-mod export.
-- **Mod author interfaces:** a versioned C ABI, a header-only C++ helper, Papyrus functions, TypeScript/React packages, Vite integration and migration adapters/shims.
+- **Mod author interfaces:** a versioned C ABI, a header-only C++ helper, Papyrus functions, TypeScript/React packages, Vite integration, DevStudio Modder Workbench (Bridge Playground, TS/JS/Papyrus snippet generator, visual `manifest.json` builder & `--sky-*` token inspector) and migration adapters/shims.
+- **Lean CEF distribution:** packaged into 16 runtime files under `SKSE/Plugins/SkyUltra/CEF/` (shipping `locales/en-US.pak` only) with `SkyUltraCefSubprocess.pdb` staged separately into `Diagnostics/`.
 
 Views can select CEF or Ultralight independently when the host includes both. The current CMake defaults enable both and select CEF; shipped settings, a manifest's `browserEngine`, and per-mod/menu overrides may change the selection. Engine availability and page capabilities should be checked rather than inferred from another view. Performance Lab compares a particular workload; engine switching and frame rates are not timing guarantees.
 

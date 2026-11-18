@@ -2,16 +2,18 @@ import * as React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createSkyUltraGame,
+  readSkyUltraUiPrefs,
   type SkyUltraFavorites,
   type SkyUltraItemAction,
   type SkyUltraSpell,
   type SkyUltraSpellHand,
 } from '@skyultra/sdk';
 import { SkySegmentedControl } from '../core.js';
+import { BookReader, parseBookActionResult, type ReadingBookState } from './BookReader.js';
 import { Icon, itemIcon } from './icons.js';
 import { ItemThumbnail } from './ItemThumbnail.js';
 import { Empty } from './pieces.js';
-import type { Item } from './model.js';
+import type { Item, Palette } from './model.js';
 import { HeartIcon, SpellCategoryGlyph, SpellSigil, spellColorStyle, spellCostLabel } from './spellArt.js';
 import { SpellEquipActions, SpellHandBadges, containerModeLabels, nextContainerMode, type ContainerPageProps } from './MagicPage.js';
 
@@ -37,6 +39,7 @@ function itemSubtitle(item: Item): string {
 }
 
 export default function FavoritesPage({
+  player,
   bridge,
   obscured = false,
   displayMode = 'half',
@@ -55,8 +58,10 @@ export default function FavoritesPage({
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [revision, setRevision] = useState(0);
+  const [readingBook, setReadingBook] = useState<ReadingBookState | null>(null);
   const locked = useRef(false);
   const actionController = useRef<AbortController | null>(null);
+  const uiPrefs = useMemo(() => readSkyUltraUiPrefs(), [revision, readingBook]);
 
   useEffect(() => () => actionController.current?.abort(), [bridge]);
 
@@ -149,12 +154,32 @@ export default function FavoritesPage({
       unequip ? game.unequipItem(item.id, 'auto', { signal }) : game.equipItem(item.id, slot, { signal }),
     );
   };
-  const useItem = (item: Item): void => {
+  const useItem = (item: Item, openNative = false): void => {
     if (!game || !item.useAction) return;
     const action = item.useAction;
-    void runAction(`${useActionLabels[action]} ${item.name}…`, signal =>
-      game.itemAction({ formId: item.id, action, openNative: action === 'read' }, { signal }),
-    );
+    void (async () => {
+      if (obscured || locked.current) return;
+      locked.current = true;
+      setBusy(true);
+      setStatusMessage(`${useActionLabels[action]} ${item.name}…`);
+      actionController.current?.abort();
+      const controller = new AbortController();
+      actionController.current = controller;
+      try {
+        const result = await game.itemAction({ formId: item.id, action, openNative }, { signal: controller.signal });
+        if (!controller.signal.aborted) {
+          const parsedBook = !openNative ? parseBookActionResult(item, result) : null;
+          if (parsedBook) setReadingBook(parsedBook);
+          setStatusMessage(result.message ?? (result.accepted ? 'Done.' : 'Skyrim declined that action.'));
+          setRevision(v => v + 1);
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) setStatusMessage(error instanceof Error ? error.message : 'The favorite action failed.');
+      } finally {
+        locked.current = false;
+        if (!controller.signal.aborted) setBusy(false);
+      }
+    })();
   };
   const removeFavorite = (entry: FavoriteEntry): void => {
     if (!game) return;
@@ -491,6 +516,17 @@ export default function FavoritesPage({
           <span>{statusMessage || `${entries.length} favorite${entries.length === 1 ? '' : 's'} · 1–9 quick-use · Enter to use selected · Double-click to equip`}</span>
         </div>
       </section>
+      {readingBook && (
+        <BookReader
+          book={readingBook}
+          playerName={player?.playerName}
+          theme={(uiPrefs.defaultTheme as Palette) || 'dragonstone'}
+          design={uiPrefs.bookReaderDesign}
+          themeSync={uiPrefs.bookThemeSync}
+          onOpenNative={(book) => useItem({ id: book.id, name: book.title, category: 'book', count: 1, value: 0, weight: 0, equipped: false, useAction: 'read' }, true)}
+          onClose={() => setReadingBook(null)}
+        />
+      )}
     </div>
   );
 }

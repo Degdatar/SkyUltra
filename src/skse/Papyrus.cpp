@@ -1,10 +1,12 @@
 #include "SkyUltra/FrameworkServices.h"
 #include <SKSE/SKSE.h>
+#include <RE/A/AIFormulas.h>
 #include <RE/A/ActorValues.h>
 #include <RE/A/ActorEquipManager.h>
 #include <RE/A/AlchemyItem.h>
 #include <RE/B/BGSDefaultObjectManager.h>
 #include <RE/B/BGSEquipSlot.h>
+#include <RE/B/BGSRelationship.h>
 #include <RE/A/ActiveEffect.h>
 #include <RE/B/BGSBaseAlias.h>
 #include <RE/B/BarterMenu.h>
@@ -23,9 +25,13 @@
 #include <RE/E/ExtraCharge.h>
 #include <RE/E/ExtraDataList.h>
 #include <RE/E/ExtraEnchantment.h>
+#include <RE/E/ExtraHealth.h>
 #include <RE/E/ExtraMapMarker.h>
+#include <RE/E/ExtraOwnership.h>
+#include <RE/E/ExtraPoison.h>
 #include <RE/E/ExtraSoul.h>
 #include <RE/E/ExtraTeleport.h>
+#include <RE/E/ExtraTextDisplayData.h>
 #include <RE/E/ExtraWorn.h>
 #include <RE/E/ExtraWornLeft.h>
 #include <RE/F/FormTraits.h>
@@ -64,6 +70,7 @@
 #include <RE/T/TESWorldSpace.h>
 #include <RE/T/TES.h>
 #include <RE/T/TESAmmo.h>
+#include <RE/T/TESClass.h>
 #include <RE/T/TESSoulGem.h>
 #include <RE/T/TESQuest.h>
 #include <RE/T/TESRace.h>
@@ -342,6 +349,109 @@ void ConsumePlayerStolenCount(
     }
 }
 
+std::mutex g_custom_item_names_mutex;
+std::unordered_map<RE::FormID, std::string> g_custom_item_names;
+
+std::string CustomItemDisplayName(RE::FormID form_id)
+{
+    const std::scoped_lock lock(g_custom_item_names_mutex);
+    if (const auto it = g_custom_item_names.find(form_id); it != g_custom_item_names.end()) {
+        return it->second;
+    }
+    return {};
+}
+
+const char* TemperTierLabel(float health) noexcept
+{
+    if (!std::isfinite(health) || health <= 1.01F) return nullptr;
+    if (health >= 1.9F) return "Legendary";
+    if (health >= 1.7F) return "Epic";
+    if (health >= 1.5F) return "Flawless";
+    if (health >= 1.3F) return "Exquisite";
+    if (health >= 1.2F) return "Superior";
+    return "Fine";
+}
+
+const char* SoulLevelLabel(RE::SOUL_LEVEL soul) noexcept
+{
+    switch (soul) {
+    case RE::SOUL_LEVEL::kPetty: return "Petty";
+    case RE::SOUL_LEVEL::kLesser: return "Lesser";
+    case RE::SOUL_LEVEL::kCommon: return "Common";
+    case RE::SOUL_LEVEL::kGreater: return "Greater";
+    case RE::SOUL_LEVEL::kGrand: return "Grand";
+    default: return nullptr;
+    }
+}
+
+const char* SkillLabelForActorValue(RE::ActorValue av) noexcept
+{
+    switch (av) {
+    case RE::ActorValue::kOneHanded: return "One-handed";
+    case RE::ActorValue::kTwoHanded: return "Two-handed";
+    case RE::ActorValue::kArchery: return "Archery";
+    case RE::ActorValue::kBlock: return "Block";
+    case RE::ActorValue::kSmithing: return "Smithing";
+    case RE::ActorValue::kHeavyArmor: return "Heavy armor";
+    case RE::ActorValue::kLightArmor: return "Light armor";
+    case RE::ActorValue::kPickpocket: return "Pickpocket";
+    case RE::ActorValue::kLockpicking: return "Lockpicking";
+    case RE::ActorValue::kSneak: return "Sneak";
+    case RE::ActorValue::kAlchemy: return "Alchemy";
+    case RE::ActorValue::kSpeech: return "Speech";
+    case RE::ActorValue::kAlteration: return "Alteration";
+    case RE::ActorValue::kConjuration: return "Conjuration";
+    case RE::ActorValue::kDestruction: return "Destruction";
+    case RE::ActorValue::kIllusion: return "Illusion";
+    case RE::ActorValue::kRestoration: return "Restoration";
+    case RE::ActorValue::kEnchanting: return "Enchanting";
+    default: return nullptr;
+    }
+}
+
+double ItemValuePerWeight(const Json& item) noexcept
+{
+    const double val = item.value("value", 0.0);
+    const double wt = item.value("weight", 0.0);
+    return val / std::max(wt, 0.05);
+}
+
+void AppendActorDossierFields(RE::Actor* actor, RE::TESNPC* base, RE::PlayerCharacter* player, Json& record)
+{
+    if (actor == nullptr) return;
+    const auto* av = actor->AsActorValueOwner();
+    const float magicka = av == nullptr ? 0.0F : std::max(av->GetActorValue(RE::ActorValue::kMagicka), 0.0F);
+    const float magicka_max = std::max(actor->GetActorValueMax(RE::ActorValue::kMagicka), 0.0F);
+    const float stamina = av == nullptr ? 0.0F : std::max(av->GetActorValue(RE::ActorValue::kStamina), 0.0F);
+    const float stamina_max = std::max(actor->GetActorValueMax(RE::ActorValue::kStamina), 0.0F);
+    record["magicka"] = { { "current", magicka }, { "max", magicka_max } };
+    record["stamina"] = { { "current", stamina }, { "max", stamina_max } };
+    if (base != nullptr && base->npcClass != nullptr) {
+        const auto* class_name = base->npcClass->GetFullName();
+        if (class_name != nullptr && class_name[0] != '\0') {
+            record["className"] = class_name;
+        }
+    }
+    record["isEssential"] = actor->IsEssential();
+    record["isUnique"] = base != nullptr && base->IsUnique();
+    std::string combat_state = "idle";
+    if (!actor->IsDead()) {
+        if (actor->IsInCombat()) {
+            combat_state = "combat";
+        } else if (player != nullptr && actor->RequestDetectionLevel(player) > 0 && actor->IsHostileToActor(player)) {
+            combat_state = "searching";
+        }
+    }
+    record["combatState"] = std::move(combat_state);
+    int relationship_rank = 0;
+    if (base != nullptr && player != nullptr && player->GetActorBase() != nullptr) {
+        if (const auto* rel = RE::BGSRelationship::GetRelationship(base, player->GetActorBase()); rel != nullptr) {
+            relationship_rank = std::clamp(4 - static_cast<int>(rel->level.get()), -4, 4);
+        }
+    }
+    record["relationshipRank"] = relationship_rank;
+}
+
 std::uint32_t ParseItemFormIdField(const Json& options, const char* key, bool* out_from_stolen_stack = nullptr)
 {
     if (out_from_stolen_stack != nullptr) {
@@ -383,7 +493,8 @@ Json PlayerItemJson(
     if (IsMissingOrUnnamedDisplayName(stripped_name)) {
         return nullptr;
     }
-    const std::string name = stripped_name;
+    const std::string custom_name = CustomItemDisplayName(form->GetFormID());
+    const std::string name = !custom_name.empty() ? custom_name : stripped_name;
 
     RE::EnchantmentItem* ench = entry_data != nullptr ? entry_data->GetEnchantment() : nullptr;
     if (ench == nullptr && entry_data != nullptr && entry_data->extraLists != nullptr) {
@@ -454,6 +565,47 @@ Json PlayerItemJson(
         { "favorite", entry_data != nullptr && entry_data->IsFavorited() },
         { "stolen", is_stolen }
     };
+    const RE::ExtraHealth* ex_health = nullptr;
+    const RE::ExtraPoison* ex_poison = nullptr;
+    const RE::ExtraSoul* ex_soul = nullptr;
+    const RE::ExtraOwnership* ex_owner = nullptr;
+    if (entry_data != nullptr && entry_data->extraLists != nullptr) {
+        for (const auto* x_list : *entry_data->extraLists) {
+            if (x_list == nullptr) continue;
+            if (ex_health == nullptr) ex_health = x_list->GetByType<RE::ExtraHealth>();
+            if (ex_poison == nullptr) ex_poison = x_list->GetByType<RE::ExtraPoison>();
+            if (ex_soul == nullptr) ex_soul = x_list->GetByType<RE::ExtraSoul>();
+            if (ex_owner == nullptr) ex_owner = x_list->GetByType<RE::ExtraOwnership>();
+        }
+    }
+    if (ex_health != nullptr) {
+        if (const char* tier = TemperTierLabel(ex_health->health); tier != nullptr) {
+            item["temperTier"] = tier;
+        }
+    }
+    if (ex_poison != nullptr && ex_poison->poison != nullptr) {
+        const auto* p_name = ex_poison->poison->GetFullName();
+        if (p_name == nullptr || p_name[0] == '\0') p_name = ex_poison->poison->GetName();
+        if (p_name != nullptr && p_name[0] != '\0') {
+            item["poisonName"] = p_name;
+        }
+    }
+    if (ex_soul != nullptr) {
+        if (const char* s_label = SoulLevelLabel(ex_soul->GetContainedSoul()); s_label != nullptr) {
+            item["soulSize"] = s_label;
+        }
+    } else if (const auto* gem = form->As<RE::TESSoulGem>(); gem != nullptr) {
+        if (const char* s_label = SoulLevelLabel(gem->GetContainedSoul()); s_label != nullptr) {
+            item["soulSize"] = s_label;
+        }
+    }
+    if (ex_owner != nullptr && ex_owner->owner != nullptr) {
+        if (auto* owner_check_player = RE::PlayerCharacter::GetSingleton();
+            owner_check_player != nullptr && ex_owner->owner != owner_check_player &&
+            ex_owner->owner != owner_check_player->GetActorBase()) {
+            item["isOwned"] = true;
+        }
+    }
     if (is_enchanted) {
         const auto* ench_name = ench != nullptr ? ench->GetFullName() : nullptr;
         if (ench_name != nullptr && ench_name[0] != '\0') {
@@ -570,6 +722,11 @@ Json PlayerItemJson(
             }
         } else {
             item["useAction"] = "read";
+            if (book->TeachesSkill()) {
+                if (const char* skill_label = SkillLabelForActorValue(book->GetSkill()); skill_label != nullptr) {
+                    item["teachesSkill"] = skill_label;
+                }
+            }
         }
     } else if (form->Is(RE::FormType::Misc) || form->Is(RE::FormType::SoulGem) ||
                form->Is(RE::FormType::KeyMaster) || form->Is(RE::FormType::Scroll) ||
@@ -768,6 +925,7 @@ RE::BSFixedString PapyrusSearchNpcsJSON(
                 record["healthMax"] = std::max(loaded_actor->GetActorValueMax(RE::ActorValue::kHealth), 0.0F);
                 record["armorRating"] = actor_values == nullptr ? 0.0F :
                     std::max(actor_values->GetActorValue(RE::ActorValue::kDamageResist), 0.0F);
+                AppendActorDossierFields(loaded_actor, form, RE::PlayerCharacter::GetSingleton(), record);
                 record["equipment"] = ReadActorEquipment(loaded_actor);
             }
             matches.push_back(std::move(record));
@@ -845,7 +1003,7 @@ RE::BSFixedString PapyrusGetNearbyNpcsJSON(
         const auto health_max = std::max(actor->GetActorValueMax(RE::ActorValue::kHealth), 0.0F);
         const auto armor_rating = actor_values == nullptr ? 0.0F :
             std::max(actor_values->GetActorValue(RE::ActorValue::kDamageResist), 0.0F);
-        actors.push_back({
+        Json actor_record{
             { "referenceId", std::to_string(actor->GetFormID()) },
             { "baseFormId", std::to_string(base->GetFormID()) },
             { "name", base->GetName() },
@@ -859,7 +1017,9 @@ RE::BSFixedString PapyrusGetNearbyNpcsJSON(
             { "healthMax", health_max },
             { "armorRating", armor_rating },
             { "equipment", ReadActorEquipment(actor, false) }
-        });
+        };
+        AppendActorDossierFields(actor, base, player, actor_record);
+        actors.push_back(std::move(actor_record));
         return RE::BSContainer::ForEachResult::kContinue;
     });
     std::sort(actors.begin(), actors.end(), [](const Json& left, const Json& right) {
@@ -906,7 +1066,8 @@ Json ReadInventoryPage(const Json& options)
         });
     }
     std::sort(items.begin(),items.end(),[&](const auto& a,const auto& b){
-        if(sort=="value"||sort=="weight"||sort=="count")if(a[sort]!=b[sort])return a[sort].template get<double>()>b[sort].template get<double>();
+        if(sort=="vw"){const double av=ItemValuePerWeight(a),bv=ItemValuePerWeight(b);if(std::abs(av-bv)>1e-6)return av>bv;}
+        else if(sort=="value"||sort=="weight"||sort=="count")if(a[sort]!=b[sort])return a[sort].template get<double>()>b[sort].template get<double>();
         const auto an=LowerAscii(a["name"].template get<std::string>()),bn=LowerAscii(b["name"].template get<std::string>());
         return an!=bn?an<bn:a["id"].template get<std::string>()<b["id"].template get<std::string>();
     });
@@ -3014,6 +3175,67 @@ Json EquipPlayerSpell(const Json& options)
     return done(name + (left ? " equipped in your left hand." : " equipped in your right hand."));
 }
 
+RE::InventoryEntryData* FindLiveInventoryEntry(RE::PlayerCharacter* player, RE::TESBoundObject* object);
+
+Json RenamePlayerItem(const Json& options)
+{
+    const auto rejected = [](std::string message) -> Json {
+        return { { "updated", false }, { "accepted", false }, { "message", std::move(message) } };
+    };
+    if (!options.is_object()) return rejected("Item rename options must be an object.");
+    bool from_stolen_stack = false;
+    std::uint32_t form_id = ParseItemFormIdField(options, "id", &from_stolen_stack);
+    if (form_id == 0) {
+        form_id = ParseItemFormIdField(options, "formId", &from_stolen_stack);
+    }
+    const bool clear_custom = options.value("clear", false);
+    auto new_name = options.value("name", std::string{});
+    while (!new_name.empty() && std::isspace(static_cast<unsigned char>(new_name.front()))) new_name.erase(new_name.begin());
+    while (!new_name.empty() && std::isspace(static_cast<unsigned char>(new_name.back()))) new_name.pop_back();
+    if (!clear_custom && new_name.empty()) return rejected("Enter a non-empty item name.");
+    if (new_name.size() > 96) new_name.resize(96);
+
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* form = form_id != 0 ? RE::TESForm::LookupByID(form_id) : nullptr;
+    if (player == nullptr || form == nullptr) return rejected("That inventory item is unavailable.");
+    const std::string base_name = form->GetName() != nullptr && form->GetName()[0] != '\0'
+        ? StripLeadingDollar(form->GetName())
+        : std::string("Item");
+
+    std::string final_name = clear_custom ? base_name : new_name;
+    {
+        const std::scoped_lock lock(g_custom_item_names_mutex);
+        if (clear_custom) {
+            g_custom_item_names.erase(form_id);
+        } else {
+            g_custom_item_names[form_id] = final_name;
+        }
+    }
+    if (auto* object = form->As<RE::TESBoundObject>(); object != nullptr) {
+        if (auto* live_entry = FindLiveInventoryEntry(player, object);
+            live_entry != nullptr && live_entry->extraLists != nullptr) {
+            for (auto* x_list : *live_entry->extraLists) {
+                if (x_list == nullptr) continue;
+                if (auto* ex_text = x_list->GetByType<RE::ExtraTextDisplayData>(); ex_text != nullptr) {
+                    ex_text->SetName(final_name.c_str());
+                }
+            }
+        }
+    }
+    RE::PlaySound("UIMenuOK");
+    skyultra::InvalidateSharedGameDataCache();
+    const std::string item_id = from_stolen_stack ? (std::to_string(form_id) + ":stolen") : std::to_string(form_id);
+    return {
+        { "updated", true },
+        { "accepted", true },
+        { "cleared", clear_custom },
+        { "id", item_id },
+        { "formId", std::to_string(form_id) },
+        { "name", final_name },
+        { "message", clear_custom ? ("Restored name to \"" + final_name + "\".") : ("Renamed item to \"" + final_name + "\".") }
+    };
+}
+
 Json RenamePlayerSpell(const Json& options)
 {
     const auto rejected = [](std::string message) -> Json { return { { "accepted", false }, { "message", std::move(message) } }; };
@@ -3855,7 +4077,11 @@ Json ReadContainerSnapshot(const Json& options)
 
     const auto sort_items = [&](std::vector<Json>& list) {
         std::sort(list.begin(), list.end(), [&](const Json& a, const Json& b) {
-            if (sort == "value" || sort == "weight" || sort == "count") {
+            if (sort == "vw") {
+                const double av = ItemValuePerWeight(a);
+                const double bv = ItemValuePerWeight(b);
+                if (std::abs(av - bv) > 1e-6) return av > bv;
+            } else if (sort == "value" || sort == "weight" || sort == "count") {
                 const double av = a.value(sort, 0.0);
                 const double bv = b.value(sort, 0.0);
                 if (av != bv) return av > bv;
@@ -3864,6 +4090,39 @@ Json ReadContainerSnapshot(const Json& options)
             const auto bn = LowerAscii(b.value("name", std::string{}));
             return an != bn ? an < bn : a.value("id", std::string{}) < b.value("id", std::string{});
         });
+    };
+
+    const auto active_mode = ActiveContainerMode();
+    const bool is_corpse = actor != nullptr && !is_mannequin && actor->IsDead();
+    const bool is_pickpocket = !is_mannequin && !is_corpse && actor != nullptr &&
+        (active_mode == RE::ContainerMenu::ContainerMode::kPickpocket || skyultra::IsActiveContainerPickpocket());
+    const bool container_steal_owned = !is_mannequin && !is_corpse &&
+        (is_pickpocket || active_mode == RE::ContainerMenu::ContainerMode::kSteal);
+    const std::string variant = is_mannequin ? "mannequin" :
+        (is_corpse ? "loot" : (is_pickpocket ? "pickpocket" : "container"));
+    const float thief_pickpocket_skill = player->AsActorValueOwner() != nullptr
+        ? std::max(0.0F, player->AsActorValueOwner()->GetActorValue(RE::ActorValue::kPickpocket))
+        : 15.0F;
+    const float target_pickpocket_skill = (actor != nullptr && actor->AsActorValueOwner() != nullptr)
+        ? std::max(0.0F, actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kPickpocket))
+        : 15.0F;
+    const bool target_detected = is_pickpocket && actor != nullptr && actor->RequestDetectionLevel(player) > 0;
+    const auto attach_container_item_meta = [&](Json& item, RE::TESForm* item_form) {
+        if (!item.is_object()) return;
+        const bool is_gold = item_form != nullptr && (item_form->GetFormID() == 0x0000000FU || item_form->IsGold());
+        if (container_steal_owned && !is_gold) {
+            item["isOwned"] = true;
+            item["stolen"] = true;
+        }
+        if (is_pickpocket && actor != nullptr && item_form != nullptr) {
+            const auto raw_val = item.value("value", 0);
+            const auto value_u32 = static_cast<std::uint32_t>(std::max(0, raw_val));
+            const float wt = std::max(0.0F, item.value("weight", 0.0F));
+            const auto chance = RE::AIFormulas::ComputePickpocketSuccess(
+                thief_pickpocket_skill, target_pickpocket_skill, value_u32, wt,
+                player, actor, target_detected, item_form);
+            item["pickpocketChance"] = std::clamp(chance, 0, 100);
+        }
     };
 
     std::vector<Json> container_items_vec;
@@ -3884,6 +4143,7 @@ Json ReadContainerSnapshot(const Json& options)
         container_categories_set.insert(kind);
         auto item = PlayerItemJson(form, entry.first, worn, entry.second.get(), false);
         if (!item.is_object()) continue;
+        attach_container_item_meta(item, form);
         if (!matches_filter(item, kind, form->GetFormID())) continue;
         container_items_vec.push_back(std::move(item));
     }
@@ -3895,6 +4155,7 @@ Json ReadContainerSnapshot(const Json& options)
                 const auto kind = std::string(ItemCategory(gold_form->GetFormType()));
                 container_categories_set.insert(kind);
                 auto gold_item = PlayerItemJson(gold_form, actor_gold, false, nullptr, false);
+                attach_container_item_meta(gold_item, gold_form);
                 if (gold_item.is_object() && matches_filter(gold_item, kind, 0x0000000FU)) {
                     container_items_vec.push_back(std::move(gold_item));
                 }
@@ -3999,6 +4260,7 @@ Json ReadContainerSnapshot(const Json& options)
             { "armorRating", armor_rating },
             { "equipment", equipment }
         };
+        AppendActorDossierFields(actor, npc_base, player, actor_record);
     }
 
     return {
@@ -4008,7 +4270,8 @@ Json ReadContainerSnapshot(const Json& options)
         { "containerBaseFormId", std::to_string(base != nullptr ? base->GetFormID() : container->GetFormID()) },
         { "containerName", container_name },
         { "containerType", container_type },
-        { "containerMode", ContainerModeLabel(ActiveContainerMode()) },
+        { "variant", variant },
+        { "containerMode", ContainerModeLabel(active_mode) },
         { "containerItems", std::move(container_items) },
         { "containerTotalTypes", container_total_types },
         { "containerCategories", std::move(container_categories) },
@@ -6877,6 +7140,7 @@ std::string ReadGameDataJSON(std::string_view method, std::string_view params_js
     if(method=="game.getInventory")return ReadInventoryPage(Json::parse(params_json,nullptr,false)).dump(-1,' ',false,Json::error_handler_t::replace);
     if(method=="game.equipItem"||method=="game.unequipItem")return ChangePlayerEquipment(Json::parse(params_json,nullptr,false),method=="game.unequipItem").dump(-1,' ',false,Json::error_handler_t::replace);
     if(method=="game.itemAction")return PerformInventoryItemAction(Json::parse(params_json,nullptr,false)).dump(-1,' ',false,Json::error_handler_t::replace);
+    if(method=="game.renameItem")return RenamePlayerItem(Json::parse(params_json,nullptr,false)).dump(-1,' ',false,Json::error_handler_t::replace);
     if(method=="game.getBarterSnapshot")return ReadBarterSnapshot(Json::parse(params_json,nullptr,false)).dump(-1,' ',false,Json::error_handler_t::replace);
     if(method=="game.barterTransaction")return PerformBarterTransaction(Json::parse(params_json,nullptr,false)).dump(-1,' ',false,Json::error_handler_t::replace);
     if(method=="game.getContainerSnapshot")return ReadContainerSnapshot(Json::parse(params_json,nullptr,false)).dump(-1,' ',false,Json::error_handler_t::replace);

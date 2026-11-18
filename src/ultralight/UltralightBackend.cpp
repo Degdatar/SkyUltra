@@ -155,16 +155,27 @@ public:
     }
 
     [[nodiscard]] std::optional<std::filesystem::path> Resolve(
-        std::string_view token, const std::filesystem::path& relative) const
+        std::string_view token, std::string_view cache_key,
+        const std::filesystem::path& relative) const
     {
         Mount mount;
+        const std::string token_text(token);
+        const std::string key_text(cache_key);
         {
             const std::scoped_lock lock(mutex_);
-            const auto found = mounts_.find(std::string(token));
+            const auto found = mounts_.find(token_text);
             if (found == mounts_.end()) {
                 return std::nullopt;
             }
-            mount = found->second;
+            if (!key_text.empty()) {
+                if (const auto cached = found->second.resolved_cache.find(key_text);
+                    cached != found->second.resolved_cache.end()) {
+                    return cached->second;
+                }
+            }
+            mount.root_directory = found->second.root_directory;
+            mount.entry_file = found->second.entry_file;
+            mount.asset_access_enabled = found->second.asset_access_enabled;
         }
         std::error_code error;
         const auto path = std::filesystem::canonical(mount.root_directory / relative, error);
@@ -172,6 +183,13 @@ public:
             !IsPathWithin(mount.root_directory, path) ||
             (!mount.asset_access_enabled && !IsSamePath(path, mount.entry_file))) {
             return std::nullopt;
+        }
+        if (!key_text.empty()) {
+            const std::scoped_lock lock(mutex_);
+            if (const auto found = mounts_.find(token_text);
+                found != mounts_.end() && found->second.resolved_cache.size() < 1024) {
+                found->second.resolved_cache.try_emplace(key_text, path);
+            }
         }
         return path;
     }
@@ -196,6 +214,7 @@ private:
         std::filesystem::path root_directory;
         std::filesystem::path entry_file;
         bool asset_access_enabled{};
+        std::unordered_map<std::string, std::filesystem::path> resolved_cache;
     };
 
     static bool IsPathWithin(
@@ -249,7 +268,7 @@ private:
     }
 
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, Mount> mounts_;
+    mutable std::unordered_map<std::string, Mount> mounts_;
 };
 
 class SkyUltraUltralightFileSystem final : public ultralight::FileSystem {
@@ -282,9 +301,6 @@ public:
 
     ultralight::String GetFileCharset(const ultralight::String& file_path) override
     {
-        if (const auto resolved = ResolveVirtualPath(file_path); resolved.reserved) {
-            return ultralight::String("utf-8");
-        }
         return IsRuntimeResourcePath(file_path) ?
             file_system_->GetFileCharset(MapRuntimeResourceName(file_path)) :
             ultralight::String("utf-8");
@@ -302,14 +318,29 @@ public:
                 file_path.utf8().data());
             return nullptr;
         }
-        std::ifstream file(*resolved.path, std::ios::binary);
+        std::ifstream file(*resolved.path, std::ios::binary | std::ios::ate);
         if (!file) {
             SKSE::log::error("SkyUltra could not open a mounted mod file (url='{}').",
                 file_path.utf8().data());
             return nullptr;
         }
-        const std::vector<char> bytes{
-            std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
+        const auto end_pos = file.tellg();
+        if (end_pos < 0) {
+            SKSE::log::error("SkyUltra could not read a mounted mod file (url='{}').",
+                file_path.utf8().data());
+            return nullptr;
+        }
+        const auto byte_count = static_cast<std::size_t>(end_pos);
+        if (byte_count == 0) {
+            return ultralight::Buffer::CreateFromCopy("", 0);
+        }
+        std::vector<char> bytes(byte_count);
+        file.seekg(0, std::ios::beg);
+        if (!file.read(bytes.data(), static_cast<std::streamsize>(byte_count))) {
+            SKSE::log::error("SkyUltra could not read a mounted mod file (url='{}').",
+                file_path.utf8().data());
+            return nullptr;
+        }
         return ultralight::Buffer::CreateFromCopy(bytes.data(), bytes.size());
     }
 
@@ -443,7 +474,7 @@ private:
             }
         }
 
-        const auto physical = mounts_->Resolve(token, relative);
+        const auto physical = mounts_->Resolve(token, decoded, relative);
         if (physical) {
             result.path = *physical;
         }
@@ -692,6 +723,12 @@ void LoadNavigation(View& view, std::string_view url,
     }
 }
 
+std::int64_t SteadyNowMs() noexcept
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 class SkyUltraGPUDriver final : public ultralight::platform::GPUDriverD3D11 {
 public:
     using GPUDriverD3D11::GPUDriverD3D11;
@@ -776,11 +813,18 @@ struct ViewMailbox {
     SoftwareFrame software_frame;
     bool has_software_frame{};
     bool close_requested{};
+    bool display_occluded{};
+    bool force_republish{};
+    std::atomic_bool awaiting_page_ready{ false };
+    std::atomic<std::int64_t> awaiting_page_ready_since_ms{ 0 };
+    std::atomic_uint64_t frame_epoch{ 0 };
+    std::atomic_uint64_t paint_sequence{ 0 };
 };
 
 struct PendingGpuFrame {
     std::shared_ptr<ViewMailbox> mailbox;
     GpuFrame frame;
+    std::uint64_t frame_epoch{};
 };
 
 struct RenderFramePacket {
@@ -846,6 +890,61 @@ public:
             changed = mailbox_->config.visible != visible;
             if (changed) {
                 mailbox_->config.visible = visible;
+                if (!visible) {
+                    mailbox_->frame = {};
+                    mailbox_->has_frame = false;
+                    mailbox_->software_frame = {};
+                    mailbox_->has_software_frame = false;
+                    mailbox_->force_republish = true;
+                    mailbox_->frame_epoch.fetch_add(1, std::memory_order_release);
+                } else {
+                    mailbox_->force_republish = true;
+                }
+            }
+        }
+        if (changed) {
+            WakeAsyncWorker();
+        }
+    }
+
+    void DiscardCachedFrame() noexcept override
+    {
+        const std::scoped_lock lock(mailbox_->mutex);
+        mailbox_->frame = {};
+        mailbox_->has_frame = false;
+        mailbox_->software_frame = {};
+        mailbox_->has_software_frame = false;
+        mailbox_->force_republish = true;
+        mailbox_->awaiting_page_ready_since_ms.store(SteadyNowMs(), std::memory_order_relaxed);
+        mailbox_->awaiting_page_ready.store(true, std::memory_order_release);
+        mailbox_->frame_epoch.fetch_add(1, std::memory_order_release);
+    }
+
+    void MarkPageReady() noexcept override
+    {
+        {
+            const std::scoped_lock lock(mailbox_->mutex);
+            mailbox_->awaiting_page_ready_since_ms.store(0, std::memory_order_relaxed);
+            mailbox_->awaiting_page_ready.store(false, std::memory_order_release);
+            mailbox_->force_republish = true;
+            mailbox_->frame_epoch.fetch_add(1, std::memory_order_release);
+        }
+        WakeAsyncWorker();
+    }
+
+    [[nodiscard]] std::uint64_t PaintSequence() const noexcept override
+    {
+        return mailbox_->paint_sequence.load(std::memory_order_acquire);
+    }
+
+    void SetDisplayOccluded(bool occluded) noexcept override
+    {
+        bool changed{};
+        {
+            const std::scoped_lock lock(mailbox_->mutex);
+            changed = mailbox_->display_occluded != occluded;
+            if (changed) {
+                mailbox_->display_occluded = occluded;
             }
         }
         if (changed) {
@@ -989,7 +1088,7 @@ ViewSnapshot TakeSnapshot(const std::shared_ptr<ViewMailbox>& mailbox)
 double DispatchBridgeEvents(View& view, const std::shared_ptr<ViewMailbox>& mailbox, bool responses = false)
 {
     const auto& queue = responses ? mailbox->bridge_responses : mailbox->bridge_events;
-    const auto batch = queue->Take(responses ? mailbox->response_consumer.load() : mailbox->bridge_consumer.load());
+    const auto batch = queue->Take(responses ? mailbox->response_consumer.load() : mailbox->bridge_consumer.load(), 32);
     if (!batch) return 0;
     const auto started = std::chrono::steady_clock::now();
     const auto script = BuildBridgeEventBatchScript(*batch, {}, responses);
@@ -1112,13 +1211,27 @@ const char* InputCommandName(const InputCommand& command) noexcept
     return "text";
 }
 
-void SetGpuFrame(const std::shared_ptr<ViewMailbox>& mailbox, const GpuFrame& frame, bool valid)
+void SetGpuFrame(const std::shared_ptr<ViewMailbox>& mailbox, const GpuFrame& frame, bool valid,
+    std::optional<std::uint64_t> expected_epoch = std::nullopt)
 {
-    const std::scoped_lock lock(mailbox->mutex);
-    mailbox->frame = frame;
-    mailbox->has_frame = valid;
-    mailbox->software_frame = {};
-    mailbox->has_software_frame = false;
+    if (valid && expected_epoch &&
+        mailbox->frame_epoch.load(std::memory_order_acquire) != *expected_epoch) {
+        return;
+    }
+    {
+        const std::scoped_lock lock(mailbox->mutex);
+        if (valid && expected_epoch &&
+            mailbox->frame_epoch.load(std::memory_order_acquire) != *expected_epoch) {
+            return;
+        }
+        mailbox->frame = frame;
+        mailbox->has_frame = valid;
+        mailbox->software_frame = {};
+        mailbox->has_software_frame = false;
+    }
+    if (valid) {
+        mailbox->paint_sequence.fetch_add(1, std::memory_order_release);
+    }
 }
 
 void SetSoftwareFrame(const std::shared_ptr<ViewMailbox>& mailbox, SoftwareFrame frame)
@@ -1126,11 +1239,14 @@ void SetSoftwareFrame(const std::shared_ptr<ViewMailbox>& mailbox, SoftwareFrame
     if (frame.patches.empty()) {
         return;
     }
-    const std::scoped_lock lock(mailbox->mutex);
-    mailbox->frame = {};
-    mailbox->has_frame = false;
-    mailbox->software_frame = std::move(frame);
-    mailbox->has_software_frame = true;
+    {
+        const std::scoped_lock lock(mailbox->mutex);
+        mailbox->frame = {};
+        mailbox->has_frame = false;
+        mailbox->software_frame = std::move(frame);
+        mailbox->has_software_frame = true;
+    }
+    mailbox->paint_sequence.fetch_add(1, std::memory_order_release);
 }
 
 }  // namespace
@@ -1151,6 +1267,10 @@ struct UltralightRuntime::State {
         bool logged_output_ready{};
         std::uint32_t warmup_frames{};
         ultralight::MouseEvent::Button held_mouse_button{ ultralight::MouseEvent::kButton_None };
+        bool applied_display_occluded{};
+        void* last_published_srv{};
+        SizeU last_published_texture_size{};
+        RectU last_published_source_rect{};
     };
 
     // Ultralight records D3D11 work on a deferred context. Skyrim executes each
@@ -1232,7 +1352,11 @@ struct UltralightRuntime::State {
     ID3D11DeviceContext* host_context{};
     std::thread::id owner_thread;
     bool initialized{};
+    std::atomic_bool initialized_atomic{ false };
     std::atomic_bool has_active_views{ false };
+    std::atomic_bool has_live_views{ false };
+    std::atomic_bool has_completed_frame{ false };
+    std::atomic<void*> registered_device{ nullptr };
     std::chrono::steady_clock::time_point last_idle_pump{};
 
     void RequestAsyncViewWork();
@@ -1256,6 +1380,23 @@ UltralightRuntime::~UltralightRuntime()
 BrowserEngine UltralightRuntime::Engine() const noexcept
 {
     return BrowserEngine::Ultralight;
+}
+
+bool UltralightRuntime::NeedsImmediateContextPump(
+    void* native_device, void* native_context) const noexcept
+{
+    if (native_device == nullptr || native_context == nullptr) {
+        return false;
+    }
+    if (state_->has_completed_frame.load(std::memory_order_acquire)) {
+        return true;
+    }
+    if (state_->has_active_views.load(std::memory_order_acquire)) {
+        return true;
+    }
+    return state_->has_live_views.load(std::memory_order_acquire) &&
+        (state_->registered_device.load(std::memory_order_acquire) != native_device ||
+            !state_->initialized_atomic.load(std::memory_order_acquire));
 }
 
 void UltralightRuntime::SetPageBridgeMessageCallback(PageBridgeMessageCallback callback)
@@ -1323,6 +1464,7 @@ bool UltralightRuntime::State::HasPendingAsyncViewWork()
         if (!live.mailbox->pending_input.empty() ||
             live.mailbox->focus_mode != live.applied_focus ||
             live.mailbox->config.visible != live.applied_config.visible ||
+            live.mailbox->display_occluded != live.applied_display_occluded ||
             (live.mailbox->load_listener.BridgeReady() &&
                 (live.mailbox->bridge_events->Pending(live.mailbox->bridge_consumer.load()) ||
                  live.mailbox->bridge_responses->Pending(live.mailbox->response_consumer.load())))) {
@@ -1347,6 +1489,7 @@ void UltralightRuntime::State::ProcessAsyncViewWork()
         next_async_view = (view_index + 1) % view_count;
         InputMode focus_mode{};
         bool visible{};
+        bool display_occluded{};
         std::deque<InputCommand> input;
         {
             const std::scoped_lock lock(live.mailbox->mutex);
@@ -1360,23 +1503,34 @@ void UltralightRuntime::State::ProcessAsyncViewWork()
             }
             focus_mode = live.mailbox->focus_mode;
             visible = config.visible;
-            for (std::size_t i = 0; i < 1 && !live.mailbox->pending_input.empty(); ++i) {
+            display_occluded = live.mailbox->display_occluded;
+            for (std::size_t i = 0; i < 32 && !live.mailbox->pending_input.empty(); ++i) {
                 input.push_back(std::move(live.mailbox->pending_input.front()));
                 live.mailbox->pending_input.pop_front();
             }
         }
 
-        if (visible != live.applied_config.visible) {
+        const bool effective_visible = visible && !display_occluded;
+        const bool old_effective_visible = live.applied_config.visible && !live.applied_display_occluded;
+        if (visible != live.applied_config.visible || display_occluded != live.applied_display_occluded) {
             const auto visibility_start = std::chrono::steady_clock::now();
-            if (visible) {
-                live.view->set_visible(true);
-                live.warmup_pending = false;
-                has_active_views.store(true, std::memory_order_relaxed);
-            } else {
+            if (effective_visible != old_effective_visible) {
+                if (effective_visible) {
+                    live.view->set_visible(true);
+                    live.warmup_pending = false;
+                    has_active_views.store(true, std::memory_order_relaxed);
+                } else {
+                    live.held_mouse_button = ultralight::MouseEvent::kButton_None;
+                    live.last_published_srv = nullptr;
+                    if (!live.warmup_pending) live.view->set_visible(false);
+                }
+            } else if (!visible && !live.warmup_pending) {
                 live.held_mouse_button = ultralight::MouseEvent::kButton_None;
-                if (!live.warmup_pending) live.view->set_visible(false);
+                live.last_published_srv = nullptr;
+                live.view->set_visible(false);
             }
             live.applied_config.visible = visible;
+            live.applied_display_occluded = display_occluded;
             const auto visibility_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - visibility_start).count();
             if (visibility_ms > performance_config_operation_max_ms) {
@@ -1502,8 +1656,10 @@ void UltralightRuntime::PumpFrame(void* native_device, void* native_context)
         }
         gpu_renderer = state_->gpu_enabled.load(std::memory_order_relaxed);
         completed_frame = std::move(state_->completed_frame);
+        state_->has_completed_frame.store(false, std::memory_order_release);
         state_->requested_device = device;
         state_->requested_context = context;
+        state_->registered_device.store(device, std::memory_order_release);
         const bool active_views = state_->has_active_views.load(std::memory_order_relaxed);
         const bool idle_due = !active_views &&
             std::chrono::duration<double, std::milli>(pump_start - state_->last_idle_pump).count() >= 250.0;
@@ -1529,7 +1685,7 @@ void UltralightRuntime::PumpFrame(void* native_device, void* native_context)
             }
         }
         for (const auto& update : completed_frame->gpu_frames) {
-            SetGpuFrame(update.mailbox, update.frame, true);
+            SetGpuFrame(update.mailbox, update.frame, true, update.frame_epoch);
         }
     }
 
@@ -1705,6 +1861,7 @@ void UltralightRuntime::State::ProcessFrame(
         host_context = context;
         renderer->SetDisplayRefreshRate(0, 120.0);
         initialized = true;
+        initialized_atomic.store(true, std::memory_order_release);
         if (gpu_enabled.load(std::memory_order_relaxed)) {
             SKSE::log::info("SkyUltra Ultralight GPU renderer initialized on a D3D11 deferred context.");
         }
@@ -1786,7 +1943,7 @@ void UltralightRuntime::State::ProcessFrame(
         }
         if(live.applied_config.id=="SkyUltra.Menu" && (++live.warmup_frames<3 || !live.mailbox->load_listener.HiddenWarmupComplete()))return;
         live.warmup_pending = false;
-        if (!live.applied_config.visible) live.view->set_visible(false);
+        if (!(live.applied_config.visible && !live.applied_display_occluded)) live.view->set_visible(false);
         if (rendered_frame) {
             SKSE::log::info("SkyUltra pre-rendered hidden GPU view {} before it is opened.",
                 live.mailbox->id);
@@ -1870,9 +2027,10 @@ void UltralightRuntime::State::ProcessFrame(
     const auto view_commands_end = std::chrono::steady_clock::now();
     ProcessAsyncViewWork();
 
+    has_live_views.store(!live_views.empty(), std::memory_order_release);
     bool any_active_view = !new_views.empty();
     for (const auto& live : live_views) {
-        if (live.applied_config.visible || live.warmup_pending) {
+        if ((live.applied_config.visible && !live.applied_display_occluded) || live.warmup_pending) {
             any_active_view = true;
             break;
         }
@@ -1907,7 +2065,21 @@ void UltralightRuntime::State::ProcessFrame(
         }
     }
     for (auto& live : live_views) {
+        if (!(live.applied_config.visible && !live.applied_display_occluded) && !live.warmup_pending) {
+            live.last_published_srv = nullptr;
+            live.last_published_texture_size = {};
+            live.last_published_source_rect = {};
+            continue;
+        }
         if (!live.accelerated) {
+            if (live.mailbox->awaiting_page_ready.load(std::memory_order_acquire) && !live.warmup_pending) {
+                const auto since_ms = live.mailbox->awaiting_page_ready_since_ms.load(std::memory_order_relaxed);
+                const auto elapsed_ms = since_ms > 0 ? (SteadyNowMs() - since_ms) : 0;
+                if (elapsed_ms < 650) {
+                    continue;
+                }
+                live.mailbox->awaiting_page_ready.store(false, std::memory_order_release);
+            }
             auto* surface = live.view->surface();
             if (surface == nullptr || surface->width() == 0 || surface->height() == 0 ||
                 surface->width() > 4096 || surface->height() > 4096) {
@@ -1916,13 +2088,15 @@ void UltralightRuntime::State::ProcessFrame(
 
             const SizeU surface_size{ surface->width(), surface->height() };
             bool pending_frame{};
+            bool republish_requested{};
             {
                 const std::scoped_lock lock(live.mailbox->mutex);
                 pending_frame = live.mailbox->has_software_frame;
+                republish_requested = std::exchange(live.mailbox->force_republish, false);
             }
             const bool resized = live.software_size.width != surface_size.width ||
                 live.software_size.height != surface_size.height;
-            const bool force_full = pending_frame || resized;
+            const bool force_full = pending_frame || resized || republish_requested;
             const auto dirty_rect_count = surface->dirty_rect_count();
             if (dirty_rect_count == 0 && !force_full) {
                 continue;
@@ -2035,6 +2209,37 @@ void UltralightRuntime::State::ProcessFrame(
             SetGpuFrame(live.mailbox, {}, false);
             continue;
         }
+        if (live.mailbox->awaiting_page_ready.load(std::memory_order_acquire) && !live.warmup_pending) {
+            const auto since_ms = live.mailbox->awaiting_page_ready_since_ms.load(std::memory_order_relaxed);
+            const auto elapsed_ms = since_ms > 0 ? (SteadyNowMs() - since_ms) : 0;
+            if (elapsed_ms < 650) {
+                live.last_published_srv = nullptr;
+                continue;
+            }
+            live.mailbox->awaiting_page_ready.store(false, std::memory_order_release);
+        }
+        bool force_republish{};
+        std::uint64_t frame_epoch{};
+        {
+            const std::scoped_lock lock(live.mailbox->mutex);
+            force_republish = std::exchange(live.mailbox->force_republish, false);
+            frame_epoch = live.mailbox->frame_epoch.load(std::memory_order_acquire);
+        }
+        const bool same_frame = !gpu_commands_pending && !force_republish &&
+            srv == live.last_published_srv &&
+            frame.texture_size.width == live.last_published_texture_size.width &&
+            frame.texture_size.height == live.last_published_texture_size.height &&
+            frame.source_rect.x == live.last_published_source_rect.x &&
+            frame.source_rect.y == live.last_published_source_rect.y &&
+            frame.source_rect.width == live.last_published_source_rect.width &&
+            frame.source_rect.height == live.last_published_source_rect.height;
+        if (same_frame) {
+            finish_hidden_warmup(live, true);
+            continue;
+        }
+        live.last_published_srv = srv;
+        live.last_published_texture_size = frame.texture_size;
+        live.last_published_source_rect = frame.source_rect;
         if (!live.logged_output_ready) {
             live.mailbox->load_listener.LogStartupStage("first GPU frame recorded");
             SKSE::log::info("SkyUltra GPU view {} produced its first frame (texture {}x{}, source {}x{}).",
@@ -2046,7 +2251,7 @@ void UltralightRuntime::State::ProcessFrame(
         frame.lifetime = std::shared_ptr<void>(srv, [](void* resource) {
             static_cast<ID3D11ShaderResourceView*>(resource)->Release();
         });
-        pending_gpu_frames.push_back({ live.mailbox, std::move(frame) });
+        pending_gpu_frames.push_back({ live.mailbox, std::move(frame), frame_epoch });
         finish_hidden_warmup(live, true);
     }
 
@@ -2338,6 +2543,7 @@ void UltralightRuntime::State::WorkerMain()
             } else {
                 completed_frame = std::move(produced_frame);
             }
+            has_completed_frame.store(completed_frame != nullptr, std::memory_order_release);
         }
         if (pending_async_view_work && !stop_requested) {
             async_view_work_pending = true;
@@ -2377,12 +2583,16 @@ void UltralightRuntime::State::Cleanup() noexcept
     {
         const std::scoped_lock worker_lock(worker_mutex);
         completed_frame.reset();
+        has_completed_frame.store(false, std::memory_order_release);
     }
     font_loader.reset();
     file_system.reset();
     host_device = nullptr;
     host_context = nullptr;
     initialized = false;
+    initialized_atomic.store(false, std::memory_order_release);
+    has_live_views.store(false, std::memory_order_release);
+    registered_device.store(nullptr, std::memory_order_release);
     gpu_enabled.store(false, std::memory_order_relaxed);
     logged_gpu_command_dispatch = false;
     logged_deferred_finish_failure = false;
@@ -2480,6 +2690,7 @@ std::unique_ptr<IWebView> UltralightRuntime::CreateView(
         const std::scoped_lock lock(state_->pending_mutex);
         state_->pending_views.push_back(mailbox);
     }
+    state_->has_live_views.store(true, std::memory_order_release);
     state_->has_active_views.store(true, std::memory_order_relaxed);
     state_->worker_wakeup.notify_one();
     return std::make_unique<UltralightView>(std::move(mailbox));

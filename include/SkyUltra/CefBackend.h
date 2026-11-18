@@ -28,6 +28,7 @@ public:
     CefRuntime& operator=(const CefRuntime&) = delete;
 
     [[nodiscard]] BrowserEngine Engine() const noexcept override;
+    [[nodiscard]] bool NeedsImmediateContextPump(void* d3d_device, void* d3d_context) const noexcept override;
     [[nodiscard]] bool Initialize(std::string& error) override;
     void Shutdown() noexcept override;
     void PumpFrame(void* d3d_device, void* d3d_context) override;

@@ -501,7 +501,7 @@ bool g_vr_head_tracking{ true };
 bool g_replace_skyrim_inventory{ true };
 bool g_replace_skyrim_barter{ true };
 std::string g_menu_display_mode{ "fullscreen" };
-std::string g_inventory_display_mode{ "fullscreen" };
+std::string g_inventory_display_mode{ "windowed" };
 std::string g_barter_display_mode{ "half" };
 bool g_menu_pause_world{ false };
 bool g_inventory_pause_world{ false };
@@ -538,6 +538,22 @@ bool g_container_replacement_active{ false };
 bool g_mannequin_replacement_active{ false };
 bool g_loot_replacement_active{ false };
 bool g_pickpocket_replacement_active{ false };
+std::uint64_t g_menu_transition_epoch{ 0 };
+struct MenuSessionModeSnapshot {
+    bool visible{};
+    bool virtual_keyboard{};
+    bool virtual_keyboard_standalone{};
+    bool inventory{};
+    bool barter{};
+    bool magic{};
+    bool favorites{};
+    bool container{};
+    bool mannequin{};
+    bool loot{};
+    bool pickpocket{};
+    bool operator==(const MenuSessionModeSnapshot&) const noexcept = default;
+};
+std::optional<MenuSessionModeSnapshot> g_last_menu_session;
 std::unordered_map<std::string, HotkeyBinding> g_mod_hotkeys;
 
 bool IsBrowserEngineBuilt(skyultra::BrowserEngine engine) noexcept;
@@ -1112,7 +1128,7 @@ void RecordDevBridgeEntry(
     std::size_t payload_bytes,
     std::string message = {})
 {
-    if (method == "ui.getDeveloperSnapshot") {
+    if (method == "ui.getDeveloperSnapshot" || method == "ui.clearBridgeLog") {
         return;
     }
     const auto now_ms = DevDiagnosticsNowMs();
@@ -1839,6 +1855,9 @@ void PublishOverlayViews()
         const bool is_hud_widget = pinned_widget || (config.layer == skyultra::ViewLayer::Hud && config.click_through);
         if (is_hud_widget) {
             if (suppress_hud_widgets) config.visible = false;
+            if (snapshot.view) {
+                snapshot.view->SetDisplayOccluded(suppress_hud_widgets);
+            }
         } else if (g_browser_overlay_suppressed.load(std::memory_order_relaxed)) {
             config.visible = false;
         }
@@ -1979,8 +1998,15 @@ void ApplyBrowserPanelVisibility(skyultra::PanelVisibilityAction action,
         // The built-in page receives its mode events before it is shown below.
         if (next_visible && snapshot.id == g_menu_view_id) continue;
         if (next_visible != snapshot.config.visible) {
+            if (!next_visible) {
+                if (auto* view = g_view_manager->Find(snapshot.id)) {
+                    view->DiscardCachedFrame();
+                }
+                skyultra::ClearOverlayViewCachedFrames(snapshot.id, snapshot.config.id);
+                skyultra::HideActorPreviewImmediate(snapshot.id);
+                skyultra::CancelFrameworkSplash(snapshot.config.id);
+            }
             (void)g_view_manager->SetVisible(snapshot.id, next_visible);
-            if (!next_visible) skyultra::CancelFrameworkSplash(snapshot.config.id);
         }
     }
     if (action == skyultra::PanelVisibilityAction::Restore) g_suspended_panel_views.clear();
@@ -2038,12 +2064,100 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
                     [&](const auto& entry) { return entry.second.manager_id == snapshot.id; });
         });
     if (visible) {
-        if (show_main_menu && !g_inventory_replacement_active && !g_barter_replacement_active &&
-            !g_magic_replacement_active && !g_favorites_replacement_active &&
-            !g_container_replacement_active && !g_mannequin_replacement_active &&
-            !g_loot_replacement_active && !g_pickpocket_replacement_active &&
-            !g_virtual_keyboard_opened_menu) {
-            BeginSplashForView(g_menu_view_id);
+        if (show_main_menu && g_menu_view_id != 0) {
+            const auto epoch = ++g_menu_transition_epoch;
+            auto* menu_view = g_view_manager->Find(g_menu_view_id);
+            skyultra::HideActorPreviewImmediate(g_menu_view_id);
+            const auto baseline_paint = menu_view != nullptr ? menu_view->PaintSequence() : 0ULL;
+            if (menu_view != nullptr) {
+                menu_view->DiscardCachedFrame();
+            }
+            skyultra::ClearOverlayViewCachedFrames(
+                g_menu_view_id, main_config != nullptr ? std::string_view(main_config->id) : std::string_view{});
+            // Arm the page-load gate BEFORE starting any splash so BeginSplashForView sees waiting=true.
+            skyultra::BeginOverlayPageLoad(g_menu_view_id, baseline_paint);
+            if (!g_inventory_replacement_active && !g_barter_replacement_active &&
+                !g_magic_replacement_active && !g_favorites_replacement_active &&
+                !g_container_replacement_active && !g_mannequin_replacement_active &&
+                !g_loot_replacement_active && !g_pickpocket_replacement_active &&
+                !g_virtual_keyboard_opened_menu) {
+                BeginSplashForView(g_menu_view_id);
+            }
+            if (menu_view != nullptr) {
+                // Queue mode session state before SetVisible(true) so React commits the active panel before paint.
+                const MenuSessionModeSnapshot session{
+                    true,
+                    g_virtual_keyboard_open,
+                    g_virtual_keyboard_open && g_virtual_keyboard_opened_menu,
+                    g_inventory_replacement_active,
+                    g_barter_replacement_active,
+                    g_magic_replacement_active,
+                    g_favorites_replacement_active,
+                    g_container_replacement_active,
+                    g_mannequin_replacement_active,
+                    g_loot_replacement_active,
+                    g_pickpocket_replacement_active
+                };
+                const auto send_bool = [&](const char* event_name, bool active) {
+                    (void)menu_view->SendEventJson(event_name, nlohmann::json{ { "active", active } }.dump());
+                };
+                (void)menu_view->SendEventJson("skyultra.menuSession", nlohmann::json{
+                    { "epoch", epoch },
+                    { "visible", session.visible },
+                    { "virtualKeyboard", session.virtual_keyboard },
+                    { "standalone", session.virtual_keyboard_standalone },
+                    { "inventoryMode", session.inventory },
+                    { "barterMode", session.barter },
+                    { "magicMode", session.magic },
+                    { "favoritesMode", session.favorites },
+                    { "containerMode", session.container },
+                    { "mannequinMode", session.mannequin },
+                    { "lootMode", session.loot },
+                    { "pickpocketMode", session.pickpocket },
+                    { "menuDisplayMode", g_menu_display_mode },
+                    { "inventoryDisplayMode", g_inventory_display_mode },
+                    { "barterDisplayMode", g_barter_display_mode },
+                    { "magicDisplayMode", g_extra_menus.magic_display_mode },
+                    { "favoritesDisplayMode", g_extra_menus.favorites_display_mode },
+                    { "containerDisplayMode", g_extra_menus.container_display_mode },
+                    { "mannequinDisplayMode", g_extra_menus.mannequin_display_mode },
+                    { "lootDisplayMode", g_extra_menus.loot_display_mode },
+                    { "pickpocketDisplayMode", g_extra_menus.pickpocket_display_mode },
+                    { "menuPauseWorld", g_menu_pause_world },
+                    { "inventoryPauseWorld", g_inventory_pause_world },
+                    { "barterPauseWorld", g_barter_pause_world },
+                    { "magicPauseWorld", g_extra_menus.magic_pause_world },
+                    { "favoritesPauseWorld", g_extra_menus.favorites_pause_world },
+                    { "containerPauseWorld", g_extra_menus.container_pause_world },
+                    { "mannequinPauseWorld", g_extra_menus.mannequin_pause_world },
+                    { "lootPauseWorld", g_extra_menus.loot_pause_world },
+                    { "pickpocketPauseWorld", g_extra_menus.pickpocket_pause_world }
+                }.dump());
+                if (!g_last_menu_session || g_last_menu_session->visible != session.visible) {
+                    (void)menu_view->SendEventJson("skyultra.visibility",
+                        nlohmann::json{ { "visible", session.visible } }.dump());
+                }
+                if (!g_last_menu_session ||
+                    g_last_menu_session->virtual_keyboard != session.virtual_keyboard ||
+                    g_last_menu_session->virtual_keyboard_standalone != session.virtual_keyboard_standalone) {
+                    (void)menu_view->SendEventJson("skyultra.virtualKeyboard",
+                        nlohmann::json{ { "open", session.virtual_keyboard },
+                                        { "standalone", session.virtual_keyboard_standalone } }.dump());
+                }
+                if (!g_last_menu_session || g_last_menu_session->inventory != session.inventory) send_bool("skyultra.inventoryMode", session.inventory);
+                if (!g_last_menu_session || g_last_menu_session->barter != session.barter) send_bool("skyultra.barterMode", session.barter);
+                if (!g_last_menu_session || g_last_menu_session->magic != session.magic) send_bool("skyultra.magicMode", session.magic);
+                if (!g_last_menu_session || g_last_menu_session->favorites != session.favorites) send_bool("skyultra.favoritesMode", session.favorites);
+                if (!g_last_menu_session || g_last_menu_session->container != session.container) send_bool("skyultra.containerMode", session.container);
+                if (!g_last_menu_session || g_last_menu_session->mannequin != session.mannequin) send_bool("skyultra.mannequinMode", session.mannequin);
+                if (!g_last_menu_session || g_last_menu_session->loot != session.loot) send_bool("skyultra.lootMode", session.loot);
+                if (!g_last_menu_session || g_last_menu_session->pickpocket != session.pickpocket) send_bool("skyultra.pickpocketMode", session.pickpocket);
+                g_last_menu_session = session;
+            }
+            if (!g_view_manager->SetVisible(g_menu_view_id, true)) {
+                SKSE::log::error("SkyUltra could not change visibility for its main menu.");
+                return;
+            }
         } else if (has_visible_mod_view) {
             for (auto view = ordered_views.rbegin(); view != ordered_views.rend(); ++view) {
                 if (view->config.visible && !view->config.click_through && view->config.layer != skyultra::ViewLayer::Hud) {
@@ -2052,77 +2166,68 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
                 }
             }
         }
-        if (show_main_menu && g_menu_view_id != 0) {
-            if (!skyultra::FrameworkSplashActive()) {
-                skyultra::BeginOverlayPageLoad(g_menu_view_id);
-            }
-            if (auto* menu_view = g_view_manager->Find(g_menu_view_id)) {
-                // Queue mode events before SetVisible(true) so React switches views before CEF's first paint.
-                (void)menu_view->SendEventJson("skyultra.visibility",
-                    nlohmann::json{ { "visible", true } }.dump());
-                (void)menu_view->SendEventJson("skyultra.virtualKeyboard",
-                    nlohmann::json{ { "open", g_virtual_keyboard_open },
-                                    { "standalone", g_virtual_keyboard_open && g_virtual_keyboard_opened_menu } }.dump());
-                (void)menu_view->SendEventJson("skyultra.inventoryMode",
-                    nlohmann::json{ { "active", g_inventory_replacement_active } }.dump());
-                (void)menu_view->SendEventJson("skyultra.barterMode",
-                    nlohmann::json{ { "active", g_barter_replacement_active } }.dump());
-            }
-            SendMenuReplacementModes();
-            if (!g_view_manager->SetVisible(g_menu_view_id, true)) {
-                SKSE::log::error("SkyUltra could not change visibility for its main menu.");
-                return;
-            }
-        }
         ReleaseGamepadStickKeys();
         const auto screen = RE::BSGraphics::Renderer::GetScreenSize();
         g_browser_cursor.x = static_cast<LONG>(screen.width / 2U);
         g_browser_cursor.y = static_cast<LONG>(screen.height / 2U);
     } else {
-        if (g_inventory_replacement_active) {
-            g_inventory_replacement_active = false;
-            if (g_menu_view_id != 0) {
-                if (auto* menu_view = g_view_manager->Find(g_menu_view_id)) {
-                    (void)menu_view->SendEventJson("skyultra.inventoryMode",
-                        nlohmann::json{ { "active", false } }.dump());
-                }
-            }
-        }
-        if (g_barter_replacement_active) {
-            g_barter_replacement_active = false;
-            if (g_menu_view_id != 0) {
-                if (auto* menu_view = g_view_manager->Find(g_menu_view_id)) {
-                    (void)menu_view->SendEventJson("skyultra.barterMode",
-                        nlohmann::json{ { "active", false } }.dump());
-                }
-            }
-        }
-        if (g_magic_replacement_active || g_favorites_replacement_active ||
-            g_container_replacement_active || g_mannequin_replacement_active ||
-            g_loot_replacement_active || g_pickpocket_replacement_active) {
-            g_magic_replacement_active = false;
-            g_favorites_replacement_active = false;
-            g_container_replacement_active = false;
-            g_mannequin_replacement_active = false;
-            g_loot_replacement_active = false;
-            g_pickpocket_replacement_active = false;
-            SendMenuReplacementModes();
-        }
-        if (g_virtual_keyboard_open || g_virtual_keyboard_opened_menu) {
-            g_virtual_keyboard_open = false;
-            g_virtual_keyboard_opened_menu = false;
-            if (g_menu_view_id != 0) {
-                if (auto* menu_view = g_view_manager->Find(g_menu_view_id)) {
-                    (void)menu_view->SendEventJson("skyultra.virtualKeyboard",
-                        nlohmann::json{ { "open", false }, { "standalone", false } }.dump());
-                }
-            }
+        const auto epoch = ++g_menu_transition_epoch;
+        g_inventory_replacement_active = false;
+        g_barter_replacement_active = false;
+        g_magic_replacement_active = false;
+        g_favorites_replacement_active = false;
+        g_container_replacement_active = false;
+        g_mannequin_replacement_active = false;
+        g_loot_replacement_active = false;
+        g_pickpocket_replacement_active = false;
+        g_virtual_keyboard_open = false;
+        g_virtual_keyboard_opened_menu = false;
+        if (g_menu_view_id != 0) {
+            skyultra::HideActorPreviewImmediate(g_menu_view_id);
+            skyultra::ClearOverlayViewCachedFrames(
+                g_menu_view_id, main_config != nullptr ? std::string_view(main_config->id) : std::string_view{});
         }
         if (!has_visible_mod_view && g_menu_view_id != 0) {
             if (auto* menu_view = g_view_manager->Find(g_menu_view_id)) {
-                (void)menu_view->SendEventJson("skyultra.visibility",
-                    nlohmann::json{ { "visible", false } }.dump());
+                const MenuSessionModeSnapshot session{};
+                const auto send_bool = [&](const char* event_name, bool active) {
+                    (void)menu_view->SendEventJson(event_name, nlohmann::json{ { "active", active } }.dump());
+                };
+                (void)menu_view->SendEventJson("skyultra.menuSession", nlohmann::json{
+                    { "epoch", epoch },
+                    { "visible", false },
+                    { "virtualKeyboard", false },
+                    { "standalone", false },
+                    { "inventoryMode", false },
+                    { "barterMode", false },
+                    { "magicMode", false },
+                    { "favoritesMode", false },
+                    { "containerMode", false },
+                    { "mannequinMode", false },
+                    { "lootMode", false },
+                    { "pickpocketMode", false }
+                }.dump());
+                if (!g_last_menu_session || g_last_menu_session->visible) {
+                    (void)menu_view->SendEventJson("skyultra.visibility",
+                        nlohmann::json{ { "visible", false } }.dump());
+                }
+                if (!g_last_menu_session || g_last_menu_session->virtual_keyboard || g_last_menu_session->virtual_keyboard_standalone) {
+                    (void)menu_view->SendEventJson("skyultra.virtualKeyboard",
+                        nlohmann::json{ { "open", false }, { "standalone", false } }.dump());
+                }
+                if (!g_last_menu_session || g_last_menu_session->inventory) send_bool("skyultra.inventoryMode", false);
+                if (!g_last_menu_session || g_last_menu_session->barter) send_bool("skyultra.barterMode", false);
+                if (!g_last_menu_session || g_last_menu_session->magic) send_bool("skyultra.magicMode", false);
+                if (!g_last_menu_session || g_last_menu_session->favorites) send_bool("skyultra.favoritesMode", false);
+                if (!g_last_menu_session || g_last_menu_session->container) send_bool("skyultra.containerMode", false);
+                if (!g_last_menu_session || g_last_menu_session->mannequin) send_bool("skyultra.mannequinMode", false);
+                if (!g_last_menu_session || g_last_menu_session->loot) send_bool("skyultra.lootMode", false);
+                if (!g_last_menu_session || g_last_menu_session->pickpocket) send_bool("skyultra.pickpocketMode", false);
+                g_last_menu_session = session;
+                menu_view->DiscardCachedFrame();
             }
+            skyultra::ClearOverlayViewCachedFrames(
+                g_menu_view_id, main_config != nullptr ? std::string_view(main_config->id) : std::string_view{});
             if (!g_view_manager->SetVisible(g_menu_view_id, false)) {
                 SKSE::log::error("SkyUltra could not change visibility for its main menu.");
                 return;
@@ -2171,13 +2276,6 @@ void OpenSkyUltraInventoryReplacement()
     g_pickpocket_replacement_active = false;
     g_restore_browser_after_menu = false;
     g_modal_menu_open = false;
-    if (auto* menu_view = g_view_manager->Find(g_menu_view_id)) {
-        (void)menu_view->SendEventJson("skyultra.barterMode",
-            nlohmann::json{ { "active", false } }.dump());
-        SendMenuReplacementModes();
-        (void)menu_view->SendEventJson("skyultra.inventoryMode",
-            nlohmann::json{ { "active", true } }.dump());
-    }
     SetBrowserVisible(true, "Skyrim InventoryMenu replacement");
 }
 
@@ -2196,13 +2294,6 @@ void OpenSkyUltraBarterReplacement()
     g_pickpocket_replacement_active = false;
     g_restore_browser_after_menu = false;
     g_modal_menu_open = false;
-    if (auto* menu_view = g_view_manager->Find(g_menu_view_id)) {
-        (void)menu_view->SendEventJson("skyultra.inventoryMode",
-            nlohmann::json{ { "active", false } }.dump());
-        SendMenuReplacementModes();
-        (void)menu_view->SendEventJson("skyultra.barterMode",
-            nlohmann::json{ { "active", true } }.dump());
-    }
     SetBrowserVisible(true, "Skyrim BarterMenu replacement");
 }
 
@@ -2243,13 +2334,6 @@ void OpenSkyUltraMagicOrFavoritesReplacement(bool favorites)
     g_barter_replacement_active = false;
     g_restore_browser_after_menu = false;
     g_modal_menu_open = false;
-    if (auto* menu_view = g_view_manager->Find(g_menu_view_id)) {
-        (void)menu_view->SendEventJson("skyultra.inventoryMode",
-            nlohmann::json{ { "active", false } }.dump());
-        (void)menu_view->SendEventJson("skyultra.barterMode",
-            nlohmann::json{ { "active", false } }.dump());
-    }
-    SendMenuReplacementModes();
     SetBrowserVisible(true, favorites ? "Skyrim FavoritesMenu replacement" : "Skyrim MagicMenu replacement");
 }
 
@@ -2275,13 +2359,6 @@ void OpenSkyUltraContainerVariantReplacement(ContainerReplacementVariant variant
     g_barter_replacement_active = false;
     g_restore_browser_after_menu = false;
     g_modal_menu_open = false;
-    if (auto* menu_view = g_view_manager->Find(g_menu_view_id)) {
-        (void)menu_view->SendEventJson("skyultra.inventoryMode",
-            nlohmann::json{ { "active", false } }.dump());
-        (void)menu_view->SendEventJson("skyultra.barterMode",
-            nlohmann::json{ { "active", false } }.dump());
-    }
-    SendMenuReplacementModes();
     const char* reason = variant == ContainerReplacementVariant::Mannequin ? "Skyrim Mannequin replacement" :
         (variant == ContainerReplacementVariant::Loot ? "Skyrim Corpse Loot replacement" :
          (variant == ContainerReplacementVariant::Pickpocket ? "Skyrim Pickpocket replacement" :
@@ -2673,6 +2750,12 @@ bool ToggleModViewsByHotkey(std::string_view mod_id)
     const bool target_visible = !any_visible || g_browser_overlay_suppressed.load(std::memory_order_relaxed);
     if (target_visible) ApplyBrowserPanelVisibility(skyultra::PanelVisibilityAction::Select, mod_views, mod_handle);
     for (const auto id : mod_views) {
+        if (!target_visible) {
+            if (auto* v = g_view_manager->Find(id)) v->DiscardCachedFrame();
+            const auto* cfg = g_view_manager->Config(id);
+            skyultra::ClearOverlayViewCachedFrames(id, cfg != nullptr ? std::string_view(cfg->id) : std::string_view{});
+            skyultra::HideActorPreviewImmediate(id);
+        }
         (void)g_view_manager->SetVisible(id, target_visible);
         if (auto* view = g_view_manager->Find(id)) {
             (void)view->SendEventJson("skyultra.hotkey", nlohmann::json{{"modId", mod_id}, {"visible", target_visible}}.dump());
@@ -3241,10 +3324,14 @@ public:
                     inv3d->UnloadInventoryItem();
                 }
                 if (auto* msg_queue = RE::UIMessageQueue::GetSingleton()) {
-                    msg_queue->AddMessage(RE::InventoryMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
                     if (ui->IsMenuOpen("TweenMenu"sv)) {
+                        if (auto tween = ui->GetMenu("TweenMenu"sv); tween && tween->uiMovie) {
+                            tween->uiMovie->SetBackgroundAlpha(0.0F);
+                            tween->uiMovie->SetVariable("_root._visible", RE::GFxValue(false));
+                        }
                         msg_queue->AddMessage("TweenMenu"sv, RE::UI_MESSAGE_TYPE::kHide, nullptr);
                     }
+                    msg_queue->AddMessage(RE::InventoryMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
                 }
                 OpenSkyUltraInventoryReplacement();
                 return RE::BSEventNotifyControl::kContinue;
@@ -3266,10 +3353,14 @@ public:
                     inv3d->UnloadInventoryItem();
                 }
                 if (auto* msg_queue = RE::UIMessageQueue::GetSingleton()) {
-                    msg_queue->AddMessage(RE::BarterMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
                     if (ui->IsMenuOpen("Dialogue Menu"sv)) {
+                        if (auto dlg = ui->GetMenu("Dialogue Menu"sv); dlg && dlg->uiMovie) {
+                            dlg->uiMovie->SetBackgroundAlpha(0.0F);
+                            dlg->uiMovie->SetVariable("_root._visible", RE::GFxValue(false));
+                        }
                         msg_queue->AddMessage("Dialogue Menu"sv, RE::UI_MESSAGE_TYPE::kHide, nullptr);
                     }
+                    msg_queue->AddMessage(RE::BarterMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
                 }
                 OpenSkyUltraBarterReplacement();
                 return RE::BSEventNotifyControl::kContinue;
@@ -3290,10 +3381,14 @@ public:
                     menu->uiMovie->SetVariable("_root._visible", RE::GFxValue(false));
                 }
                 if (auto* msg_queue = RE::UIMessageQueue::GetSingleton()) {
-                    msg_queue->AddMessage(event->menuName, RE::UI_MESSAGE_TYPE::kHide, nullptr);
                     if (is_magic_menu && ui->IsMenuOpen("TweenMenu"sv)) {
+                        if (auto tween = ui->GetMenu("TweenMenu"sv); tween && tween->uiMovie) {
+                            tween->uiMovie->SetBackgroundAlpha(0.0F);
+                            tween->uiMovie->SetVariable("_root._visible", RE::GFxValue(false));
+                        }
                         msg_queue->AddMessage("TweenMenu"sv, RE::UI_MESSAGE_TYPE::kHide, nullptr);
                     }
+                    msg_queue->AddMessage(event->menuName, RE::UI_MESSAGE_TYPE::kHide, nullptr);
                 }
                 OpenSkyUltraMagicOrFavoritesReplacement(is_favorites_menu);
                 return RE::BSEventNotifyControl::kContinue;
@@ -3616,6 +3711,17 @@ public:
         runtimes_.clear();
     }
 
+    [[nodiscard]] bool NeedsImmediateContextPump(void* d3d_device, void* d3d_context) const noexcept override
+    {
+        for (const auto& runtime : runtimes_) {
+            if (runtime != nullptr && IsInitialized(runtime->Engine()) &&
+                runtime->NeedsImmediateContextPump(d3d_device, d3d_context)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void PumpFrame(void* d3d_device, void* d3d_context) override
     {
         if (d3d_device != nullptr) {
@@ -3930,7 +4036,7 @@ void StartBrowser()
     record.initial_url=menu_url;record.javascript_enabled=true;record.wait_for_page_ready=true;
     menu_manifest->page_request_methods.emplace("game.itemAction");
     menu_manifest->page_request_methods.emplace("ui.manageModRuntime");
-    for (const auto* method : { "game.getSpells", "game.equipSpell", "game.renameSpell", "game.deleteSpell", "game.getFavorites", "game.setFavorite", "game.getContainerSnapshot", "game.containerTransfer" }) menu_manifest->page_request_methods.emplace(method);
+    for (const auto* method : { "game.renameItem", "game.getSpells", "game.equipSpell", "game.renameSpell", "game.deleteSpell", "game.getFavorites", "game.setFavorite", "game.getContainerSnapshot", "game.containerTransfer", "ui.clearBridgeLog", "ui.evalInView", "ui.setModViewState" }) menu_manifest->page_request_methods.emplace(method);
     record.allowed_page_request_methods=menu_manifest->page_request_methods;
     record.browser_engine=static_cast<BrowserRuntimeRouter*>(g_browser_runtime.get())->ResolvedEngine(config.browser_engine);
     {const std::scoped_lock lock(g_native_views_mutex);g_native_views.emplace(menu_handle,std::move(record));}
@@ -4241,9 +4347,9 @@ bool IsActorPreviewRequest(std::string_view name) noexcept
 
 bool IsHostUiRequest(std::string_view name) noexcept
 {
-    return name == "game.getPlayerSnapshot" || name == "game.subscribe" || name == "game.unsubscribe" || name == "game.getInventory" || name == "game.equipItem" || name == "game.unequipItem" || name == "game.itemAction" || name == "game.getBarterSnapshot" || name == "game.barterTransaction" || name == "game.getContainerSnapshot" || name == "game.containerTransfer" || name == "game.getSpells" || name == "game.equipSpell" || name == "game.renameSpell" || name == "game.deleteSpell" || name == "game.getFavorites" || name == "game.setFavorite" || name == "game.getNearbyNpcs" || name == "game.searchNpcs" ||
+    return name == "game.getPlayerSnapshot" || name == "game.subscribe" || name == "game.unsubscribe" || name == "game.getInventory" || name == "game.equipItem" || name == "game.unequipItem" || name == "game.itemAction" || name == "game.renameItem" || name == "game.getBarterSnapshot" || name == "game.barterTransaction" || name == "game.getContainerSnapshot" || name == "game.containerTransfer" || name == "game.getSpells" || name == "game.equipSpell" || name == "game.renameSpell" || name == "game.deleteSpell" || name == "game.getFavorites" || name == "game.setFavorite" || name == "game.getNearbyNpcs" || name == "game.searchNpcs" ||
         name == "ui.getSplashStatus" || name == "ui.replaySplash" || name == "ui.setCursor" || name == "ui.close" || name == "ui.getSettings" || name == "ui.updateSettings" || name == "ui.pageReady" || name == "ui.configureWidgets" || name == "ui.setInputScope" || name == "ui.getPerformanceSnapshot" ||
-        name == "ui.getDeveloperSnapshot" || name == "ui.manageModRuntime" || name == "ui.reloadModViews" || name == "ui.exportHudMod" || name == "ui.manageDiagnosticSample" ||
+        name == "ui.getDeveloperSnapshot" || name == "ui.manageModRuntime" || name == "ui.reloadModViews" || name == "ui.exportHudMod" || name == "ui.manageDiagnosticSample" || name == "ui.clearBridgeLog" || name == "ui.evalInView" || name == "ui.setModViewState" ||
         name == "ui.playSound" || name == "ui.projectWorldAnchors" || name == "ui.setSpatialPlacement" || name == "ui.toggleDomInspector" || name == "ui.interopCall";
 }
 
@@ -4409,6 +4515,7 @@ bool HandleActorPreviewRequest(SkyUltraViewHandle handle,const skyultra::PageBri
         const auto reference_id=ActorPreviewFormId(params,"referenceId");
         const auto base_form_id=ActorPreviewFormId(params,"baseFormId");
         const auto use_preview=ActorPreviewBoolean(params,"usePreview",false);
+        const auto clear_override=ActorPreviewBoolean(params,"clearOverride",false);
         if(!reference_id&&!base_form_id)throw std::invalid_argument("An actor referenceId or baseFormId is required.");
         // Portraits captured from a studio view (camera button) override the automatic
         // portrait for that actor in every view (HUD, overview, player card, sheets).
@@ -4416,7 +4523,31 @@ bool HandleActorPreviewRequest(SkyUltraViewHandle handle,const skyultra::PageBri
         static std::unordered_map<std::uint64_t,std::string> s_portrait_overrides;
         const auto portrait_key=(static_cast<std::uint64_t>(reference_id)<<32U)|base_form_id;
         const auto ref_only_key=static_cast<std::uint64_t>(reference_id)<<32U;
-        if(!use_preview){
+        if(clear_override){
+            bool removed{};
+            {
+                const std::scoped_lock lock(s_portrait_mutex);
+                removed = s_portrait_overrides.erase(portrait_key) > 0;
+                if(reference_id) removed = (s_portrait_overrides.erase(ref_only_key) > 0) || removed;
+            }
+            if(removed){
+                if(auto* tasks=SKSE::GetTaskInterface()){
+                    tasks->AddTask([reference_id,base_form_id](){
+                        if(g_view_manager==nullptr)return;
+                        const auto event=nlohmann::json{
+                            {"referenceId",std::to_string(reference_id)},
+                            {"baseFormId",std::to_string(base_form_id)},
+                            {"isPlayer",reference_id==0x14U},
+                            {"dataUrl",""},
+                            {"cleared",true}}.dump();
+                        for(const auto& snapshot:g_view_manager->OrderedViews()){
+                            if(auto* view=g_view_manager->Find(snapshot.id))(void)view->SendEventJson("skyultra.portraitUpdated",event);
+                        }
+                    });
+                }
+            }
+        }
+        if(!use_preview&&!clear_override){
             std::string cached;
             {
                 const std::scoped_lock lock(s_portrait_mutex);
@@ -5989,6 +6120,149 @@ std::string HandleLegacyInteropCallJson(SkyUltraViewHandle handle, skyultra::Vie
     }.dump();
 }
 
+std::string HandleClearBridgeLogJson(const nlohmann::json& params)
+{
+    std::string mod_id;
+    if (params.is_object() && params.contains("modId") && params["modId"].is_string()) {
+        mod_id = params["modId"].get<std::string>();
+    }
+    std::size_t removed{};
+    std::size_t remaining{};
+    {
+        const std::scoped_lock lock(g_dev_diagnostics_mutex);
+        if (mod_id.empty()) {
+            removed = g_dev_bridge_log.size();
+            g_dev_bridge_log.clear();
+        } else {
+            removed = std::erase_if(g_dev_bridge_log, [&](const DevBridgeLogEntry& entry) {
+                return entry.mod_id == mod_id;
+            });
+        }
+        remaining = g_dev_bridge_log.size();
+    }
+    return nlohmann::json{
+        { "cleared", true },
+        { "removed", removed },
+        { "remaining", remaining }
+    }.dump();
+}
+
+std::string HandleSetModViewStateJson(const nlohmann::json& params)
+{
+    const auto rejected = [](std::string message) {
+        return nlohmann::json{ { "updated", false }, { "message", std::move(message) } }.dump();
+    };
+    if (!params.is_object() || !params.contains("viewId") || !params["viewId"].is_number_unsigned()) {
+        return rejected("A numeric viewId is required.");
+    }
+    if (g_view_manager == nullptr) {
+        return rejected("ViewManager is not ready.");
+    }
+    const auto view_id = params["viewId"].get<skyultra::ViewId>();
+    if (view_id == 0 || view_id == g_menu_view_id) {
+        return rejected("Built-in menu visibility is controlled via SkyUltra hotkeys or settings.");
+    }
+    const auto* cfg = g_view_manager->Config(view_id);
+    if (cfg == nullptr) {
+        return rejected("Target view was not found.");
+    }
+    SkyUltraViewHandle target_handle{};
+    {
+        const std::scoped_lock lock(g_native_views_mutex);
+        for (const auto& [vh, rec] : g_native_views) {
+            if (rec.manager_id && *rec.manager_id == view_id) {
+                target_handle = vh;
+                break;
+            }
+        }
+    }
+    if (params.contains("reload") && params["reload"].is_boolean() && params["reload"].get<bool>() && target_handle != 0) {
+        if (NativeApiReloadView(target_handle) != SKYULTRA_OK) {
+            return rejected("Could not reload the target view.");
+        }
+    }
+    if (params.contains("visible") && params["visible"].is_boolean()) {
+        const bool next_visible = params["visible"].get<bool>();
+        if (!next_visible) {
+            if (auto* view = g_view_manager->Find(view_id)) {
+                view->DiscardCachedFrame();
+            }
+            skyultra::ClearOverlayViewCachedFrames(view_id, cfg->id);
+            skyultra::HideActorPreviewImmediate(view_id);
+        }
+        (void)g_view_manager->SetVisible(view_id, next_visible);
+        PublishOverlayViews();
+        SyncSkyUltraWorldPause();
+        PublishBrowserCursor(HasVisibleInteractiveView());
+    }
+    if (params.contains("focused") && params["focused"].is_boolean()) {
+        if (params["focused"].get<bool>()) {
+            (void)g_view_manager->RequestFocus(view_id, InputFocusForView(view_id, skyultra::InputMode::MouseAndKeyboard));
+        } else {
+            g_view_manager->ReleaseFocus(view_id);
+        }
+        PublishBrowserCursor(HasVisibleInteractiveView());
+    }
+    const auto* latest_cfg = g_view_manager->Config(view_id);
+    const auto focus_owner = g_view_manager->FocusOwner();
+    return nlohmann::json{
+        { "updated", true },
+        { "viewId", view_id },
+        { "visible", latest_cfg != nullptr ? latest_cfg->visible : false },
+        { "focused", focus_owner && *focus_owner == view_id }
+    }.dump();
+}
+
+std::string HandleEvalInViewJson(const nlohmann::json& params)
+{
+    const auto rejected = [](std::string message) {
+        return nlohmann::json{ { "accepted", false }, { "dispatched", false }, { "message", std::move(message) } }.dump();
+    };
+    if (!params.is_object() || g_view_manager == nullptr) {
+        return rejected("Expected an object payload.");
+    }
+    skyultra::ViewId target_id = g_menu_view_id;
+    if (params.contains("viewId") && params["viewId"].is_number_unsigned()) {
+        target_id = params["viewId"].get<skyultra::ViewId>();
+    }
+    auto* view = g_view_manager->Find(target_id);
+    if (view == nullptr) {
+        return rejected("Target view was not found.");
+    }
+    std::string event_name = "skyultra.dev.probe";
+    if (params.contains("eventName") && params["eventName"].is_string()) {
+        const auto requested = params["eventName"].get<std::string>();
+        if (!requested.empty() && requested.size() <= 128) {
+            event_name = requested;
+        }
+    }
+    nlohmann::json payload = nlohmann::json::object();
+    if (params.contains("payload")) {
+        payload = params["payload"];
+    }
+    const auto payload_text = payload.dump();
+    const bool sent = view->SendEventJson(event_name, payload_text);
+    std::string mod_id = "unregistered";
+    {
+        const std::scoped_lock lock(g_native_views_mutex);
+        for (const auto& [vh, rec] : g_native_views) {
+            if (rec.manager_id && *rec.manager_id == target_id) {
+                mod_id = ModIdForViewHandle(vh);
+                break;
+            }
+        }
+    }
+    RecordDevBridgeEntry(target_id, std::move(mod_id), "dev-probe", event_name,
+        sent ? "ok" : "error", 0.0, payload_text.size(),
+        sent ? std::string("Developer Studio probe event dispatched.") : std::string("Target view rejected event dispatch."));
+    return nlohmann::json{
+        { "accepted", true },
+        { "dispatched", sent },
+        { "viewId", target_id },
+        { "eventName", event_name }
+    }.dump();
+}
+
 std::string HandleModRuntimeControl(const nlohmann::json& input)
 {
     const auto rejected = [](std::string message) { return nlohmann::json{{"accepted",false},{"message",std::move(message)}}.dump(); };
@@ -6118,6 +6392,21 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
         reply(HandleManageDiagnosticSampleJson(nlohmann::json::parse(message.payload_json, nullptr, false)));
         return true;
     }
+    if (message.name == "ui.clearBridgeLog") {
+        if (message.view_id != g_menu_view_id) { reject_non_menu(); return true; }
+        reply(HandleClearBridgeLogJson(nlohmann::json::parse(message.payload_json, nullptr, false)));
+        return true;
+    }
+    if (message.name == "ui.setModViewState") {
+        if (message.view_id != g_menu_view_id) { reject_non_menu(); return true; }
+        reply(HandleSetModViewStateJson(nlohmann::json::parse(message.payload_json, nullptr, false)));
+        return true;
+    }
+    if (message.name == "ui.evalInView") {
+        if (message.view_id != g_menu_view_id) { reject_non_menu(); return true; }
+        reply(HandleEvalInViewJson(nlohmann::json::parse(message.payload_json, nullptr, false)));
+        return true;
+    }
     if(message.name=="ui.setCursor"){
         const auto params=nlohmann::json::parse(message.payload_json,nullptr,false);
         if(!params.is_object()||!params.contains("mode")||!params["mode"].is_string()||(params["mode"]!="native"&&params["mode"]!="hidden")){reply(R"({"updated":false})");return true;}
@@ -6184,7 +6473,12 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
     if(message.name=="ui.close"){
         reply(R"({"closed":true})");
         if(message.view_id==g_menu_view_id)SetBrowserVisible(false,"main menu close button");
-        else (void)NativeApiSetVisible(handle,0);
+        else {
+            if(auto* v=g_view_manager?g_view_manager->Find(message.view_id):nullptr)v->DiscardCachedFrame();
+            if(const auto* cfg=g_view_manager?g_view_manager->Config(message.view_id):nullptr)skyultra::ClearOverlayViewCachedFrames(message.view_id,cfg->id);
+            skyultra::HideActorPreviewImmediate(message.view_id);
+            (void)NativeApiSetVisible(handle,0);
+        }
         skyultra::CancelFrameworkSplash();return true;
     }
     if(message.name=="game.subscribe"){
@@ -6236,7 +6530,8 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
         const auto response = skyultra::ReadGameDataJSON(message.name, message.payload_json);
         reply(response);
         if ((message.name == "game.equipItem" || message.name == "game.unequipItem" ||
-                message.name == "game.itemAction" || message.name == "game.barterTransaction" ||
+                message.name == "game.itemAction" || message.name == "game.renameItem" ||
+                message.name == "game.barterTransaction" ||
                 message.name == "game.containerTransfer" || message.name == "game.equipSpell" ||
                 message.name == "game.renameSpell" || message.name == "game.deleteSpell" ||
                 message.name == "game.setFavorite") &&
@@ -6246,7 +6541,23 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
         return true;
     }
     if (message.name == "ui.pageReady") {
-        skyultra::CompleteOverlayPageLoad(message.view_id);
+        const auto params = nlohmann::json::parse(message.payload_json, nullptr, false);
+        if (message.view_id == g_menu_view_id && params.is_object() &&
+            params.contains("epoch") && params["epoch"].is_number_unsigned()) {
+            const auto ready_epoch = params["epoch"].get<std::uint64_t>();
+            if (ready_epoch != g_menu_transition_epoch) {
+                reply(R"({"ready":false,"stale":true})");
+                return true;
+            }
+        }
+        std::uint64_t current_paint = UINT64_MAX;
+        if (g_view_manager != nullptr) {
+            if (auto* view = g_view_manager->Find(message.view_id)) {
+                current_paint = view->PaintSequence();
+                view->MarkPageReady();
+            }
+        }
+        skyultra::CompleteOverlayPageLoad(message.view_id, current_paint);
         if(const auto* config=g_view_manager->Config(message.view_id))skyultra::CompleteFrameworkSplash(config->id);
         for(auto& [mod,widget]:g_widget_overlays){(void)mod;if(widget.manager_id==message.view_id)widget.ready=true;}
         reply(R"({"ready":true})");

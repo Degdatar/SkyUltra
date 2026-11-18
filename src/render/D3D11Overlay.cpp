@@ -72,9 +72,20 @@ std::atomic<float> g_vr_spatial_distance{ 1.35F };
 std::atomic<float> g_vr_spatial_scale{ 1.0F };
 std::mutex g_overlay_views_mutex;
 std::vector<OverlayView> g_overlay_views;
+struct PageLoadGate {
+    std::chrono::steady_clock::time_point started{};
+    std::chrono::steady_clock::time_point ready_at{};
+    std::uint64_t min_paint_sequence{};
+    bool ready_received{};
+};
 std::mutex g_page_load_mutex;
 std::unordered_map<ViewId,bool> g_painted_views;
-std::unordered_map<ViewId, std::chrono::steady_clock::time_point> g_page_loads;
+std::unordered_map<ViewId, PageLoadGate> g_page_loads;
+std::atomic_uint32_t g_active_page_loads{0};
+std::mutex g_clear_views_mutex;
+std::vector<ViewId> g_clear_software_views;
+std::vector<std::string> g_clear_retained_configs;
+std::atomic_bool g_has_pending_frame_clears{false};
 std::mutex g_splash_tasks_mutex;
 std::unordered_multimap<std::string,std::function<void()>> g_splash_tasks;
 
@@ -162,18 +173,30 @@ void RecordPresentInterval()
 
 std::atomic_bool g_clear_retained_frames{ false };
 
-bool PageAwaitingReady(ViewId id)
+bool PageAwaitingReady(ViewId id, std::uint64_t current_paint_sequence = 0)
 {
+    if (g_active_page_loads.load(std::memory_order_acquire) == 0) return false;
     const std::scoped_lock lock(g_page_load_mutex);
     const auto found = g_page_loads.find(id);
     if (found == g_page_loads.end()) return false;
-    if(found->second.time_since_epoch().count()==0)found->second=std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (found->second.ready_received) {
+        if (current_paint_sequence > found->second.min_paint_sequence ||
+            now - found->second.ready_at >= std::chrono::milliseconds(90)) {
+            g_page_loads.erase(found);
+            g_active_page_loads.store(static_cast<std::uint32_t>(g_page_loads.size()), std::memory_order_release);
+            return false;
+        }
+        return true;
+    }
+    if (found->second.started.time_since_epoch().count() == 0) found->second.started = now;
     const bool warm_view = g_painted_views.contains(id);
     const auto timeout = warm_view
-        ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::milliseconds(180))
+        ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::milliseconds(650))
         : std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(20));
-    if (std::chrono::steady_clock::now() - found->second < timeout) return true;
+    if (now - found->second.started < timeout) return true;
     g_page_loads.erase(found);
+    g_active_page_loads.store(static_cast<std::uint32_t>(g_page_loads.size()), std::memory_order_release);
     if (!warm_view) {
         SKSE::log::warn("SkyUltra page {} did not signal readiness within 20 seconds; exposing its HTML recovery screen.", id);
     }
@@ -1677,11 +1700,24 @@ private:
 
         const std::scoped_lock views_lock(g_overlay_views_mutex);
         const auto& views = g_overlay_views;
-        std::erase_if(software_textures_, [&views](const auto& texture) {
-            return std::none_of(views.begin(), views.end(), [&texture](const OverlayView& view) {
-                return view.view != nullptr && view.view->Id() == texture.first;
+        if (g_has_pending_frame_clears.exchange(false, std::memory_order_acq_rel)) {
+            std::vector<ViewId> clear_sw;
+            std::vector<std::string> clear_ret;
+            {
+                const std::scoped_lock clear_lock(g_clear_views_mutex);
+                clear_sw.swap(g_clear_software_views);
+                clear_ret.swap(g_clear_retained_configs);
+            }
+            for (const auto id : clear_sw) software_textures_.erase(id);
+            for (const auto& cfg : clear_ret) retained_config_frames_.erase(cfg);
+        }
+        if (!software_textures_.empty()) {
+            std::erase_if(software_textures_, [&views](const auto& texture) {
+                return std::none_of(views.begin(), views.end(), [&texture](const OverlayView& view) {
+                    return view.view != nullptr && view.view->Id() == texture.first;
+                });
             });
-        });
+        }
         auto* game_device = RE::BSGraphics::Renderer::GetDevice();
         auto* render_window = RE::BSGraphics::Renderer::GetCurrentRenderWindow();
         if (game_device == nullptr || renderer == nullptr || (!ui_pass && game_swap_chain == nullptr)) {
@@ -1704,15 +1740,13 @@ private:
 
         const auto visible = g_visible.load(std::memory_order_acquire);
         auto* runtime = g_runtime.load(std::memory_order_acquire);
-        EnsureContextThreadProtection(device,context);
-        // Keep capture, state swaps, browser command-list execution, model
-        // redraw/export, sprite composition and restoration in one transaction.
-        const ContextThreadScope context_thread_scope(context_multithread_.Get());
-        (void)EnsureContextState(device, context);
         if (!visible) {
             WarmupFrameworkSplash(device, context);
             WarmupActorPreviewRenderer(device);
-            if (!already_pumped && runtime != nullptr) {
+            if (!already_pumped && runtime != nullptr && runtime->NeedsImmediateContextPump(device, context)) {
+                EnsureContextThreadProtection(device,context);
+                const ContextThreadScope context_thread_scope(context_multithread_.Get());
+                (void)EnsureContextState(device, context);
                 ComPtr<ID3D11RenderTargetView> target;
                 ComPtr<ID3D11DepthStencilView> depth_stencil;
                 context->OMGetRenderTargets(1, target.GetAddressOf(), depth_stencil.GetAddressOf());
@@ -1728,6 +1762,11 @@ private:
             }
             return false;
         }
+        EnsureContextThreadProtection(device,context);
+        // Keep capture, state swaps, browser command-list execution, model
+        // redraw/export, sprite composition and restoration in one transaction.
+        const ContextThreadScope context_thread_scope(context_multithread_.Get());
+        (void)EnsureContextState(device, context);
         if (views.empty()) {
             if (!logged_missing_view_) {
                 SKSE::log::error("SkyUltra overlay is visible but has no registered browser views.");
@@ -1787,13 +1826,13 @@ private:
         // Decode/upload splash frame before background actor/item renders so splash playback stays smooth.
         const auto splash_frame = TickFrameworkSplash(device_.Get(), context_.Get());
         if (!already_pumped) {
-            std::vector<ViewId> preview_owners;
+            preview_owners_.clear();
             for (const auto& overlay_view : views) {
                 if (overlay_view.view != nullptr && overlay_view.config.visible && overlay_view.config.opacity > 0.0F) {
-                    preview_owners.push_back(overlay_view.view->Id());
+                    preview_owners_.push_back(overlay_view.view->Id());
                 }
             }
-            RenderActorPreviews(device, context, preview_owners);
+            RenderActorPreviews(device, context, preview_owners_);
             if (!FrameworkSplashActive()) {
                 WarmupFrameworkSplash(device, context);
                 WarmupActorPreviewRenderer(device);
@@ -1850,13 +1889,13 @@ private:
         context_->OMSetRenderTargets(1, target.GetAddressOf(), ui_pass ? depth_stencil.Get() : nullptr);
         context_->RSSetViewports(viewport_count, viewports.data());
         sprite_batch_->SetViewport(active_viewport);
-        std::vector<std::shared_ptr<const void>> preview_frame_lifetimes;
-        std::vector<ViewId> painted_view_ids;
+        preview_frame_lifetimes_.clear();
+        painted_view_ids_.clear();
         gpu_timing_scope.BeginComposite();
         sprite_batch_->Begin(DirectX::SpriteSortMode_Deferred, blend_state_.Get());
         bool drew_view{};
         bool drew_cursor{};
-        std::vector<std::string> splashed_views;
+        splashed_views_.clear();
         const SizeU viewport_size{
             static_cast<std::uint32_t>(std::max(0.0F, active_viewport.Width)),
             static_cast<std::uint32_t>(std::max(0.0F, active_viewport.Height)),
@@ -1877,11 +1916,11 @@ private:
                 continue;
             }
             if (view == nullptr) {
-                splashed_views.push_back(config.id);
+                splashed_views_.push_back(config.id);
                 drew_view = true;
                 continue;
             }
-            const bool page_awaiting_ready = PageAwaitingReady(view->Id());
+            const bool page_awaiting_ready = PageAwaitingReady(view->Id(), view->PaintSequence());
 
             ID3D11ShaderResourceView* shader_resource_view{};
             RECT source{};
@@ -1929,14 +1968,14 @@ private:
                 }
             }
 
-            if ((!config.transparent || config.id == "SkyUltra.Menu") && FrameworkSplashActive()) {
+            if ((!config.transparent || config.layer == ViewLayer::Panel || config.id == "SkyUltra.Menu") && FrameworkSplashActive()) {
                 if (splash_frame != nullptr || DrawLoadingBackdrop(config, viewport_size, viewport_left, viewport_top)) {
                     drew_view = true;
                 }
-                if (shader_resource_view != nullptr && !page_awaiting_ready) {
-                    painted_view_ids.push_back(view->Id());
+                if (shader_resource_view != nullptr && !page_awaiting_ready && !known_painted_views_.contains(view->Id())) {
+                    painted_view_ids_.push_back(view->Id());
                 }
-                splashed_views.push_back(config.id);
+                splashed_views_.push_back(config.id);
                 continue;
             }
             if (page_awaiting_ready) {
@@ -1996,7 +2035,9 @@ private:
             const auto opacity = std::clamp(config.opacity, 0.0F, 1.0F);
             const auto tint = DirectX::XMVectorSet(opacity, opacity, opacity, opacity);
             sprite_batch_->Draw(shader_resource_view, destination, &clipped_source, tint);
-            painted_view_ids.push_back(view->Id());
+            if (!known_painted_views_.contains(view->Id())) {
+                painted_view_ids_.push_back(view->Id());
+            }
             drew_view = true;
             // Native actor pixels share this view's ordering, opacity and clip.
             // They never pass through a browser CPU bitmap or image encoder.
@@ -2019,7 +2060,7 @@ private:
                         static_cast<LONG>(std::lround((actor_right-actor_bounds.x)/actor_bounds.width*preview->size.width)),
                         static_cast<LONG>(std::lround((actor_bottom-actor_bounds.y)/actor_bounds.height*preview->size.height))};
                     sprite_batch_->Draw(static_cast<ID3D11ShaderResourceView*>(preview->shader_resource_view), actor_destination, &actor_source, tint);
-                    preview_frame_lifetimes.push_back(preview->lifetime);
+                    preview_frame_lifetimes_.push_back(preview->lifetime);
                 }
             }
         }
@@ -2050,16 +2091,20 @@ private:
             }
         }
         sprite_batch_->End();
-        if(!painted_view_ids.empty()){
+        preview_frame_lifetimes_.clear();
+        if(!painted_view_ids_.empty()){
             const std::scoped_lock lock(g_page_load_mutex);
-            for(const auto view:painted_view_ids)g_painted_views.try_emplace(view,true);
+            for(const auto view:painted_view_ids_){
+                g_painted_views.try_emplace(view,true);
+                known_painted_views_.try_emplace(view,true);
+            }
         }
         // CefInitialize must remain on the host main thread, but the backdrop must
         // reach a GPU submission before that potentially blocking startup.
-        if (!splashed_views.empty()) {
+        if (!splashed_views_.empty()) {
             std::vector<std::function<void()>> tasks;
             { const std::scoped_lock lock(g_splash_tasks_mutex);
-              for (const auto& key : splashed_views) {
+              for (const auto& key : splashed_views_) {
                   const auto [first,last] = g_splash_tasks.equal_range(key);
                   for (auto item=first;item!=last;++item) tasks.push_back(std::move(item->second));
                   g_splash_tasks.erase(first,last);
@@ -2281,7 +2326,7 @@ private:
 
     GpuTimingScope BeginGpuTiming(ID3D11DeviceContext* context)
     {
-        if (!gpu_timing_enabled_ || context == nullptr) {
+        if (!gpu_timing_enabled_ || context == nullptr || !PerformanceMonitoringActive()) {
             return {};
         }
         PollGpuTiming(context);
@@ -2463,6 +2508,11 @@ private:
         ID3D11RenderTargetView* game_render_target,
         ID3D11RenderTargetView* window_render_target)
     {
+        if (game_swap_chain != nullptr && game_swap_chain == back_buffer_swap_chain_ &&
+            game_render_target != nullptr && game_render_target == back_buffer_rtv_.Get() &&
+            back_buffer_width_ > 0 && back_buffer_height_ > 0) {
+            return true;
+        }
         auto* swap_chain = reinterpret_cast<IDXGISwapChain*>(game_swap_chain);
 
         DXGI_SWAP_CHAIN_DESC swap_chain_desc{};
@@ -2629,6 +2679,11 @@ private:
     std::array<GpuTimestampSlot, 8> gpu_timing_slots_{};
     std::unordered_map<ViewId, SoftwareTexture> software_textures_;
     std::unordered_map<std::string, RetainedViewFrame> retained_config_frames_;
+    std::unordered_map<ViewId, bool> known_painted_views_;
+    std::vector<ViewId> preview_owners_;
+    std::vector<std::shared_ptr<const void>> preview_frame_lifetimes_;
+    std::vector<ViewId> painted_view_ids_;
+    std::vector<std::string> splashed_views_;
     std::unique_ptr<DirectX::SpriteBatch> sprite_batch_;
     std::mutex draw_mutex_;
     std::size_t next_gpu_timing_slot_{};
@@ -2802,30 +2857,56 @@ void CancelOverlaySplash(std::string_view view_key)
 
 void CancelOverlayPageLoad(ViewId view)
 {
-    const std::scoped_lock lock(g_page_load_mutex);
-    g_page_loads.erase(view);
-    g_painted_views.erase(view);
+    {
+        const std::scoped_lock lock(g_page_load_mutex);
+        g_page_loads.erase(view);
+        g_painted_views.erase(view);
+        g_active_page_loads.store(static_cast<std::uint32_t>(g_page_loads.size()), std::memory_order_release);
+    }
+    ClearOverlayViewCachedFrames(view, {});
+}
+
+void ClearOverlayViewCachedFrames(ViewId view, std::string_view config_id) noexcept
+{
+    if (view == 0 && config_id.empty()) return;
+    {
+        const std::scoped_lock lock(g_clear_views_mutex);
+        if (view != 0) g_clear_software_views.push_back(view);
+        if (!config_id.empty()) g_clear_retained_configs.emplace_back(config_id);
+    }
+    g_has_pending_frame_clears.store(true, std::memory_order_release);
 }
 
 bool OverlayViewHasPainted(ViewId view) {const std::scoped_lock lock(g_page_load_mutex);return g_painted_views.contains(view);}
 
 bool OverlayPageAwaitingReady(ViewId view) { return PageAwaitingReady(view); }
 
-void BeginOverlayPageLoad(ViewId view)
+void BeginOverlayPageLoad(ViewId view, std::uint64_t min_paint_sequence)
 {
-    g_clear_retained_frames.store(true, std::memory_order_release);
+    ClearOverlayViewCachedFrames(view, {});
     const std::scoped_lock lock(g_page_load_mutex);
-    g_page_loads[view] = {};
+    PageLoadGate gate;
+    gate.min_paint_sequence = min_paint_sequence;
+    g_page_loads[view] = gate;
+    g_active_page_loads.store(static_cast<std::uint32_t>(g_page_loads.size()), std::memory_order_release);
 }
 
-void CompleteOverlayPageLoad(ViewId view)
+void CompleteOverlayPageLoad(ViewId view, std::uint64_t current_paint_sequence)
 {
     const std::scoped_lock lock(g_page_load_mutex);
-    if (const auto found = g_page_loads.find(view); found != g_page_loads.end() && found->second.time_since_epoch().count()!=0) {
-        const auto elapsed = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-found->second).count();
-        SKSE::log::info("SkyUltra page {} signalled interface readiness after {:.3f} ms.", view, elapsed);
+    if (const auto found = g_page_loads.find(view); found != g_page_loads.end()) {
+        if (found->second.started.time_since_epoch().count() != 0) {
+            const auto elapsed = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-found->second.started).count();
+            SKSE::log::info("SkyUltra page {} signalled interface readiness after {:.3f} ms.", view, elapsed);
+        }
+        if (current_paint_sequence <= found->second.min_paint_sequence) {
+            found->second.ready_received = true;
+            found->second.ready_at = std::chrono::steady_clock::now();
+            return;
+        }
+        g_page_loads.erase(found);
+        g_active_page_loads.store(static_cast<std::uint32_t>(g_page_loads.size()), std::memory_order_release);
     }
-    g_page_loads.erase(view);
 }
 
 void SetOverlayRuntime(IWebRuntime* runtime) noexcept

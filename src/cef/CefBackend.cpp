@@ -50,6 +50,9 @@ using Microsoft::WRL::ComPtr;
 constexpr std::uint32_t kMaxCefWindowlessFrameRate = 120;
 constexpr char kEditableFocusMessage[] = "skyultra_editable_focus";
 constexpr char kBridgeBatchAckMessage[] = "skyultra_bridge_batch_ack";
+constexpr char kBridgeBatchDeliverMessage[] = "skyultra_bridge_deliver";
+constexpr char kRendererBridgeReadyMessage[] = "skyultra_renderer_bridge_ready";
+constexpr char kPageBridgeMessage[] = "skyultra_page_bridge";
 constexpr char kContextLossMessage[] = "skyultra_webgl_context_lost";
 
 constexpr bool IsFatalGpuResourceFailure(HRESULT reason) noexcept
@@ -164,6 +167,12 @@ bool IsModRequestAllowed(const ViewConfig& config, const CefString& url)
     return IsPathWithin(policy.root_directory, requested_file);
 }
 
+std::int64_t SteadyNowMs() noexcept
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 std::uint32_t CurrentDisplayRefreshRate() noexcept
 {
     const auto refresh_rate_for = [](const wchar_t* device_name) -> std::uint32_t {
@@ -218,6 +227,8 @@ struct RuntimeState {
     std::vector<std::weak_ptr<BrowserState>> browsers;
     PageBridgeMessageCallback page_bridge_callback;
     std::mutex d3d_mutex;
+    std::atomic<void*> cached_device_ptr{};
+    std::atomic<void*> cached_context_ptr{};
     ComPtr<ID3D11Device> d3d_device;
     ComPtr<ID3D11Device1> d3d_device1;
     ComPtr<ID3D11DeviceContext> d3d_context;
@@ -260,42 +271,31 @@ int CefNativeKeyCode(const KeyInput& input) noexcept
     return static_cast<int>(native_key_code);
 }
 
-std::uint64_t CurrentThreadCpuTime100ns() noexcept
-{
-    FILETIME creation_time{};
-    FILETIME exit_time{};
-    FILETIME kernel_time{};
-    FILETIME user_time{};
-    if (!GetThreadTimes(GetCurrentThread(), &creation_time, &exit_time, &kernel_time, &user_time)) {
-        return 0;
-    }
-
-    ULARGE_INTEGER kernel_ticks{};
-    kernel_ticks.LowPart = kernel_time.dwLowDateTime;
-    kernel_ticks.HighPart = kernel_time.dwHighDateTime;
-    ULARGE_INTEGER user_ticks{};
-    user_ticks.LowPart = user_time.dwLowDateTime;
-    user_ticks.HighPart = user_time.dwHighDateTime;
-    return kernel_ticks.QuadPart + user_ticks.QuadPart;
-}
-
-class LambdaTask final : public CefTask {
-public:
-    explicit LambdaTask(std::function<void()> callback) : callback_(std::move(callback)) {}
-
-    void Execute() override { callback_(); }
-
-    IMPLEMENT_REFCOUNTING(LambdaTask);
-
-private:
-    std::function<void()> callback_;
-};
-
 struct CefGpuFrame {
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<ID3D11ShaderResourceView> shader_resource_view;
     SizeU size{};
     std::uint64_t device_generation{};
+    bool initialized{};
+};
+
+class LambdaTask final : public CefTask {
+public:
+    explicit LambdaTask(std::function<void()> callback)
+        : callback_(std::move(callback))
+    {
+    }
+
+    void Execute() override
+    {
+        if (callback_) {
+            callback_();
+        }
+    }
+
+private:
+    std::function<void()> callback_;
+    IMPLEMENT_REFCOUNTING(LambdaTask);
 };
 
 bool PostToCefUI(std::function<void()> callback)
@@ -315,6 +315,12 @@ public:
             // The per-view request handler still confines those reads to the
             // registered mod root.
             command_line->AppendSwitch("allow-file-access-from-files");
+            command_line->AppendSwitch("disable-background-networking");
+            command_line->AppendSwitch("disable-component-update");
+            command_line->AppendSwitch("no-pings");
+            command_line->AppendSwitchWithValue(
+                "disable-features",
+                "Translate,OptimizationHints,MediaRouter,CalculateNativeWinOcclusion");
             // Honor Chromium background scheduling; visibility is controlled via WasHidden.
             // Keep Chromium's driver/feature selection. Forcing rasterization,
             // zero-copy and hardware overlays bypasses its compatibility choices
@@ -369,6 +375,13 @@ struct BrowserState {
     std::shared_ptr<CefGpuFrame> gpu_frame;
     std::array<std::shared_ptr<CefGpuFrame>, 2> gpu_frame_pool{};
     std::size_t next_gpu_pool_slot{};
+    std::vector<CefRect> prev_dirty_rects;
+    bool prev_dirty_valid{};
+    std::atomic_uint64_t paint_sequence{0};
+    std::atomic_bool display_occluded{};
+    std::atomic_bool awaiting_shell_ready{};
+    std::atomic<std::int64_t> awaiting_shell_ready_since_ms{};
+    bool v8_bridge_ready{};
     std::atomic_bool logged_accelerated_paint{};
     bool logged_accelerated_frame{};
     bool logged_accelerated_failure{};
@@ -402,9 +415,13 @@ void ClearCefDocumentState(const std::shared_ptr<BrowserState>& state)
     state->bridge_in_flight.reset(); state->bridge_ack.clear();
     state->response_in_flight.reset(); state->response_ack.clear();
     state->main_frame_ready = false;
+    state->v8_bridge_ready = false;
+    state->awaiting_shell_ready.store(false, std::memory_order_relaxed);
+    state->awaiting_shell_ready_since_ms.store(0, std::memory_order_relaxed);
     const std::scoped_lock lock(state->mutex);
     state->pending_input.clear(); state->held_mouse_modifiers = 0;
     state->gpu_frame.reset(); state->gpu_frame_pool = {}; state->next_gpu_pool_slot = 0;
+    state->prev_dirty_rects.clear(); state->prev_dirty_valid = false;
     state->frames.clear(); state->shadow.clear(); state->shadow_size = {};
 }
 
@@ -456,12 +473,28 @@ void DrainCefBridge(const std::shared_ptr<BrowserState>& state)
         if (flight) return;
         std::shared_ptr<BridgeEventQueue> queue;
         { const std::scoped_lock lock(state->mutex); queue = responses ? state->config.bridge_response_queue : state->config.bridge_event_queue; }
-        const auto batch = queue->Take(responses ? state->response_consumer.load() : state->bridge_consumer.load());
+        const auto batch = queue->Take(responses ? state->response_consumer.load() : state->bridge_consumer.load(), 32);
         if (!batch) return;
         auto& ack = responses ? state->response_ack : state->bridge_ack;
         ack = std::string(responses ? "__SKYULTRA_REPLY_ACK__" : "__SKYULTRA_BATCH_ACK__") + std::to_string(state->Id()) + ":" + std::to_string(++state->bridge_sequence);
         flight = batch;
         (responses ? state->response_started : state->bridge_started) = std::chrono::steady_clock::now();
+        if (state->v8_bridge_ready) {
+            auto message = CefProcessMessage::Create(kBridgeBatchDeliverMessage);
+            auto args = message ? message->GetArgumentList() : nullptr;
+            auto list = CefListValue::Create();
+            if (args && list && args->SetBool(0, responses) && args->SetString(1, ack) &&
+                list->SetSize(batch->events.size() * 2)) {
+                for (std::size_t i = 0; i < batch->events.size(); ++i) {
+                    list->SetString(i * 2, batch->events[i].name);
+                    list->SetString(i * 2 + 1, batch->events[i].payload_json);
+                }
+                args->SetList(2, list);
+                frame->SendProcessMessage(PID_RENDERER, message);
+                ScheduleCefBridgeWatchdog(state);
+                return;
+            }
+        }
         frame->ExecuteJavaScript(BuildBridgeEventBatchScript(*batch, ack, responses), frame->GetURL(), 1);
         ScheduleCefBridgeWatchdog(state);
     };
@@ -662,7 +695,6 @@ void DrainCefInput(const std::shared_ptr<BrowserState>& state)
     const char* max_queue_wait_command{ "none" };
     double max_dispatch_ms{};
     const char* max_dispatch_command{ "none" };
-    double max_dispatch_cpu_ms{};
     {
         const std::scoped_lock lock(state->mutex);
         const auto count = std::min(kMaxInputCommandsPerTask, state->pending_input.size());
@@ -674,9 +706,7 @@ void DrainCefInput(const std::shared_ptr<BrowserState>& state)
 
     for (const auto& queued : batch) {
         const auto dispatch_start = std::chrono::steady_clock::now();
-        const auto dispatch_cpu_start = CurrentThreadCpuTime100ns();
         DispatchCefInput(state, queued.command);
-        const auto dispatch_cpu_end = CurrentThreadCpuTime100ns();
         const auto dispatch_end = std::chrono::steady_clock::now();
         const auto queue_wait_ms = std::chrono::duration<double, std::milli>(
             dispatch_start - queued.queued_at).count();
@@ -689,8 +719,6 @@ void DrainCefInput(const std::shared_ptr<BrowserState>& state)
         if (dispatch_ms > max_dispatch_ms) {
             max_dispatch_ms = dispatch_ms;
             max_dispatch_command = CefInputCommandName(queued.command);
-            max_dispatch_cpu_ms = dispatch_cpu_start != 0 && dispatch_cpu_end >= dispatch_cpu_start ?
-                static_cast<double>(dispatch_cpu_end - dispatch_cpu_start) / 10000.0 : 0.0;
         }
     }
 
@@ -704,8 +732,7 @@ void DrainCefInput(const std::shared_ptr<BrowserState>& state)
         state->runtime->log_info("CEF input batch for view " + std::to_string(state->id) +
             ": max queue wait " + std::to_string(static_cast<int>(max_queue_wait_ms)) +
             " ms (" + max_queue_wait_command + "), max dispatch " +
-            std::to_string(static_cast<int>(max_dispatch_ms)) + " ms wall / " +
-            std::to_string(static_cast<int>(max_dispatch_cpu_ms)) + " ms thread CPU (" +
+            std::to_string(static_cast<int>(max_dispatch_ms)) + " ms wall (" +
             max_dispatch_command + ").");
     }
 
@@ -864,23 +891,63 @@ public:
         }
     }
 
-    bool OnProcessMessageReceived(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame,
+    void HandleParsedPageBridgeMessage(CefRefPtr<CefBrowser> browser, PageBridgeMessage parsed)
+    {
+        if (!state_->main_frame_ready && browser) {
+            state_->main_frame_ready = true;
+            FlushPendingBridge(browser->GetMainFrame());
+            LogStartupStage("page bridge ready");
+        }
+        if (parsed.name == "ui.pageReady") {
+            state_->app_shell_ready = true;
+            LogStartupStage("application shell mounted");
+            if (state_->prime_hidden_frame && browser) {
+                state_->awaiting_shell_ready.store(false, std::memory_order_release);
+                browser->GetHost()->Invalidate(PET_VIEW);
+            }
+        }
+        if (state_->page_bridge_callback) {
+            state_->page_bridge_callback(std::move(parsed));
+        }
+    }
+
+    bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
         CefProcessId source_process, CefRefPtr<CefProcessMessage> message) override
     {
         if (source_process != PID_RENDERER || !message) return false;
-        if (message->GetName().ToString() == kContextLossMessage) {
+        const auto name = message->GetName().ToString();
+        if (name == kRendererBridgeReadyMessage) {
+            if (frame && frame->IsMain()) {
+                state_->v8_bridge_ready = true;
+                FlushPendingBridge(frame);
+            }
+            return true;
+        }
+        if (name == kPageBridgeMessage) {
+            const auto arguments = message->GetArgumentList();
+            if (frame && frame->IsMain() && arguments && arguments->GetSize() == 1 &&
+                arguments->GetType(0) == VTYPE_STRING) {
+                PageBridgeMessage parsed;
+                if (ParseBridgePayloadJson(state_->id, arguments->GetString(0).ToString(), parsed)) {
+                    HandleParsedPageBridgeMessage(browser, std::move(parsed));
+                }
+            }
+            return true;
+        }
+        if (name == kContextLossMessage) {
             if (!frame || !frame->IsMain()) return true;
             const auto now = std::chrono::steady_clock::now();
             if (now - state_->last_context_loss < std::chrono::seconds(1)) return true;
             state_->last_context_loss = now;
             { const std::scoped_lock lock(state_->mutex); ++state_->health.context_losses;
               state_->health.last_failure = "WebGL context lost; host texture pool discarded.";
-              state_->gpu_frame_pool = {}; state_->next_gpu_pool_slot = 0; }
+              state_->gpu_frame_pool = {}; state_->next_gpu_pool_slot = 0;
+              state_->prev_dirty_rects.clear(); state_->prev_dirty_valid = false; }
             if (state_->runtime->log_info) state_->runtime->log_info("CEF WebGL context loss on view " + std::to_string(state_->Id()) +
                 ". This is a context-loss signal, not proof of a GPU-process crash.");
             return true;
         }
-        if (message->GetName().ToString() == kBridgeBatchAckMessage) {
+        if (name == kBridgeBatchAckMessage) {
             const auto arguments = message->GetArgumentList();
             if (frame && frame->IsMain() && arguments && arguments->GetSize() == 1 &&
                 arguments->GetType(0) == VTYPE_STRING) {
@@ -888,7 +955,7 @@ public:
             }
             return true;
         }
-        if (message->GetName().ToString() != kEditableFocusMessage) return false;
+        if (name != kEditableFocusMessage) return false;
         const auto arguments = message->GetArgumentList();
         if (!arguments || arguments->GetSize() < 1) {
             return false;
@@ -1010,18 +1077,7 @@ public:
         if (state_->page_bridge_callback) {
             PageBridgeMessage parsed;
             if (ParseBridgeConsoleMessage(state_->id, text, parsed)) {
-                // A request proves the bridge is installed. Replies need not wait
-                // for load-end (which also waits for unrelated page resources).
-                if (!state_->main_frame_ready && browser) {
-                    state_->main_frame_ready = true;
-                    FlushPendingBridge(browser->GetMainFrame());
-                    LogStartupStage("page bridge ready");
-                }
-                if(parsed.name=="ui.pageReady"){
-                    state_->app_shell_ready=true;LogStartupStage("application shell mounted");
-                    if(browser)browser->GetHost()->Invalidate(PET_VIEW);
-                }
-                state_->page_bridge_callback(std::move(parsed));
+                HandleParsedPageBridgeMessage(browser, std::move(parsed));
                 return true;
             }
         }
@@ -1066,6 +1122,16 @@ public:
             state_->runtime->log_info("CEF produced a software paint for view " +
                 std::to_string(state_->id) + " (" + std::to_string(width) + "x" +
                 std::to_string(height) + ").");
+        }
+
+        if (state_->awaiting_shell_ready.load(std::memory_order_acquire) &&
+            !state_->prime_hidden_frame) {
+            const auto since_ms = state_->awaiting_shell_ready_since_ms.load(std::memory_order_relaxed);
+            const auto elapsed_ms = since_ms > 0 ? (SteadyNowMs() - since_ms) : 0;
+            if (elapsed_ms < 650) {
+                return;
+            }
+            state_->awaiting_shell_ready.store(false, std::memory_order_release);
         }
 
         const auto row_bytes = static_cast<std::size_t>(width) * 4U;
@@ -1129,14 +1195,25 @@ public:
             state_->frames.clear();
         }
         state_->frames.push_back(std::move(frame));
+        state_->awaiting_shell_ready.store(false, std::memory_order_release);
+        state_->paint_sequence.fetch_add(1, std::memory_order_release);
     }
 
     void OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
-        const RectList&, const CefAcceleratedPaintInfo& info) override
+        const RectList& dirty_rects, const CefAcceleratedPaintInfo& info) override
     {
         CEF_REQUIRE_UI_THREAD();
         if (type != PET_VIEW || state_->runtime->gpu_suspended.load(std::memory_order_acquire)) {
             return;
+        }
+        if (state_->awaiting_shell_ready.load(std::memory_order_acquire) &&
+            !state_->prime_hidden_frame) {
+            const auto since_ms = state_->awaiting_shell_ready_since_ms.load(std::memory_order_relaxed);
+            const auto elapsed_ms = since_ms > 0 ? (SteadyNowMs() - since_ms) : 0;
+            if (elapsed_ms < 650) {
+                return;
+            }
+            state_->awaiting_shell_ready.store(false, std::memory_order_release);
         }
         if (!state_->logged_accelerated_paint.exchange(true, std::memory_order_relaxed) &&
             state_->runtime->log_info) {
@@ -1177,10 +1254,8 @@ public:
 
         ComPtr<ID3D11Texture2D> shared_texture;
         const auto open_start = std::chrono::steady_clock::now();
-        const auto open_cpu_start = CurrentThreadCpuTime100ns();
         const auto open_result = device->OpenSharedResource1(
             info.shared_texture_handle, IID_PPV_ARGS(shared_texture.GetAddressOf()));
-        const auto open_cpu_end = CurrentThreadCpuTime100ns();
         const auto open_end = std::chrono::steady_clock::now();
         if (FAILED(open_result)) {
             SuspendGpuRendering(open_result,"opening a shared frame");
@@ -1204,6 +1279,8 @@ public:
         const SizeU size{ texture_desc.Width, texture_desc.Height };
         std::shared_ptr<CefGpuFrame> frame;
         std::size_t pool_slot{};
+        std::vector<CefRect> prev_dirty;
+        bool prev_dirty_valid{};
         {
             const std::scoped_lock lock(state_->mutex);
             pool_slot = state_->next_gpu_pool_slot % state_->gpu_frame_pool.size();
@@ -1212,6 +1289,10 @@ public:
                 candidate->size.height == size.height &&
                 candidate->device_generation == device_generation) {
                 frame = candidate;
+            }
+            prev_dirty_valid = state_->prev_dirty_valid;
+            if (prev_dirty_valid) {
+                prev_dirty = state_->prev_dirty_rects;
             }
         }
 
@@ -1243,20 +1324,50 @@ public:
             }
         }
 
-        // CEF recycles the source handle as soon as this callback returns. Copy the full
-        // frame into the back-buffer slot of our owned 2-texture pool so D3D11 never stalls
-        // on a Read-After-Write hazard while the compositor samples the front texture.
+        // CEF recycles the source handle as soon as this callback returns. Copy into the
+        // back-buffer slot of our owned 2-texture pool so D3D11 never stalls on RAW hazards;
+        // when the ping-pong target is already initialized, update only dirty regions (< 50% area).
         const auto copy_start = std::chrono::steady_clock::now();
-        const auto copy_cpu_start = CurrentThreadCpuTime100ns();
-        context->CopyResource(frame->texture.Get(), shared_texture.Get());
-        const auto copy_cpu_end = CurrentThreadCpuTime100ns();
+        bool copied_regions{};
+        if (frame->initialized && prev_dirty_valid && !dirty_rects.empty() &&
+            dirty_rects.size() + prev_dirty.size() <= 24) {
+            std::vector<D3D11_BOX> boxes;
+            boxes.reserve(dirty_rects.size() + prev_dirty.size());
+            std::uint64_t dirty_pixels{};
+            const auto total_pixels = static_cast<std::uint64_t>(size.width) * size.height;
+            const auto append_rects = [&](const RectList& list) {
+                for (const auto& rect : list) {
+                    const auto left = std::clamp(rect.x, 0, static_cast<int>(size.width));
+                    const auto top = std::clamp(rect.y, 0, static_cast<int>(size.height));
+                    const auto right = static_cast<int>(std::clamp<std::int64_t>(
+                        static_cast<std::int64_t>(rect.x) + rect.width, left, static_cast<std::int64_t>(size.width)));
+                    const auto bottom = static_cast<int>(std::clamp<std::int64_t>(
+                        static_cast<std::int64_t>(rect.y) + rect.height, top, static_cast<std::int64_t>(size.height)));
+                    if (right <= left || bottom <= top) continue;
+                    dirty_pixels += static_cast<std::uint64_t>(right - left) * static_cast<std::uint64_t>(bottom - top);
+                    boxes.push_back(D3D11_BOX{
+                        static_cast<UINT>(left), static_cast<UINT>(top), 0,
+                        static_cast<UINT>(right), static_cast<UINT>(bottom), 1
+                    });
+                }
+            };
+            append_rects(dirty_rects);
+            append_rects(prev_dirty);
+            if (!boxes.empty() && dirty_pixels < total_pixels / 2U) {
+                for (const auto& box : boxes) {
+                    context->CopySubresourceRegion(
+                        frame->texture.Get(), 0, box.left, box.top, 0, shared_texture.Get(), 0, &box);
+                }
+                copied_regions = true;
+            }
+        }
+        if (!copied_regions) {
+            context->CopyResource(frame->texture.Get(), shared_texture.Get());
+            frame->initialized = true;
+        }
         const auto copy_end = std::chrono::steady_clock::now();
         const auto open_ms = std::chrono::duration<double, std::milli>(open_end - open_start).count();
-        const auto open_cpu_ms = open_cpu_start != 0 && open_cpu_end >= open_cpu_start ?
-            static_cast<double>(open_cpu_end - open_cpu_start) / 10000.0 : 0.0;
         const auto copy_ms = std::chrono::duration<double, std::milli>(copy_end - copy_start).count();
-        const auto copy_cpu_ms = copy_cpu_start != 0 && copy_cpu_end >= copy_cpu_start ?
-            static_cast<double>(copy_cpu_end - copy_cpu_start) / 10000.0 : 0.0;
         const auto slow_paint_time = std::chrono::steady_clock::now();
         if (state_->runtime->log_info && (open_ms >= 50.0 || copy_ms >= 50.0) &&
             (state_->last_slow_paint_log.time_since_epoch().count() == 0 ||
@@ -1264,9 +1375,7 @@ public:
             state_->last_slow_paint_log = slow_paint_time;
             state_->runtime->log_info("CEF accelerated paint for view " + std::to_string(state_->id) +
                 ": shared-texture open " + std::to_string(static_cast<int>(open_ms)) +
-                " ms wall / " + std::to_string(static_cast<int>(open_cpu_ms)) +
-                " ms thread CPU; copy " + std::to_string(static_cast<int>(copy_ms)) +
-                " ms wall / " + std::to_string(static_cast<int>(copy_cpu_ms)) + " ms thread CPU.");
+                " ms wall; copy " + std::to_string(static_cast<int>(copy_ms)) + " ms wall.");
         }
         bool log_accelerated_frame{};
         bool hide_after_prime{};
@@ -1279,7 +1388,11 @@ public:
             const std::scoped_lock state_lock(state_->mutex);
             state_->gpu_frame_pool[pool_slot] = frame;
             state_->next_gpu_pool_slot = (pool_slot + 1) % state_->gpu_frame_pool.size();
+            state_->prev_dirty_rects = dirty_rects;
+            state_->prev_dirty_valid = !dirty_rects.empty();
             state_->gpu_frame = std::move(frame);
+            state_->awaiting_shell_ready.store(false, std::memory_order_release);
+            state_->paint_sequence.fetch_add(1, std::memory_order_release);
             if (!state_->logged_accelerated_frame) {
                 state_->logged_accelerated_frame = true;
                 log_accelerated_frame = true;
@@ -1564,6 +1677,59 @@ public:
         });
     }
 
+    void DiscardCachedFrame() noexcept override
+    {
+        const std::scoped_lock lock(state_->mutex);
+        state_->gpu_frame.reset();
+        state_->frames.clear();
+        state_->prev_dirty_rects.clear();
+        state_->prev_dirty_valid = false;
+        state_->awaiting_shell_ready_since_ms.store(SteadyNowMs(), std::memory_order_relaxed);
+        state_->awaiting_shell_ready.store(true, std::memory_order_release);
+    }
+
+    void MarkPageReady() noexcept override
+    {
+        state_->awaiting_shell_ready_since_ms.store(0, std::memory_order_relaxed);
+        state_->awaiting_shell_ready.store(false, std::memory_order_release);
+        PostToCefUI([state = state_] {
+            if (!state->browser || state->close_requested || state->closed.load()) return;
+            bool visible{};
+            {
+                const std::scoped_lock lock(state->mutex);
+                visible = state->config.visible;
+            }
+            if (visible && !state->runtime->gpu_suspended.load(std::memory_order_acquire) &&
+                !state->display_occluded.load(std::memory_order_acquire)) {
+                state->browser->GetHost()->Invalidate(PET_VIEW);
+            }
+        });
+    }
+
+    [[nodiscard]] std::uint64_t PaintSequence() const noexcept override
+    {
+        return state_->paint_sequence.load(std::memory_order_acquire);
+    }
+
+    void SetDisplayOccluded(bool occluded) noexcept override
+    {
+        const bool previous = state_->display_occluded.exchange(occluded, std::memory_order_acq_rel);
+        if (previous == occluded) return;
+        PostToCefUI([state = state_, occluded] {
+            if (!state->browser || state->close_requested) return;
+            bool visible{};
+            {
+                const std::scoped_lock lock(state->mutex);
+                visible = state->config.visible;
+            }
+            const bool suspended = state->runtime->gpu_suspended.load(std::memory_order_acquire);
+            state->browser->GetHost()->WasHidden(suspended || !visible || occluded);
+            if (!occluded && visible && !suspended && !state->awaiting_shell_ready.load(std::memory_order_acquire)) {
+                state->browser->GetHost()->Invalidate(PET_VIEW);
+            }
+        });
+    }
+
     void SetVisible(bool visible) override
     {
         std::uint32_t max_fps{};
@@ -1581,14 +1747,22 @@ public:
                 auto host = state->browser->GetHost();
                 if(visible)state->prime_hidden_frame=false;
                 const bool suspended=state->runtime->gpu_suspended.load(std::memory_order_acquire);
+                const bool occluded = state->display_occluded.load(std::memory_order_acquire);
                 host->SetWindowlessFrameRate(visible ? CefWindowlessFrameRate(max_fps) :
                     std::min(30, CefWindowlessFrameRate(max_fps)));
-                host->WasHidden(suspended || (!visible&&!state->prime_hidden_frame));
-                if (visible && !suspended) {
-                    // A hidden windowless browser stops painting. Request a new
-                    // frame as soon as it is shown instead of waiting for CEF's
-                    // next scheduled paint.
-                    host->Invalidate(PET_VIEW);
+                host->WasHidden(suspended || occluded || (!visible&&!state->prime_hidden_frame));
+                if (visible && !suspended && !occluded) {
+                    if (!state->awaiting_shell_ready.load(std::memory_order_acquire)) {
+                        host->Invalidate(PET_VIEW);
+                    } else {
+                        CefPostDelayedTask(TID_UI, new LambdaTask([weak = std::weak_ptr<BrowserState>(state)] {
+                            const auto current = weak.lock();
+                            if (!current || current->close_requested || current->closed.load()) return;
+                            if (current->awaiting_shell_ready.exchange(false, std::memory_order_acq_rel) && current->browser) {
+                                current->browser->GetHost()->Invalidate(PET_VIEW);
+                            }
+                        }), 650);
+                    }
                 }
             }
         });
@@ -1756,6 +1930,17 @@ BrowserEngine CefRuntime::Engine() const noexcept
     return BrowserEngine::CEF;
 }
 
+bool CefRuntime::NeedsImmediateContextPump(void* d3d_device, void* d3d_context) const noexcept
+{
+    if (!config_.gpu_rendering || d3d_device == nullptr || d3d_context == nullptr ||
+        !state_->initialized.load(std::memory_order_acquire) || state_->stopping.load(std::memory_order_acquire) ||
+        state_->gpu_suspended.load(std::memory_order_acquire)) {
+        return false;
+    }
+    return state_->cached_device_ptr.load(std::memory_order_relaxed) != d3d_device ||
+        state_->cached_context_ptr.load(std::memory_order_relaxed) != d3d_context;
+}
+
 void CefRuntime::PumpFrame(void* d3d_device, void* d3d_context)
 {
     if (!config_.gpu_rendering || d3d_device == nullptr || d3d_context == nullptr ||
@@ -1800,6 +1985,8 @@ void CefRuntime::PumpFrame(void* d3d_device, void* d3d_context)
         state_->d3d_device = device;
         state_->d3d_device1 = std::move(device1);
         state_->d3d_context = context;
+        state_->cached_device_ptr.store(device, std::memory_order_release);
+        state_->cached_context_ptr.store(context, std::memory_order_release);
         state_->shared_texture_ready = shared_texture_ready;
         ++state_->d3d_generation;
         if (shared_texture_ready && !state_->logged_shared_texture_ready) {
@@ -1879,8 +2066,9 @@ bool CefRuntime::Initialize(std::string& error)
         return false;
     }
     if (!std::filesystem::exists(config_.runtime_directory / L"chrome_100_percent.pak") ||
-        !std::filesystem::exists(config_.runtime_directory / L"resources.pak")) {
-        error = "CEF .pak resources are missing beside libcef.dll.";
+        !std::filesystem::exists(config_.runtime_directory / L"resources.pak") ||
+        !std::filesystem::exists(config_.runtime_directory / L"locales" / L"en-US.pak")) {
+        error = "CEF .pak resources or locales/en-US.pak are missing beside libcef.dll.";
         return false;
     }
 
@@ -1927,6 +2115,7 @@ bool CefRuntime::Initialize(std::string& error)
     }
     CefString(&settings.resources_dir_path) = config_.runtime_directory.wstring();
     CefString(&settings.locales_dir_path) = (config_.runtime_directory / L"locales").wstring();
+    CefString(&settings.locale) = L"en-US";
     CefString(&settings.browser_subprocess_path) = config_.subprocess_executable.wstring();
     CefString(&settings.cache_path) = config_.cache_directory.wstring();
     CefString(&settings.log_file) = log_file.wstring();
@@ -2053,6 +2242,8 @@ void CefRuntime::Shutdown() noexcept
         state_->d3d_device.Reset();
         state_->d3d_device1.Reset();
         state_->d3d_context.Reset();
+        state_->cached_device_ptr.store(nullptr, std::memory_order_release);
+        state_->cached_context_ptr.store(nullptr, std::memory_order_release);
         state_->shared_texture_ready = false;
     }
     state_->app = nullptr;

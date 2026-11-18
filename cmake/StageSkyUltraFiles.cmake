@@ -8,22 +8,10 @@ if(NOT IS_DIRECTORY "${SKYULTRA_RESOURCE_SOURCE}")
     message(FATAL_ERROR "SkyUltra resource source directory is missing: ${SKYULTRA_RESOURCE_SOURCE}")
 endif()
 
-file(MAKE_DIRECTORY "${SKYULTRA_RESOURCE_DESTINATION}")
-
-# Exclude any legacy INI left over in an older resource checkout.
-# Stage all other owned resources so styles, fonts, and new image files are
-# included automatically as they are added to the source resources directory.
-file(COPY "${SKYULTRA_RESOURCE_SOURCE}/"
-    DESTINATION "${SKYULTRA_RESOURCE_DESTINATION}"
-    PATTERN "SkyUltra.ini" EXCLUDE
-    PATTERN "SkyUltraDemo.html" EXCLUDE
-    PATTERN "SkyUltraWindowTest.html" EXCLUDE)
-
-# Retire prior configuration and menu files from generated packages as well.
-file(REMOVE
-    "${SKYULTRA_RESOURCE_DESTINATION}/SkyUltra.ini"
-    "${SKYULTRA_RESOURCE_DESTINATION}/SkyUltraDemo.html"
-    "${SKYULTRA_RESOURCE_DESTINATION}/SkyUltraWindowTest.html")
+# Retire the duplicate SKSE/Plugins/resources/SkyUltra/Files copy from generated
+# packages: SWFs are staged directly to Data/Interface, and SkyUltraSplash.mp4,
+# logos, and SkyUltraBridge.js live inside Data/SkyUltra/skyultra.menu/Files/.
+file(REMOVE_RECURSE "${SKYULTRA_RESOURCE_DESTINATION}")
 
 # Remove the old flat copies from this project's generated package output.
 file(REMOVE

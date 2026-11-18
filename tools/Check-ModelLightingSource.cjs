@@ -19,6 +19,7 @@ const React={
  useState(value){const index=cursor++;slots[index]??={value};return [slots[index].value,next=>{const previous=slots[index].value;slots[index].value=typeof next==='function'?next(previous):next;dirty||=!Object.is(previous,slots[index].value);}];},
  useId(){cursor++;return 'stage-hint';},
  useEffect(fn,deps){const index=cursor++;if(!same(slots[index]?.deps,deps))effects.push({index,fn,deps});},
+ useLayoutEffect(fn,deps){const index=cursor++;if(!same(slots[index]?.deps,deps))effects.push({index,fn,deps});},
 };
 const window={innerWidth:1200,innerHeight:800,devicePixelRatio:1,
  setTimeout(fn){timers.set(++timerId,fn);return timerId;},clearTimeout(id){timers.delete(id);},setInterval(fn){intervals.set(++timerId,fn);return timerId;},clearInterval(id){intervals.delete(id);},
@@ -41,10 +42,13 @@ const Choice='Choice';
 const cameraModule={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(root,'sdk/ui/src/field/actorCamera.ts'),'utf8'),{
  compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
 }).outputText,{exports:cameraModule});
+const previewLifecycleModule={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(root,'sdk/ui/src/field/previewLifecycle.ts'),'utf8'),{
+ compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
+}).outputText,{exports:previewLifecycleModule,window,Event:class{constructor(type){this.type=type;}}});
 const imports={
  'react':React,'@skyultra/sdk':{createSkyUltraRenderer:()=>renderer,createSkyUltraItemRenderer:()=>renderer},
  '../core.js':{SkyChoice:Choice,SkySegmentedControl:'Segments'},'./ActorAnimationTimeline.js':{ActorAnimationTimeline:'Timeline'},
- './actorCamera.js':cameraModule,'./icons.js':{Icon:'Icon'},
+ './actorCamera.js':cameraModule,'./icons.js':{Icon:'Icon'},'./previewLifecycle.js':previewLifecycleModule,
 };
 const source=ts.transpileModule(fs.readFileSync(path.join(root,'sdk/ui/src/field/ActorStage.tsx'),'utf8'),{
  fileName:'ActorStage.tsx',compilerOptions:{jsx:ts.JsxEmit.React,module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},

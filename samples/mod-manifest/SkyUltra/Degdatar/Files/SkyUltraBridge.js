@@ -39,6 +39,11 @@
     if (utf8ByteLength(serialized) > 65536) {
       throw new RangeError("SkyWebView request messages must be no larger than 64 KiB");
     }
+    try {
+      if (typeof window.__skyultraSendBridge === "function" && window.__skyultraSendBridge(serialized) === true) {
+        return;
+      }
+    } catch (_) {}
     console.debug(nativeBridgePrefix + serialized);
   }
 
