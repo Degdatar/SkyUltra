@@ -108,6 +108,8 @@ SkyUltra would not be what it is today without the talented creators who helped 
 
 | Contributor | Role & Contributions | Profile |
 | --- | --- | --- |
+| **Rahaf** | Created the **SkyUltra Artwork**, **Banner** , **Logo**. | [`@r_rahaf_ro` on Instagram](https://www.instagram.com/r_rahaf_ro/) |
+| **Shasho** | Created the **Music for Skyultra Video On Youtube**. | [`@Shasho` on Youtube](https://www.youtube.com/channel/UCTqvo9icOfJGV1qfbclsAdg) |
 | **Marty Edwar** | Created the **SkyUltra Opening Splash Screen**, performed the **voice-over** in it, and helped with **HUD development**. | [`@martinedwar1` on Instagram](https://www.instagram.com/martinedwar1) |
 | **StabbyINK** | Helped with the **UI/UX design** and the **development of SkyUltra Menus**. | [StabbyINK on Nexus Mods](https://www.nexusmods.com/profile/StabbyINK) |
 
