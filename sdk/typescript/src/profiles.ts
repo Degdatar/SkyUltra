@@ -104,7 +104,6 @@ export function coerceLegacyHudLayout(raw: unknown, fallbackTheme = 'dragonstone
       (k): k is SkyUltraWidgetKind => typeof k === 'string' && (skyUltraWidgetKinds as readonly string[]).includes(k),
     );
     const deduped = [...new Set(widgets)].slice(0, 16);
-    if (deduped.length === 0) return null;
     const anchorCandidate = typeof record.anchor === 'string' && (skyUltraWidgetAnchors as readonly string[]).includes(record.anchor)
       ? (record.anchor as SkyUltraWidgetAnchor)
       : 'top-left';
@@ -340,12 +339,7 @@ export function resolveEffectiveSkyUltraProfile(
   const effectiveHud =
     isCharacterScoped && charRecord?.hudLayout !== undefined ? charRecord.hudLayout : store.globalDefaults.hudLayout;
 
-  const allLoadouts: SkyUltraSavedLoadoutRecord[] = [];
-  for (const prof of Object.values(store.profiles)) {
-    for (const item of prof.loadouts ?? []) {
-      allLoadouts.push(item);
-    }
-  }
+  const characterLoadouts: SkyUltraSavedLoadoutRecord[] = charRecord?.loadouts ? [...charRecord.loadouts] : [];
 
   return {
     profileId,
@@ -355,7 +349,7 @@ export function resolveEffectiveSkyUltraProfile(
     theme: effectiveTheme,
     uiPrefs: effectiveUiPrefs,
     hudLayout: effectiveHud ?? null,
-    loadouts: allLoadouts,
+    loadouts: characterLoadouts,
   };
 }
 
@@ -387,24 +381,36 @@ export function updateProfileForContext(
   };
 
   if (patch.loadouts !== undefined) {
-    // Partition loadouts per character profile so outfit presets stay cleanly scoped
-    const grouped = new Map<string, { charName: string; list: SkyUltraSavedLoadoutRecord[] }>();
-    for (const entry of sanitizeLoadoutList(patch.loadouts, characterName ?? 'Adventurer')) {
-      const pid = characterProfileIdForName(entry.characterName || characterName || 'Adventurer');
-      const key = pid === 'global' ? 'char.adventurer' : pid;
-      const bucket = grouped.get(key) ?? { charName: entry.characterName || characterName || 'Adventurer', list: [] };
-      bucket.list.push(entry);
-      grouped.set(key, bucket);
-    }
-    for (const [pid, prof] of Object.entries(nextProfiles)) {
-      nextProfiles[pid] = { ...prof, loadouts: grouped.get(pid)?.list ?? [] };
-    }
-    for (const [pid, bucket] of grouped.entries()) {
-      if (!nextProfiles[pid]) {
+    const cleanLoadouts = sanitizeLoadoutList(patch.loadouts, characterName ?? 'Adventurer');
+    if (derivedCharId !== 'global') {
+      const existingChar = nextProfiles[derivedCharId];
+      nextProfiles[derivedCharId] = {
+        id: derivedCharId,
+        characterName: existingChar?.characterName || characterName?.trim() || derivedCharId.replace(/^char\./, ''),
+        updatedAt: new Date().toISOString(),
+        ...(existingChar?.theme ? { theme: existingChar.theme } : {}),
+        ...(existingChar?.uiPrefs ? { uiPrefs: existingChar.uiPrefs } : {}),
+        ...(existingChar?.hudLayout !== undefined ? { hudLayout: existingChar.hudLayout } : {}),
+        loadouts: cleanLoadouts,
+      };
+    } else {
+      const grouped = new Map<string, { charName: string; list: SkyUltraSavedLoadoutRecord[] }>();
+      for (const entry of cleanLoadouts) {
+        const pid = characterProfileIdForName(entry.characterName || 'Adventurer');
+        const key = pid === 'global' ? 'char.adventurer' : pid;
+        const bucket = grouped.get(key) ?? { charName: entry.characterName || 'Adventurer', list: [] };
+        bucket.list.push(entry);
+        grouped.set(key, bucket);
+      }
+      for (const [pid, bucket] of grouped.entries()) {
+        const existingChar = nextProfiles[pid];
         nextProfiles[pid] = {
           id: pid,
-          characterName: bucket.charName,
+          characterName: existingChar?.characterName || bucket.charName,
           updatedAt: new Date().toISOString(),
+          ...(existingChar?.theme ? { theme: existingChar.theme } : {}),
+          ...(existingChar?.uiPrefs ? { uiPrefs: existingChar.uiPrefs } : {}),
+          ...(existingChar?.hudLayout !== undefined ? { hudLayout: existingChar.hudLayout } : {}),
           loadouts: bucket.list,
         };
       }

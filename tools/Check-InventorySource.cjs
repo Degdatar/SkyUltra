@@ -104,7 +104,9 @@ async function pageChecks(){
  const tome={...book,id:'127',name:'Read Spell Tome',useAction:'learn',teachesSpell:'Flames',isRead:true};
  const unreadTome={...tome,id:'128',name:'Unread Spell Tome',isRead:false};
  const legacyBook={...book,id:'129',name:'Book Without Read State',isRead:undefined};
- const firstPageItems=[item,helmet,book,note,tome,unreadTome,legacyBook];
+ const knownIng={id:'130',name:'Blue Mountain Flower',category:'ingredient',useAction:'eat',count:4,value:2,weight:0.1,equipped:false,knownEffectCount:2,totalEffectCount:4,ingredientEffects:[{slot:0,known:true,name:'Restore Health',isHostile:false,isDetrimental:false},{slot:1,known:false},{slot:2,known:true,name:'Fortify Health',isHostile:false,isDetrimental:false},{slot:3,known:false}]};
+ const unlearnedIng={id:'131',name:'Beehive Husk',category:'ingredient',useAction:'eat',count:9,value:5,weight:0.2,equipped:false,knownEffectCount:0,totalEffectCount:4,ingredientEffects:[{slot:0,known:false},{slot:1,known:false},{slot:2,known:false},{slot:3,known:false}]};
+ const firstPageItems=[item,helmet,book,note,tome,unreadTome,legacyBook,knownIng,unlearnedIng];
  let bookWasRead=false,allowRead=false;
  const currentItems=()=>firstPageItems.map(entry=>entry.id===book.id?{...entry,isRead:bookWasRead}:entry);
  let snapshot={available:true,playerName:'Player',level:10,gold:50,armorRating:10,equipment:{head:null,body:null,hands:null,feet:null,mainHand:null,offHand:null},inventory:currentItems(),inventoryTypeCount:1163,inventoryTruncated:true};
@@ -220,6 +222,20 @@ async function pageChecks(){
  assert.ok(selTree.props.className.includes('is-enchanted'));
  assert.ok(findAll(selTree,node=>node.props?.className==='selection-art__enchant-badge').length===1);
  assert.ok(findAll(selTree,node=>node.props?.className==='selection-enchantments').length===1);
+ // Verify Inventory ingredient cards show only the 0-4 learned indicator while EquipmentSelection shows full learned & unlearned effect traits.
+ const knownIngCard=cardFor(knownIng.name);
+ assert.ok(findAll(knownIngCard,node=>typeof node.props?.className==='string'&&node.props.className.includes('item-tile__alch-chip')).length===1);
+ assert.equal(findAll(knownIngCard,node=>typeof node.props?.className==='string'&&(node.props.className.includes('item-tile__ingredient-traits')||node.props.className.includes('item-tile__ing-pill'))).length,0);
+ const unlearnedIngCard=cardFor(unlearnedIng.name);
+ assert.ok(findAll(unlearnedIngCard,node=>typeof node.props?.className==='string'&&node.props.className.includes('item-tile__alch-chip')).length===1);
+ assert.equal(findAll(unlearnedIngCard,node=>typeof node.props?.className==='string'&&(node.props.className.includes('item-tile__ingredient-traits')||node.props.className.includes('item-tile__ing-unlearned'))).length,0);
+ const selIngTree=panel.EquipmentSelection({player:snapshot,selected:knownIng,enabled:true,bridge:api,obscured:false,onChange(){},onItemAction(){}});
+ assert.ok(findAll(selIngTree,node=>typeof node.props?.className==='string'&&node.props.className.includes('selection-ingredient-pill')).length===1);
+ const selIngSlots=findAll(selIngTree,node=>typeof node.props?.className==='string'&&node.props.className.split(/\s+/).includes('selection-ingredient-effect'));
+ assert.equal(selIngSlots.length,4);
+ assert.equal(selIngSlots.filter(node=>node.props.className.includes('is-learned')).length,2);
+ assert.equal(selIngSlots.filter(node=>node.props.className.includes('is-unlearned')).length,2);
+ checks+=8;
  assert.equal(panel.resolveItemUseAction({id:'1',name:'Restore Health',category:'potion',count:1,value:10,weight:0.5,equipped:false}),'drink');
  assert.equal(panel.resolveItemUseAction({id:'2',name:'Sweetroll',category:'potion',count:1,value:2,weight:0.1,equipped:false,useAction:'eat'}),'eat');
  assert.equal(panel.resolveItemUseAction({id:'3',name:'Nirnroot',category:'ingredient',count:1,value:10,weight:0.2,equipped:false}),'eat');

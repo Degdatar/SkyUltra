@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_set>
 #include <algorithm>
 #include <utility>
@@ -27,7 +28,7 @@
 namespace skyultra {
 namespace {
 using Microsoft::WRL::ComPtr;
-struct Signals { std::atomic_bool can_play{}, ended{}, failed{}; std::atomic<DWORD> error_code{}, media_error{}; };
+struct Signals { std::atomic_bool can_play{}, seeked{}, ended{}, failed{}; std::atomic<DWORD> error_code{}, media_error{}; };
 class Notify final : public IMFMediaEngineNotify {
     std::atomic_ulong refs_{1};
     std::shared_ptr<Signals> signals_;
@@ -41,20 +42,74 @@ public:
     ULONG STDMETHODCALLTYPE AddRef() override {return ++refs_;}
     ULONG STDMETHODCALLTYPE Release() override {const auto n=--refs_;if(n==0)delete this;return n;}
     HRESULT STDMETHODCALLTYPE EventNotify(DWORD event,DWORD_PTR parameter1,DWORD parameter2) override {
-        // No engine calls, UI locks, or D3D operations from Media Foundation's callback.
-        if(event==MF_MEDIA_ENGINE_EVENT_CANPLAY||event==MF_MEDIA_ENGINE_EVENT_SEEKED)signals_->can_play=true;
+        if(event==MF_MEDIA_ENGINE_EVENT_SEEKED)signals_->seeked=true;
+        if(event==MF_MEDIA_ENGINE_EVENT_LOADEDDATA||event==MF_MEDIA_ENGINE_EVENT_CANPLAY||
+           event==MF_MEDIA_ENGINE_EVENT_CANPLAYTHROUGH||event==MF_MEDIA_ENGINE_EVENT_SEEKED)signals_->can_play=true;
         if(event==MF_MEDIA_ENGINE_EVENT_ENDED)signals_->ended=true;
         if(event==MF_MEDIA_ENGINE_EVENT_ERROR){signals_->media_error=static_cast<DWORD>(parameter1);signals_->error_code=parameter2;signals_->failed=true;}
         return S_OK;
     }
 };
-class SplashPlayer {
-public:
-    HMODULE mf_module{};
+struct MediaFoundationApi {
+    std::mutex mutex;
+    HMODULE module{};
+    bool started{};
+    decltype(&MFStartup) startup{};
     decltype(&MFShutdown) shutdown{};
     decltype(&MFCreateDXGIDeviceManager) create_manager{};
     decltype(&MFCreateAttributes) create_attributes{};
     decltype(&MFCreateFile) create_file{};
+
+    HRESULT EnsureLoaded() noexcept {
+        const std::scoped_lock lock(mutex);
+        if (!module) {
+            module = LoadLibraryExW(L"mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (!module) return HRESULT_FROM_WIN32(GetLastError());
+            startup = reinterpret_cast<decltype(&MFStartup)>(GetProcAddress(module, "MFStartup"));
+            shutdown = reinterpret_cast<decltype(&MFShutdown)>(GetProcAddress(module, "MFShutdown"));
+            create_manager = reinterpret_cast<decltype(&MFCreateDXGIDeviceManager)>(GetProcAddress(module, "MFCreateDXGIDeviceManager"));
+            create_attributes = reinterpret_cast<decltype(&MFCreateAttributes)>(GetProcAddress(module, "MFCreateAttributes"));
+            create_file = reinterpret_cast<decltype(&MFCreateFile)>(GetProcAddress(module, "MFCreateFile"));
+            if (!startup || !shutdown || !create_manager || !create_attributes || !create_file) {
+                FreeLibrary(module);
+                module = nullptr;
+                startup = nullptr;
+                shutdown = nullptr;
+                create_manager = nullptr;
+                create_attributes = nullptr;
+                create_file = nullptr;
+                return E_NOTIMPL;
+            }
+        }
+        if (!started) {
+            const auto hr = startup(MF_VERSION, MFSTARTUP_FULL);
+            if (FAILED(hr)) return hr;
+            started = true;
+        }
+        return S_OK;
+    }
+
+    void Unload() noexcept {
+        const std::scoped_lock lock(mutex);
+        if (started && shutdown) {
+            shutdown();
+            started = false;
+        }
+        if (module) {
+            FreeLibrary(module);
+            module = nullptr;
+        }
+        startup = nullptr;
+        shutdown = nullptr;
+        create_manager = nullptr;
+        create_attributes = nullptr;
+        create_file = nullptr;
+    }
+};
+MediaFoundationApi g_mf;
+
+class SplashPlayer {
+public:
     ComPtr<IMFMediaEngine> engine;
     ComPtr<IMFByteStream> source_stream;
     ComPtr<IMFDXGIDeviceManager> manager;
@@ -66,23 +121,19 @@ public:
     ComPtr<ID3D11ShaderResourceView> srv;
     ComPtr<ID3D11Device> owner;
     std::shared_ptr<Signals> signals=std::make_shared<Signals>();
-    bool mf{},playing{},warming_first_frame{},has_frame{},primed{},frame_transferred{},software_transfer{},pending_consumer_copy{};
+    bool playing{},warming_first_frame{},has_frame{},primed{},primed_bitmap_ready{},frame_transferred{},software_transfer{},pending_consumer_copy{};
     const char* stage{"Media Foundation startup"};
     bool Check(HRESULT hr,const char* operation){if(SUCCEEDED(hr))return true;stage=operation;signals->error_code=static_cast<DWORD>(hr);signals->failed=true;return false;}
-    ~SplashPlayer(){if(engine){engine->Pause();engine->Shutdown();engine.Reset();}source_stream.Reset();manager.Reset();if(mf)shutdown();if(mf_module)FreeLibrary(mf_module);}
-    HRESULT Open(ID3D11Device* host, const VideoSplashSettings& settings, bool compatible = false) {
+    ~SplashPlayer(){if(engine){engine->Pause();engine->Shutdown();engine.Reset();}source_stream.Reset();manager.Reset();}
+    [[nodiscard]] bool IsMediaReady() const {
+        return signals->can_play.load() ||
+            (engine && engine->GetReadyState() >= MF_MEDIA_ENGINE_READY_HAVE_CURRENT_DATA);
+    }
+    HRESULT Open(ID3D11Device* host, const VideoSplashSettings& settings, bool compatible = true) {
         owner=host;
         software_transfer=compatible;
         // Load lazily so a Windows installation without Media Foundation can still load SkyUltra.
-        mf_module=LoadLibraryExW(L"mfplat.dll",nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if(!mf_module)return HRESULT_FROM_WIN32(GetLastError());
-        const auto startup=reinterpret_cast<decltype(&MFStartup)>(GetProcAddress(mf_module,"MFStartup"));
-        shutdown=reinterpret_cast<decltype(&MFShutdown)>(GetProcAddress(mf_module,"MFShutdown"));
-        create_manager=reinterpret_cast<decltype(&MFCreateDXGIDeviceManager)>(GetProcAddress(mf_module,"MFCreateDXGIDeviceManager"));
-        create_attributes=reinterpret_cast<decltype(&MFCreateAttributes)>(GetProcAddress(mf_module,"MFCreateAttributes"));
-        create_file=reinterpret_cast<decltype(&MFCreateFile)>(GetProcAddress(mf_module,"MFCreateFile"));
-        if(!startup||!shutdown||!create_manager||!create_attributes||!create_file)return E_NOTIMPL;
-        auto hr=startup(MF_VERSION,MFSTARTUP_FULL);if(FAILED(hr))return hr;mf=true;
+        auto hr=g_mf.EnsureLoaded();if(FAILED(hr))return hr;
         if(!software_transfer){
             ComPtr<IDXGIDevice> dxgi;ComPtr<IDXGIAdapter> adapter;
             stage="Find splash video adapter";
@@ -96,12 +147,12 @@ public:
             if(SUCCEEDED(media_context.As(&multithread)))multithread->SetMultithreadProtected(TRUE);
             UINT token{};
             stage="Create splash video device manager";
-            if(FAILED(hr=create_manager(&token,&manager))||FAILED(hr=manager->ResetDevice(media_device.Get(),token)))return hr;
+            if(FAILED(hr=g_mf.create_manager(&token,&manager))||FAILED(hr=manager->ResetDevice(media_device.Get(),token)))return hr;
         }
         ComPtr<IMFAttributes> attributes;ComPtr<IMFMediaEngineClassFactory> factory;
         ComPtr<IMFMediaEngineNotify> callback;callback.Attach(new Notify(signals));
         stage="Create splash media engine";
-        if(FAILED(hr=create_attributes(&attributes,3))||
+        if(FAILED(hr=g_mf.create_attributes(&attributes,3))||
            FAILED(hr=attributes->SetUnknown(MF_MEDIA_ENGINE_CALLBACK,callback.Get()))||
            (!software_transfer&&FAILED(hr=attributes->SetUnknown(MF_MEDIA_ENGINE_DXGI_MANAGER,manager.Get())))||
            FAILED(hr=attributes->SetUINT32(MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT,
@@ -120,10 +171,10 @@ public:
         executable.resize(length);
         const auto data=std::filesystem::path(executable).parent_path()/L"Data";
         auto source=data/L"SkyUltra"/L"skyultra.menu"/L"Files"/L"SkyUltraSplash.mp4";
-        hr=create_file(MF_ACCESSMODE_READ,MF_OPENMODE_FAIL_IF_NOT_EXIST,MF_FILEFLAGS_NONE,source.c_str(),&source_stream);
+        hr=g_mf.create_file(MF_ACCESSMODE_READ,MF_OPENMODE_FAIL_IF_NOT_EXIST,MF_FILEFLAGS_NONE,source.c_str(),&source_stream);
         if(hr==HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)||hr==HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)){
             source=data/L"SKSE"/L"Plugins"/L"resources"/L"SkyUltra"/L"Files"/L"SkyUltraSplash.mp4";
-            hr=create_file(MF_ACCESSMODE_READ,MF_OPENMODE_FAIL_IF_NOT_EXIST,MF_FILEFLAGS_NONE,source.c_str(),&source_stream);
+            hr=g_mf.create_file(MF_ACCESSMODE_READ,MF_OPENMODE_FAIL_IF_NOT_EXIST,MF_FILEFLAGS_NONE,source.c_str(),&source_stream);
         }
         if(FAILED(hr))return hr;
         spdlog::info("SkyUltra opened splash MP4 '{}' ({} frames; audio {}; volume {:.0f}%).",source.string(),software_transfer?"compatible software":"shared GPU",settings.audio,settings.volume*100);
@@ -132,23 +183,21 @@ public:
         BSTR url=SysAllocString(source.c_str());if(!url)return E_OUTOFMEMORY;
         stage="SetSourceFromByteStream";
         hr=extended->SetSourceFromByteStream(source_stream.Get(),url);SysFreeString(url);if(FAILED(hr))return hr;
-        // SetSourceFromByteStream starts the asynchronous load. Calling Load()
-        // again restarts source selection from the URL and loses the supplied
-        // stream (the former bare filename failed with HRESULT 0x80070002).
-        // Keep the stream alive and wait for CANPLAY instead of reloading it.
         stage="Loading splash screen from stream";
         return S_OK;
     }
-    HRESULT MakeSoftwareTargets(DWORD width, DWORD height) {
-        // Media Engine's WIC frame-server mode must be created WITHOUT a DXGI
-        // manager. It still renders the MP4 audio normally, but needs no shared
-        // textures or synchronization changes on Skyrim's graphics device.
+    HRESULT EnsureSoftwareBitmap(DWORD width, DWORD height) {
+        if (software_bitmap) return S_OK;
         stage="Create compatible video bitmap factory";
         ComPtr<IWICImagingFactory> factory;
         auto hr=CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory));
         if(FAILED(hr))return hr;
         stage="Create compatible video bitmap";
-        if(FAILED(hr=factory->CreateBitmap(width,height,GUID_WICPixelFormat32bppBGR,WICBitmapCacheOnLoad,&software_bitmap)))return hr;
+        return factory->CreateBitmap(width,height,GUID_WICPixelFormat32bppBGR,WICBitmapCacheOnLoad,&software_bitmap);
+    }
+    HRESULT MakeSoftwareTargets(DWORD width, DWORD height) {
+        auto hr = EnsureSoftwareBitmap(width, height);
+        if (FAILED(hr)) return hr;
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width=width;desc.Height=height;desc.MipLevels=desc.ArraySize=1;
         desc.Format=DXGI_FORMAT_B8G8R8X8_UNORM;desc.SampleDesc.Count=1;
@@ -161,10 +210,9 @@ public:
         return S_OK;
     }
     HRESULT MakeSharedTargets(D3D11_TEXTURE2D_DESC desc, bool nt_handle) {
-        // Publish only a complete pair: a failed NT-handle attempt must not
-        // leave partial textures/mutexes behind for the compatibility path.
         ComPtr<ID3D11Texture2D> next_producer,next_shared;
         ComPtr<IDXGIKeyedMutex> next_producer_mutex,next_consumer_mutex;
+        desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
         desc.MiscFlags=D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
         if(nt_handle)desc.MiscFlags|=D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
         stage=nt_handle?"Create NT-handle shared video texture":"Create legacy shared video texture";
@@ -191,7 +239,6 @@ public:
             HANDLE handle{};
             stage="Get legacy video shared handle";
             if(FAILED(hr=resource->GetSharedHandle(&handle)))return hr;
-            // A legacy DXGI handle belongs to the resource; never CloseHandle it.
             stage="Open legacy video texture on game device";
             hr=owner->OpenSharedResource(handle,IID_PPV_ARGS(&next_shared));
         }
@@ -212,8 +259,6 @@ public:
         desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;desc.SampleDesc.Count=1;
         desc.Usage=D3D11_USAGE_DEFAULT;
         desc.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;
-        // MF owns its own device synchronization. Do not ask TransferVideoFrame to
-        // lock a shared resource whose keyed mutex the caller already holds.
         stage="Create private video decode target";
         if(FAILED(hr=media_device->CreateTexture2D(&desc,nullptr,&decode_target)))return hr;
         bool nt_handle=false;
@@ -249,8 +294,24 @@ public:
         playing=false;
         warming_first_frame=false;
         primed=false;
+        primed_bitmap_ready=false;
         pending_consumer_copy=false;
         if(signals)signals->ended=false;
+    }
+    bool UploadSoftwareBitmapToDisplay(ID3D11DeviceContext* host_context) {
+        if(!host_context||!software_bitmap||!display)return false;
+        D3D11_TEXTURE2D_DESC desc{};display->GetDesc(&desc);
+        ComPtr<IWICBitmapLock> bitmap_lock;
+        if(!Check(software_bitmap->Lock(nullptr,WICBitmapLockRead,&bitmap_lock),"Lock compatible video frame"))return false;
+        UINT stride{},bytes{};BYTE* pixels{};
+        if(!Check(bitmap_lock->GetStride(&stride),"Get compatible video stride")||
+           !Check(bitmap_lock->GetDataPointer(&bytes,&pixels),"Get compatible video pixels"))return false;
+        if(!pixels||stride<desc.Width*4||static_cast<std::uint64_t>(stride)*(desc.Height-1)+desc.Width*4>bytes){
+            Check(E_INVALIDARG,"Validate compatible video pixels");return false;
+        }
+        host_context->UpdateSubresource(display.Get(),0,nullptr,pixels,stride,0);
+        MarkFrameDelivered();
+        return true;
     }
     void TransferCurrentFrame(ID3D11DeviceContext* host_context) {
         LONGLONG pts{};
@@ -262,16 +323,8 @@ public:
             const RECT destination{0,0,static_cast<LONG>(desc.Width),static_cast<LONG>(desc.Height)};
             MFARGB border{};border.rgbAlpha=255;
             if(!Check(engine->TransferVideoFrame(software_bitmap.Get(),nullptr,&destination,&border),"Transfer compatible video frame"))return;
-            ComPtr<IWICBitmapLock> bitmap_lock;
-            if(!Check(software_bitmap->Lock(nullptr,WICBitmapLockRead,&bitmap_lock),"Lock compatible video frame"))return;
-            UINT stride{},bytes{};BYTE* pixels{};
-            if(!Check(bitmap_lock->GetStride(&stride),"Get compatible video stride")||
-               !Check(bitmap_lock->GetDataPointer(&bytes,&pixels),"Get compatible video pixels"))return;
-            if(!pixels||stride<desc.Width*4||static_cast<std::uint64_t>(stride)*(desc.Height-1)+desc.Width*4>bytes){
-                Check(E_INVALIDARG,"Validate compatible video pixels");return;
-            }
-            host_context->UpdateSubresource(display.Get(),0,nullptr,pixels,stride,0);
-            MarkFrameDelivered();return;
+            (void)UploadSoftwareBitmapToDisplay(host_context);
+            return;
         }
         if(tick==S_OK){
             D3D11_TEXTURE2D_DESC desc{};producer->GetDesc(&desc);
@@ -294,7 +347,7 @@ public:
         }
     }
     void PrimeFirstFrame(ID3D11DeviceContext* host_context, const VideoSplashSettings& settings) {
-        if(!signals->can_play||signals->failed||primed)return;
+        if(!IsMediaReady()||signals->failed||primed)return;
         if(!srv){const auto hr=MakeTargets();if(!Check(hr,stage))return;}
         if(!warming_first_frame){
             (void)engine->SetMuted(TRUE);
@@ -313,13 +366,14 @@ public:
         }
     }
     void Tick(ID3D11DeviceContext* host_context, const VideoSplashSettings& settings) {
-        if(!signals->can_play||signals->failed)return;
-        // Keep the exact failing operation instead of replacing every target
-        // failure with the same generic stage.
+        if(!IsMediaReady()||signals->failed)return;
         if(!srv){const auto hr=MakeTargets();if(!Check(hr,stage))return;}
         if(warming_first_frame){
             warming_first_frame=false;
             playing=true;
+        }
+        if(software_transfer && primed_bitmap_ready && !has_frame){
+            (void)UploadSoftwareBitmapToDisplay(host_context);
         }
         // Do not start audio until a usable video destination exists.
         if(!playing){
@@ -343,6 +397,10 @@ std::unique_ptr<SplashPlayer> splash_player;
 std::atomic_bool needs_tick{};
 std::atomic<ID3D11Device*> warmup_device{};
 std::atomic_bool warmup_done{};
+std::atomic_bool g_shutdown_requested{ false };
+std::atomic_bool g_prewarm_in_flight{ false };
+std::mutex g_prewarm_thread_mutex;
+std::thread g_prewarm_thread;
 void Stop(){
     active=false;start=false;
     if(splash_player){
@@ -375,6 +433,99 @@ void EnsureThreadComApartment() noexcept {
     thread_local ThreadApartment s_apartment;
     (void)s_apartment;
 }
+void PrewarmFrameworkSplash(ID3D11Device* host){
+    if(host==nullptr||g_shutdown_requested.load(std::memory_order_acquire))return;
+    {
+        const std::scoped_lock lock(mutex);
+        if(!configuration.enabled||active.load(std::memory_order_acquire)||
+           (configuration.replay=="session"&&seen_session)||
+           (splash_player&&splash_player->owner.Get()==host&&!splash_player->signals->failed)||
+           warmup_done.load(std::memory_order_relaxed)){
+            return;
+        }
+    }
+    if(g_prewarm_in_flight.exchange(true,std::memory_order_acq_rel))return;
+    const std::scoped_lock thread_lock(g_prewarm_thread_mutex);
+    if(g_prewarm_thread.joinable())g_prewarm_thread.join();
+    if(g_shutdown_requested.load(std::memory_order_acquire)){
+        g_prewarm_in_flight.store(false,std::memory_order_release);
+        return;
+    }
+    ComPtr<ID3D11Device> retained_host(host);
+    g_prewarm_thread=std::thread([retained_host = std::move(retained_host)]() mutable {
+        struct ClearInFlight { ~ClearInFlight() { g_prewarm_in_flight.store(false, std::memory_order_release); } } clear_in_flight;
+        EnsureThreadComApartment();
+        VideoSplashSettings settings;
+        {
+            const std::scoped_lock lock(mutex);
+            if(g_shutdown_requested.load(std::memory_order_acquire)||!configuration.enabled||
+               active.load(std::memory_order_acquire)||(configuration.replay=="session"&&seen_session)){
+                return;
+            }
+            settings=configuration;
+        }
+        auto local=std::make_unique<SplashPlayer>();
+        if(FAILED(local->Open(retained_host.Get(),settings,true)))return;
+        for(int attempt=0;attempt<400;++attempt){
+            if(g_shutdown_requested.load(std::memory_order_acquire)||local->signals->failed||
+               local->IsMediaReady()||active.load(std::memory_order_acquire))break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+        }
+        if(g_shutdown_requested.load(std::memory_order_acquire)||local->signals->failed||
+           !local->IsMediaReady()||active.load(std::memory_order_acquire))return;
+        DWORD width{},height{};
+        if(FAILED(local->engine->GetNativeVideoSize(&width,&height))||width==0||height==0||width>4096||height>4096)return;
+        const bool single_threaded=(retained_host->GetCreationFlags()&D3D11_CREATE_DEVICE_SINGLETHREADED)!=0;
+        if(single_threaded){
+            if(FAILED(local->EnsureSoftwareBitmap(width,height)))return;
+        }else{
+            if(FAILED(local->MakeSoftwareTargets(width,height)))return;
+        }
+        if(settings.audio){
+            (void)local->engine->SetMuted(FALSE);
+            (void)local->engine->SetVolume(0.0);
+        }else{
+            (void)local->engine->SetMuted(TRUE);
+        }
+        if(FAILED(local->engine->Play()))return;
+        for(int attempt=0;attempt<200;++attempt){
+            if(g_shutdown_requested.load(std::memory_order_acquire)||local->signals->failed||
+               active.load(std::memory_order_acquire))break;
+            LONGLONG pts{};
+            if(local->engine->OnVideoStreamTick(&pts)==S_OK){
+                const RECT destination{0,0,static_cast<LONG>(width),static_cast<LONG>(height)};
+                MFARGB border{};border.rgbAlpha=255;
+                if(SUCCEEDED(local->engine->TransferVideoFrame(local->software_bitmap.Get(),nullptr,&destination,&border))){
+                    local->primed_bitmap_ready=true;
+                    local->primed=true;
+                }
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        (void)local->engine->Pause();
+        if(local->engine->GetCurrentTime()>0.08){
+            if(local->signals)local->signals->seeked=false;
+            if(SUCCEEDED(local->engine->SetCurrentTime(0.0))&&local->signals){
+                for(int seek_attempt=0;seek_attempt<60;++seek_attempt){
+                    if(g_shutdown_requested.load(std::memory_order_acquire)||local->signals->failed||
+                       local->signals->seeked.load()||active.load(std::memory_order_acquire))break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            }
+        }
+        if(local->signals)local->signals->ended=false;
+        local->ApplyAudioSettings(settings);
+        if(g_shutdown_requested.load(std::memory_order_acquire)||!local->primed_bitmap_ready)return;
+        const std::scoped_lock lock(mutex);
+        if(!g_shutdown_requested.load(std::memory_order_acquire)&&!active.load(std::memory_order_acquire)&&
+           !splash_player){
+            splash_player=std::move(local);
+            warmup_device.store(retained_host.Get(),std::memory_order_relaxed);
+            warmup_done.store(true,std::memory_order_relaxed);
+        }
+    });
+}
 void WarmupFrameworkSplash(ID3D11Device* host, ID3D11DeviceContext* context){
     if(host==nullptr||context==nullptr||active.load(std::memory_order_relaxed))return;
     if(warmup_done.load(std::memory_order_relaxed)&&warmup_device.load(std::memory_order_relaxed)==host)return;
@@ -389,42 +540,21 @@ void WarmupFrameworkSplash(ID3D11Device* host, ID3D11DeviceContext* context){
     if(!splash_player||splash_player->owner.Get()!=host){
         splash_player.reset();
         splash_player=std::make_unique<SplashPlayer>();
-        auto hr=splash_player->Open(host,configuration,false);
-        if(FAILED(hr)){
-            splash_player=std::make_unique<SplashPlayer>();
-            hr=splash_player->Open(host,configuration,true);
-            if(FAILED(hr)){
-                splash_player.reset();
-                warmup_device.store(host,std::memory_order_relaxed);
-                warmup_done.store(true,std::memory_order_relaxed);
-                return;
-            }
-        }
-        warmup_device.store(host,std::memory_order_relaxed);
-        warmup_done.store(false,std::memory_order_relaxed);
-    }
-    if(splash_player->signals->failed&&!splash_player->software_transfer&&!splash_player->has_frame){
-        splash_player=std::make_unique<SplashPlayer>();
         if(FAILED(splash_player->Open(host,configuration,true))){
             splash_player.reset();
+            warmup_device.store(host,std::memory_order_relaxed);
             warmup_done.store(true,std::memory_order_relaxed);
             return;
         }
+        warmup_device.store(host,std::memory_order_relaxed);
+        warmup_done.store(false,std::memory_order_relaxed);
     }
     if(splash_player->signals->failed){
         warmup_done.store(true,std::memory_order_relaxed);
         return;
     }
-    if(splash_player->signals->can_play){
+    if(splash_player->IsMediaReady()){
         splash_player->PrimeFirstFrame(context,configuration);
-        if(splash_player->signals->failed&&!splash_player->software_transfer&&!splash_player->has_frame){
-            splash_player=std::make_unique<SplashPlayer>();
-            if(FAILED(splash_player->Open(host,configuration,true))){
-                splash_player.reset();
-                warmup_done.store(true,std::memory_order_relaxed);
-            }
-            return;
-        }
         if(splash_player->primed||splash_player->signals->failed){
             warmup_done.store(true,std::memory_order_relaxed);
         }
@@ -436,7 +566,7 @@ void BeginFrameworkSplash(std::string key,std::string mod,bool page_ready,bool f
         (configuration.replay=="per-mod"&&seen_mods.contains(mod)))))return;
     active_mod=std::move(mod);active_key=std::move(key);ready=page_ready;active=start=true;preview_full_duration=force_replay;
     status={};status.stage="Starting video";
-    if(splash_player&&splash_player->has_frame&&!splash_player->signals->failed){
+    if(splash_player&&(splash_player->has_frame||splash_player->primed_bitmap_ready)&&!splash_player->signals->failed){
         status.has_frame=true;
         status.stage="Playing video";
         splash_player->playing=false;
@@ -471,10 +601,7 @@ ComPtr<ID3D11ShaderResourceView> TickFrameworkSplash(ID3D11Device* host,ID3D11De
     if(!splash_player||splash_player->owner.Get()!=host){
         start=false;
         started=std::chrono::steady_clock::now();
-        if(!open_player(false)){
-            spdlog::warn("SkyUltra is retrying the splash MP4 with compatible video and native audio.");
-            if(!open_player(true)){Stop();splash_player.reset();needs_tick=false;return {};}
-        }
+        if(!open_player(true)){Stop();splash_player.reset();needs_tick=false;return {};}
     } else if(start){
         start=false;
         started=std::chrono::steady_clock::now();
@@ -483,15 +610,9 @@ ComPtr<ID3D11ShaderResourceView> TickFrameworkSplash(ID3D11Device* host,ID3D11De
             splash_player->RewindAndPause();
         }
     }
-    // Retry once before the first delivered frame. Both keyed-mutex sharing
-    // modes can be rejected by the driver; changing the HTML cannot fix that.
-    if(splash_player->signals->failed&&!splash_player->software_transfer&&!splash_player->has_frame){
-        spdlog::warn("SkyUltra GPU splash failed at {} (HRESULT 0x{:08X}); retrying the same MP4 with compatible video and native audio.",
-            splash_player->stage,splash_player->signals->error_code.load());
-        if(!open_player(true)){Stop();splash_player.reset();needs_tick=false;return {};}
-    }
     const auto seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
-    const bool startup_stalled=!splash_player->has_frame&&seconds>4.0;
+    constexpr double kStartupStalledSeconds = 8.0;
+    const bool startup_stalled=!splash_player->has_frame&&!splash_player->primed_bitmap_ready&&seconds>kStartupStalledSeconds;
     constexpr double kMinimumSplashDisplaySeconds = 2.0;
     const bool ready_to_dismiss=!configuration.full_duration&&!preview_full_duration&&ready&&seconds>=kMinimumSplashDisplaySeconds;
     if(splash_player->signals->failed||splash_player->signals->ended||seconds>30||startup_stalled||ready_to_dismiss){
@@ -512,5 +633,24 @@ ComPtr<ID3D11ShaderResourceView> TickFrameworkSplash(ID3D11Device* host,ID3D11De
     return splash_player->has_frame?splash_player->srv:ComPtr<ID3D11ShaderResourceView>{};
 }
 void ShutdownFrameworkSplash(){
-    struct Apartment { HRESULT hr=CoInitializeEx(nullptr,COINIT_MULTITHREADED); ~Apartment(){if(SUCCEEDED(hr))CoUninitialize();} } apartment;const std::scoped_lock lock(mutex);Stop();splash_player.reset();needs_tick=false;warmup_done.store(false,std::memory_order_relaxed);warmup_device.store(nullptr,std::memory_order_relaxed);}
+    g_shutdown_requested.store(true,std::memory_order_release);
+    std::thread thread_to_join;
+    {
+        const std::scoped_lock thread_lock(g_prewarm_thread_mutex);
+        if(g_prewarm_thread.joinable())thread_to_join=std::move(g_prewarm_thread);
+    }
+    if(thread_to_join.joinable()&&thread_to_join.get_id()!=std::this_thread::get_id()){
+        thread_to_join.join();
+    }
+    {
+        struct Apartment { HRESULT hr=CoInitializeEx(nullptr,COINIT_MULTITHREADED); ~Apartment(){if(SUCCEEDED(hr))CoUninitialize();} } apartment;
+        const std::scoped_lock lock(mutex);
+        Stop();
+        splash_player.reset();
+        needs_tick=false;
+        warmup_done.store(false,std::memory_order_relaxed);
+        warmup_device.store(nullptr,std::memory_order_relaxed);
+    }
+    g_mf.Unload();
+}
 }

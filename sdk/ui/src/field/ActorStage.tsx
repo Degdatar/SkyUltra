@@ -95,9 +95,9 @@ export function ModelStage({ subject, bridge, obscured, equipment = false, initi
         }, { signal: controller.signal });
         if (active) { hidden = false; acceptStatus(result); }
       } catch (error) { if (active) setStatus({ available: false, ready: false, message: error instanceof Error ? error.message : "Model preview unavailable." }); }
-      finally { pending = false; if (active && dirty) timer = window.setTimeout(() => { timer = 0; void update(); }, 33); }
+      finally { pending = false; if (active && dirty) timer = window.setTimeout(() => { timer = 0; void update(); }, 16); }
     };
-    const cameraUpdate = (): void => { camera.current.yaw = wrapAngleRadians(camera.current.yaw); camera.current.pitch = wrapAngleRadians(camera.current.pitch); dirty = true; if (!timer) timer = window.setTimeout(() => { timer = 0; void update(); }, 33); };
+    const cameraUpdate = (): void => { camera.current.yaw = wrapAngleRadians(camera.current.yaw); camera.current.pitch = wrapAngleRadians(camera.current.pitch); dirty = true; if (!timer) timer = window.setTimeout(() => { timer = 0; void update(); }, 16); };
     // Updating layout must not blank a stationary stage. Scroll events bubble
     // through window's capture listener even when only a sibling list scrolls.
     const reposition = (): void => {
@@ -220,19 +220,41 @@ export function ModelStage({ subject, bridge, obscured, equipment = false, initi
         {!hideStudioControls && <button className="studio-icon-button" aria-label={onCapturePortrait ? 'Update portrait (saved to Overwrite cache)' : 'Recapture outfit'} title={onCapturePortrait ? 'Update portrait (saved to Overwrite cache)' : 'Recapture model'} disabled={onCapturePortrait ? (!status.ready || saving || capturing || obscured) : false} onClick={() => { void capturePortrait(); }}><Icon name="camera" size={14} /></button>}
         {!hideStudioControls && <button className="control-button outfit-save" disabled={!status.ready || saving || capturing || obscured} onClick={() => { void save(); }}><Icon name="download" size={13} />{saving ? 'Saving…' : 'Save'}</button>}</div>
     </div> : <>
-    <div className="studio-controls"><SkySegmentedControl label="Model drag action" value={dragMode} onValueChange={setDragMode} options={[{value:'rotate',label:'Rotate'},{value:'pan',label:'Move'}]} />{!isItem && !equipment && <SkyChoice label="Actor pose" value={pose} disabled={capturing} onValueChange={value => { setPose(value); setAnimationFrame(0); }} options={[{value:'current',label:'Current pose'}, ...animationClips.map(clip => ({value:'animation:' + clip.id,label:clip.preset ? clip.name : 'Animation: ' + clip.name}))]} />}<SkyChoice label="Preview lighting" value={lighting} onValueChange={setLighting} options={[{value:'studio',label:'Studio light'},{value:'soft',label:'Soft light'},{value:'dramatic',label:'Dramatic light'},{value:'warm',label:'Warm light'},{value:'cool',label:'Cool light'}]} /></div>
+    <div className="studio-controls studio-controls--compact"><SkySegmentedControl label="Model drag action" value={dragMode} onValueChange={setDragMode} options={[{value:'rotate',label:'Rotate'},{value:'pan',label:'Move'}]} />{!isItem && !equipment && <SkyChoice label="Actor pose" value={pose} disabled={capturing} onValueChange={value => { setPose(value); setAnimationFrame(0); }} options={[{value:'current',label:'Current pose'}, ...animationClips.map(clip => ({value:'animation:' + clip.id,label:clip.preset ? clip.name : 'Animation: ' + clip.name}))]} />}<SkyChoice label="Preview lighting" value={lighting} onValueChange={setLighting} options={[{value:'studio',label:'Studio light'},{value:'soft',label:'Soft light'},{value:'dramatic',label:'Dramatic light'},{value:'warm',label:'Warm light'},{value:'cool',label:'Cool light'}]} /></div>
     {!isItem && !equipment && <ActorAnimationTimeline clip={selectedAnimation} frame={animationFrame} busy={capturing || saving} onFrameChange={value => { setAnimationFrame(value); animationFrameRef.current = value; requestUpdate.current(); }} />}
-    <div className="studio-controls">{!isItem && <button className={"control-button" + (motion ? " is-active" : "")} onClick={() => setMotion(value => !value)} disabled={mode === "portrait" || pose !== 'current'}><Icon name={motion ? "pause" : "play"} size={14} />{mode === "portrait" ? "Still portrait" : pose !== 'current' ? 'Static pose' : motion ? "Live motion" : "Pose frozen"}</button>}<button className="control-button" onClick={reset}><Icon name="rotate" size={14} />Reset view</button><button className="control-button" onClick={() => { refreshRef.current = true; setRevision(value => value + 1); }}>Recapture</button>{onCapturePortrait && <button className="control-button" title={isItem ? "Save current view as item portrait in Overwrite cache" : "Update portrait and save to Overwrite cache"} disabled={!status.ready || saving || capturing || obscured} onClick={() => { void capturePortrait(); }}><Icon name="camera" size={14} />{isItem ? "Save as portrait" : "Update portrait"}</button>}{!isItem && !equipment && <><button className="control-button" disabled={!status.ready || saving || capturing || obscured} onClick={() => { void captureAnimations(true); }}>{animationAction === 'library' ? 'Loading poses…' : 'Load poses'}</button><button className="control-button" disabled={!status.ready || saving || capturing || obscured} onClick={() => { void captureAnimations(); }}>{animationAction === 'capture' ? 'Capturing…' : 'Capture animations'}</button></>}<button className="control-button" disabled={!status.ready || saving || capturing || obscured} onClick={() => { void save(); }}>{saving ? 'Saving…' : 'Save'}</button></div>
-    {!isItem && !equipment && <div className="studio-controls studio-camera-presets" role="group" aria-label="Camera angle presets">
-      <button type="button" className="control-button" onClick={() => applyCameraPreset('bust')}>Bust</button>
-      <button type="button" className="control-button" onClick={() => applyCameraPreset('threeQuarter')}>3/4 View</button>
-      <button type="button" className="control-button" onClick={() => applyCameraPreset('full')}>Full Body</button>
-      <button type="button" className="control-button" onClick={() => applyCameraPreset('profile')}>Profile</button>
-    </div>}
+    <div className="studio-icon-dock">
+      {(() => {
+        const motionLabel = mode === "portrait" ? "Still portrait" : pose !== 'current' ? 'Static pose' : motion ? "Live motion" : "Pose frozen";
+        const loadPosesLabel = animationAction === 'library' ? 'Loading poses…' : 'Load poses';
+        const captureLabel = animationAction === 'capture' ? 'Capturing…' : 'Capture animations';
+        const portraitLabel = isItem ? "Save as portrait" : "Update portrait";
+        const saveLabel = saving ? 'Saving…' : 'Save';
+        return <>
+          {!isItem && <button type="button" className={"studio-tool-btn" + (motion ? " is-active" : "")} data-tooltip={motionLabel} aria-label={motionLabel} title={motionLabel} onClick={() => setMotion(value => !value)} disabled={mode === "portrait" || pose !== 'current'}><Icon name={motion ? "pause" : "play"} size={14} />{motionLabel}</button>}
+          <button type="button" className="studio-tool-btn" data-tooltip="Reset view" aria-label="Reset view" title="Reset view" onClick={reset}><Icon name="rotate" size={14} />Reset view</button>
+          <button type="button" className="studio-tool-btn" data-tooltip="Recapture" aria-label="Recapture" title="Recapture" onClick={() => { refreshRef.current = true; setRevision(value => value + 1); }}><Icon name="refresh" size={14} />Recapture</button>
+          {onCapturePortrait && <button type="button" className="studio-tool-btn" data-tooltip={portraitLabel} aria-label={portraitLabel} title={isItem ? "Save current view as item portrait in Overwrite cache" : "Update portrait and save to Overwrite cache"} disabled={!status.ready || saving || capturing || obscured} onClick={() => { void capturePortrait(); }}><Icon name="camera" size={14} />{portraitLabel}</button>}
+          {!isItem && !equipment && <>
+            <button type="button" className="studio-tool-btn" data-tooltip={loadPosesLabel} aria-label={loadPosesLabel} title={loadPosesLabel} disabled={!status.ready || saving || capturing || obscured} onClick={() => { void captureAnimations(true); }}><Icon name="pose" size={14} />{loadPosesLabel}</button>
+            <button type="button" className="studio-tool-btn" data-tooltip={captureLabel} aria-label={captureLabel} title={captureLabel} disabled={!status.ready || saving || capturing || obscured} onClick={() => { void captureAnimations(); }}><Icon name="film" size={14} />{captureLabel}</button>
+          </>}
+          <button type="button" className="studio-tool-btn" data-tooltip={saveLabel} aria-label={saveLabel} title={saveLabel} disabled={!status.ready || saving || capturing || obscured} onClick={() => { void save(); }}><Icon name="download" size={14} />{saveLabel}</button>
+          {!isItem && !equipment && <>
+            <span className="studio-dock-divider" aria-hidden="true" />
+            <div className="studio-camera-presets" role="group" aria-label="Camera angle presets">
+              <button type="button" className="studio-tool-btn" data-tooltip="Bust" aria-label="Bust" title="Bust" onClick={() => applyCameraPreset('bust')}><Icon name="camBust" size={14} />Bust</button>
+              <button type="button" className="studio-tool-btn" data-tooltip="3/4 View" aria-label="3/4 View" title="3/4 View" onClick={() => applyCameraPreset('threeQuarter')}><Icon name="camThreeQuarter" size={14} />3/4 View</button>
+              <button type="button" className="studio-tool-btn" data-tooltip="Full Body" aria-label="Full Body" title="Full Body" onClick={() => applyCameraPreset('full')}><Icon name="camFullBody" size={14} />Full Body</button>
+              <button type="button" className="studio-tool-btn" data-tooltip="Profile" aria-label="Profile" title="Profile" onClick={() => applyCameraPreset('profile')}><Icon name="camProfile" size={14} />Profile</button>
+            </div>
+          </>}
+        </>;
+      })()}
+    </div>
     </>}
     <p id={hintId} className="studio-gesture"><span>{dragMode === 'pan' ? 'DRAG TO MOVE' : 'DRAG TO ORBIT'}</span><i /><span>SHIFT + DRAG TO MOVE</span><i /><span>SCROLL TO ZOOM</span></p>
     {!isItem && animationMessage && <p className="studio-note" role="status">{animationMessage}</p>}
     {saveMessage && <p className="studio-note studio-save-status" role="status">{saveMessage}</p>}
-    {((!hasImage && !status.ready) || !status.available || !!status.skippedGeometryCount) && <p className="studio-note">{status.ready ? status.skippedGeometryCount + " unsupported meshes omitted." : status.message}</p>}
+    {((!hasImage && !status.ready) || !status.available || (!equipment && !!status.skippedGeometryCount)) && <p className="studio-note">{status.ready ? status.skippedGeometryCount + " unsupported meshes omitted." : status.message}</p>}
   </div>;
 }

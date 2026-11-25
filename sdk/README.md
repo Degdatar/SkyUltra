@@ -201,7 +201,8 @@ does not affect another mod's view. Restore `'native'` when disposing your custo
 
 `SkyHudComposer` is controlled: pass a version-1 layout, `onValueChange`, and
 `renderWidget`. It supports order editing and JSON import/export; it does not pin,
-save, or modify the game itself. `parseSkyUltraHudLayout` validates exported data.
+save, or modify the game itself. `parseSkyUltraHudLayout` validates exported data,
+including optional `placements.compass.compassRadius` (`50`–`1000` meters, default `50`).
 The built-in HUD editor adds native pinning and waits for child-page readiness.
 Custom hosts can instead use their own transparent, click-through HUD entry.
 
@@ -212,9 +213,8 @@ Custom hosts can instead use their own transparent, click-through HUD entry.
 - Unmount or hide actor stages when unused. Avoid scanning game objects every RAF.
 - The shared HUD feed requests compact player data every 2.5 seconds and pauses
   when hidden. It does not repeatedly sort full inventory data.
-- GPU splash screen transfers use shared textures and no CPU pixel readback. H.264 hardware
-  decode availability depends on Windows/driver support; a GPU texture path alone
-  is not proof of hardware video decoding.
+- The framework splash prewarms frame 0 off-thread at startup and uses a compatible Media Foundation software-frame upload path (keeping Media Foundation initialized once per process and avoiding cross-device keyed-mutex sharing or an opaque black loading backdrop). Decode availability still depends on Windows/codec support.
+- Preview HLSL shaders compile asynchronously off-thread and cache DXBC bytecode to `Data/SkyUltra/Cache/ActorPreviewShaders.dxbc.bin` so first-time actor/item views do not stall input.
 - RAF is callback cadence, not game FPS. Native compositor timing excludes browser
   work; host-device timing excludes CEF's separate producer. Match workloads and
   inspect native sample counts before comparing engines.

@@ -66,7 +66,8 @@ FARPROC WINAPI DelayLoadNotify(unsigned notification, PDelayLoadInfo info) noexc
     }
 
     if (std::strcmp(info->szDll, "SUL.dll") != 0 &&
-        std::strcmp(info->szDll, "SULCore.dll") != 0) {
+        std::strcmp(info->szDll, "SULCore.dll") != 0 &&
+        std::strcmp(info->szDll, "SULWeb.dll") != 0) {
         return nullptr;
     }
 
@@ -78,8 +79,8 @@ FARPROC WINAPI DelayLoadNotify(unsigned notification, PDelayLoadInfo info) noexc
 
     auto& modules = Modules();
     const std::scoped_lock lock(modules.mutex);
-    const auto module = std::strcmp(info->szDll, "SUL.dll") == 0 ?
-        modules.ultralight : modules.core;
+    const auto module = std::strcmp(info->szDll, "SUL.dll") == 0 ? modules.ultralight :
+        std::strcmp(info->szDll, "SULWeb.dll") == 0 ? modules.web : modules.core;
     return reinterpret_cast<FARPROC>(module);
 }
 

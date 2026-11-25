@@ -6,9 +6,101 @@ export interface SkyUltraTimingMetric {
   lastMs: number;
   windowSamples: number;
   meanMs: number;
+  p50Ms?: number;
   p95Ms: number;
+  p99Ms?: number;
   maxMs: number;
   ageMs: number | null;
+}
+
+export interface SkyUltraPercentileSummary {
+  samples: number;
+  meanMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+  maxMs: number;
+}
+
+export interface SkyUltraFrameTraceRecord {
+  id: number;
+  kind: string;
+  engine: string;
+  viewId: number;
+  modId: string;
+  visible: boolean;
+  splashActive: boolean;
+  baselinePaintSequence: number;
+  paintSequence: number;
+  compositeFrameSequence: number;
+  queueWaitMs: number;
+  dispatchToPaintMs: number;
+  paintToCompositeMs: number;
+  totalMs: number;
+  completedAtMs: number;
+}
+
+export interface SkyUltraCefCopyTelemetry {
+  fullCopies: number;
+  dirtyCopies: number;
+  dirtyFallbacks: number;
+  overlappingPixelsCopied: number;
+  frameAge: SkyUltraPercentileSummary;
+}
+
+export interface SkyUltraUltralightReplayTelemetry {
+  packetsReplayed: number;
+  backpressureWaits: number;
+  maxCommandLists: number;
+  avgCommandLists: number;
+  oldestPacketAgeMs: number;
+  maxPacketAgeMs: number;
+  replay: SkyUltraPercentileSummary;
+}
+
+export interface SkyUltraNativeQueueTelemetry {
+  tasksExecuted: number;
+  budgetOverruns: number;
+  wait: SkyUltraPercentileSummary;
+  exec: SkyUltraPercentileSummary;
+  slowestTask: string;
+  slowestMod: string;
+  slowestExecMs: number;
+}
+
+export interface SkyUltraThumbnailTelemetry {
+  memoryHits: number;
+  diskHits: number;
+  urlHits: number;
+  gpuCaptures: number;
+  diskRead: SkyUltraPercentileSummary;
+  encode: SkyUltraPercentileSummary;
+  pixelConvert: SkyUltraPercentileSummary;
+  fullExport: SkyUltraPercentileSummary;
+  avx2Active: boolean;
+}
+
+export interface SkyUltraBenchmarkGuidance {
+  presentMonUrl: string;
+  windowsTraceNote: string;
+  commandExample: string;
+}
+
+export interface SkyUltraFrameTraceSnapshot {
+  summary: {
+    warmMenuOpen: SkyUltraPercentileSummary;
+    coldMenuOpen: SkyUltraPercentileSummary;
+    inputClick: SkyUltraPercentileSummary;
+    inputWheel: SkyUltraPercentileSummary;
+    inputKey: SkyUltraPercentileSummary;
+    inputFocus: SkyUltraPercentileSummary;
+  };
+  traces: SkyUltraFrameTraceRecord[];
+  cefCopy: SkyUltraCefCopyTelemetry;
+  ultralightReplay: SkyUltraUltralightReplayTelemetry;
+  nativeQueue: SkyUltraNativeQueueTelemetry;
+  thumbnails: SkyUltraThumbnailTelemetry;
+  benchmarkGuidance: SkyUltraBenchmarkGuidance;
 }
 
 /** Completed host measurements. capturedAtMs uses the host's monotonic clock. */
@@ -25,6 +117,7 @@ export interface SkyUltraPerformanceSnapshot {
   compositorGpu: SkyUltraTimingMetric;
   callbackCpu: SkyUltraTimingMetric;
   presentInterval: SkyUltraTimingMetric;
+  frameTrace?: SkyUltraFrameTraceSnapshot;
 }
 
 export interface SkyUltraTimingDelta { samples: number; meanMs: number | null; }
@@ -48,6 +141,7 @@ export async function readSkyUltraPerformance(bridge: SkyWebViewAPI, signal?: Ab
     Number.isSafeInteger(entry.samples)&&entry.samples>=0&&Number.isFinite(entry.totalMs)&&entry.totalMs>=0&&
     Number.isSafeInteger(entry.windowSamples)&&entry.windowSamples>=0&&entry.windowSamples<=512&&
     [entry.lastMs,entry.meanMs,entry.p95Ms,entry.maxMs].every(number=>Number.isFinite(number)&&number>=0)&&
+    [entry.p50Ms,entry.p99Ms].every(number=>number===undefined||(Number.isFinite(number)&&number>=0))&&
     (entry.ageMs===null||(Number.isFinite(entry.ageMs)&&entry.ageMs>=0));
   if (!value || value.schemaVersion!==1 || value.scope!=="host-overlay" || typeof value.available!=="boolean" ||
       !Number.isSafeInteger(value.generation)||value.generation<0||!Number.isFinite(value.capturedAtMs)||

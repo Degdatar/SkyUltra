@@ -153,8 +153,11 @@ public:
     [[nodiscard]] virtual std::optional<SoftwareFrame> TakeFrame() = 0;
     [[nodiscard]] virtual std::optional<GpuFrame> GetGpuFrame() { return std::nullopt; }
     virtual void DiscardCachedFrame() noexcept {}
+    virtual void BeginPageTransition() noexcept {}
     virtual void MarkPageReady() noexcept {}
+    virtual void InvalidateSoftwareSurface() noexcept {}
     [[nodiscard]] virtual std::uint64_t PaintSequence() const noexcept { return 0; }
+    [[nodiscard]] virtual std::string ThumbnailCacheUrlPrefix() const { return {}; }
     virtual void SetDisplayOccluded(bool occluded) noexcept { (void)occluded; }
 };
 
@@ -175,6 +178,10 @@ public:
         (void)d3d_context;
         return true;
     }
+    virtual void PrewarmDevice(void* d3d_device)
+    {
+        (void)d3d_device;
+    }
     // Called from Skyrim's serialized render-thread callback before compositing.
     // Backends may use this to finish work before the overlay is drawn.
     virtual void PumpFrame(void* d3d_device, void* d3d_context)
@@ -184,6 +191,7 @@ public:
     }
     // Called from the SKSE task thread for backends using an integrated loop.
     virtual void PumpMessageLoop() {}
+    virtual void SetWorldPaused(bool paused) noexcept { (void)paused; }
     virtual void SetPageBridgeMessageCallback(PageBridgeMessageCallback callback)
     {
         (void)callback;

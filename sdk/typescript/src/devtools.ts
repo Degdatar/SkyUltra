@@ -113,6 +113,8 @@ export interface SkyUltraDeveloperModRecord {
 export interface SkyUltraDeveloperSnapshot {
   available: boolean;
   capturedAtMs: number;
+  auditPending?: boolean;
+  auditUpdatedAtMs?: number;
   processWorkingSetBytes: number;
   processPrivateBytes: number;
   hotReloadEnabled: boolean;
@@ -257,9 +259,10 @@ const RESERVED_HOST_OUTPUT_FOLDERS = new Set([
 
 export async function readSkyUltraDeveloperSnapshot(
   bridge: SkyWebViewAPI = getSkyWebView(),
-  options?: SkyUltraRequestOptions,
+  options?: SkyUltraRequestOptions & { forceAudit?: boolean },
 ): Promise<SkyUltraDeveloperSnapshot> {
-  const raw = await bridge.request<SkyUltraDeveloperSnapshot>('ui.getDeveloperSnapshot', {}, options);
+  const payload: Record<string, JsonValue> = options?.forceAudit ? { forceAudit: true } : {};
+  const raw = await bridge.request<SkyUltraDeveloperSnapshot>('ui.getDeveloperSnapshot', payload, options);
   if (!raw || typeof raw !== 'object' || typeof raw.available !== 'boolean') {
     throw new Error('Invalid developer snapshot response.');
   }

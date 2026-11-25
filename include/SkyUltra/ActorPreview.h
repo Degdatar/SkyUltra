@@ -4,10 +4,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <functional>
 #include <vector>
 
@@ -81,17 +83,25 @@ struct ActorPreviewFrame {
 // numeric poses; no Havok/actor pointers survive the capture or reach drawing.
 [[nodiscard]] ActorPreviewAnimations CaptureActorPreviewAnimations(ViewId owner,bool pose_library=false);
 void TickActorPreviews();
+void NoteActorPreviewInteractiveInput() noexcept;
 [[nodiscard]] ActorPreviewStatus GetActorPreviewStatus(ViewId owner);
+void SetActorPreviewSplashHold(ViewId owner, bool hold, std::uint64_t release_after_paint_sequence = 0) noexcept;
 void HideActorPreviewImmediate(ViewId owner) noexcept;
 void RemoveActorPreview(ViewId owner) noexcept;
 void ClearActorPreviews() noexcept;
+[[nodiscard]] std::string GetPlayerCharacterKey();
+[[nodiscard]] std::uint64_t GetPlayerPortraitRevision() noexcept;
+void NotifyNewGameCharacterSession() noexcept;
+void NotifyLoadedGameCharacterSession() noexcept;
+void InvalidatePlayerPortraitCache(bool delete_disk_cache = false);
 // Captures the requested camera/pose on the render thread, then writes a
 // transparent PNG asynchronously. The host chooses a unique filename.
 using ActorPreviewSaveCallback = std::function<void(bool, std::string)>;
 // Game-task capture, rendered offscreen without replacing the owner's stage.
-// Returns an in-memory PNG data URL; does not write a file.
-void CaptureItemThumbnail(ViewId owner, std::uint32_t form_id, ActorPreviewSaveCallback callback, bool use_preview = false);
-void CaptureActorThumbnail(ViewId owner, std::uint32_t reference_id, std::uint32_t base_form_id, ActorPreviewSaveCallback callback, bool use_preview = false);
+// Returns an in-memory PNG data URL (or cache-backed file URL when a prefix is allowed); does not write extra export files.
+[[nodiscard]] std::filesystem::path GetThumbnailCacheRootDirectory();
+void CaptureItemThumbnail(ViewId owner, std::uint32_t form_id, ActorPreviewSaveCallback callback, bool use_preview = false, std::string_view preferred_cache_url_prefix = {});
+void CaptureActorThumbnail(ViewId owner, std::uint32_t reference_id, std::uint32_t base_form_id, ActorPreviewSaveCallback callback, bool use_preview = false, std::string_view preferred_cache_url_prefix = {});
 void ConfigureActorPreviewExport(std::uint32_t full_view, std::uint32_t portrait);
 // A zero long_edge selects the saved resolution for this preview's mode.
 void SaveActorPreviewPng(ViewId owner, ActorPreviewSaveCallback callback, std::uint32_t long_edge = 0);
@@ -99,7 +109,9 @@ void SaveActorPreviewPng(ViewId owner, ActorPreviewSaveCallback callback, std::u
 // Runs inside SkyUltra's isolated D3D11 context state. Uses private render/depth
 // targets and retained GPU mesh resources; never reparents or changes an actor.
 void WarmupActorPreviewRenderer(void* device);
+void PrewarmActorPreviewShaders();
+void ShutdownActorPreviewShaders() noexcept;
 void RenderActorPreviews(void* device, void* context, std::span<const ViewId> visible_owners);
-[[nodiscard]] std::optional<ActorPreviewFrame> GetActorPreviewFrame(ViewId owner);
+[[nodiscard]] std::optional<ActorPreviewFrame> GetActorPreviewFrame(ViewId owner, std::uint64_t current_view_paint_sequence = 0);
 
 }  // namespace skyultra

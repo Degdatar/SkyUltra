@@ -9,12 +9,39 @@ import { motion, useReducedMotion, type MotionProps } from "motion/react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import type { SkyUltraEquipmentSlot } from "@skyultra/sdk";
+import { Icon } from "./field/icons.js";
+import { EquipmentGlyph } from "./field/EquipmentGlyph.js";
 
 export * from "lucide-react";
 export { SkyThemeScope, SkyRingMeter, SkySegmentedControl, SkyStatTile, SkyDataList, SkySparkline, SkyRadarChart, SkyChoice } from "./core.js";
 export type { SkyRingMeterProps, SkySegmentOption, SkyDataRow, SkyChoiceOption } from "./core.js";
 export { SkyHotkeyEditor, type SkyHotkeyEditorProps } from "./chrome.js";
 export * from "./widgets.js";
+export { SkyRangeSlider, SkyToggleSwitch, SkyFilterChips, SkyStatBar } from "./controls.js";
+export {
+  SkyColorWheel,
+  hexToHsv,
+  hsvToHex,
+  type SkyColorWheelProps,
+  type HsvColor,
+} from "./ColorWheel.js";
+export {
+  Icon as SkyIcon,
+  SkillIcon as SkySkillIcon,
+  EffectIcon as SkyEffectIcon,
+  itemIcon as skyItemIcon,
+  skillIcon as skySkillIcon,
+  classifyEffectVisual as classifySkyEffectVisual,
+  skyIconNames,
+  skySkillIconNames,
+  skyEffectIconNames,
+  type IconName as SkyIconName,
+  type SkillIconName as SkySkillIconName,
+  type EffectIconName as SkyEffectIconName,
+  type EffectVisualMeta as SkyEffectVisualMeta,
+} from "./field/icons.js";
+export { EquipmentGlyph as SkyEquipmentGlyph, skyEquipmentSlotIds } from "./field/EquipmentGlyph.js";
 
 function SkyPopupInputScope(): React.JSX.Element {
   const marker = React.useRef<HTMLSpanElement>(null);
@@ -34,9 +61,13 @@ function SkyPopupInputScope(): React.JSX.Element {
   return <span ref={marker} hidden aria-hidden="true" />;
 }
 
-/** Built-in palettes. The original three names remain supported. */
+/** Built-in palettes across Eye-Comfort Matte, Classic, Celestial & Neon families. */
 export type SkyTheme =
   | "darkmode"
+  | "warmdusk"
+  | "sagehaven"
+  | "twilightplum"
+  | "nordiclinen"
   | "obsidian"
   | "frost"
   | "dragonstone"
@@ -53,6 +84,8 @@ export type SkyTheme =
   | "venomneon"
   | "plasmaneon"
   | "crimsonneon";
+
+const EYE_COMFORT_THEMES = new Set<string>(["darkmode", "warmdusk", "sagehaven", "twilightplum", "nordiclinen"]);
 
 const SkyThemeContext = React.createContext<SkyTheme>("frost");
 
@@ -71,17 +104,20 @@ export interface SkyThemeProviderProps extends React.HTMLAttributes<HTMLDivEleme
 
 /** Theme scope for SkyUltra components and consumer-defined CSS variables. */
 export const SkyThemeProvider = React.forwardRef<HTMLDivElement, SkyThemeProviderProps>(
-  ({ theme = "frost", className, ...props }, ref) => (
-    <SkyThemeContext.Provider value={theme}>
-      <div
-        {...props}
-        ref={ref}
-        data-sky-theme={theme}
-        data-sky-ui-style={theme === "darkmode" ? "velvet-dark" : "standard"}
-        className={cn("sky-theme", theme === "darkmode" && "sky-theme--darkmode", className)}
-      />
-    </SkyThemeContext.Provider>
-  ),
+  ({ theme = "frost", className, ...props }, ref) => {
+    const darkUi = EYE_COMFORT_THEMES.has(theme);
+    return (
+      <SkyThemeContext.Provider value={theme}>
+        <div
+          {...props}
+          ref={ref}
+          data-sky-theme={theme}
+          data-sky-ui-style={darkUi ? "velvet-dark" : "standard"}
+          className={cn("sky-theme", darkUi && "sky-theme--darkmode", className)}
+        />
+      </SkyThemeContext.Provider>
+    );
+  },
 );
 SkyThemeProvider.displayName = "SkyThemeProvider";
 
@@ -411,23 +447,71 @@ export interface SkyEquipmentSlotProps extends Omit<React.ButtonHTMLAttributes<H
   slot: string;
   item?: string;
   icon?: React.ReactNode;
+  bipedSlot?: string;
+  enchanted?: boolean;
+  slotKind?: SkyUltraEquipmentSlot;
+  subtitle?: string;
+  variant?: "row" | "plate";
 }
 
 export const SkyEquipmentSlot = React.forwardRef<HTMLButtonElement, SkyEquipmentSlotProps>(
-  ({ slot, item, icon, className, ...props }, ref) => (
-    <button
-      {...props}
-      ref={ref}
-      type={props.type ?? "button"}
-      aria-label={props["aria-label"] ?? `${slot}: ${item ?? "empty"}`}
-      data-empty={!item || undefined}
-      className={cn("sky-equipment-slot", className)}
-    >
-      <span className="sky-equipment-slot__icon" aria-hidden="true">{icon ?? <span>{item ? "✓" : "+"}</span>}</span>
-      <span className="sky-equipment-slot__copy"><small>{slot}</small><strong>{item ?? "Empty slot"}</strong></span>
-      <span className="sky-equipment-slot__arrow" aria-hidden="true">›</span>
-    </button>
-  ),
+  ({ slot, item, icon, bipedSlot, enchanted = false, slotKind, subtitle, variant = "row", className, ...props }, ref) => {
+    const glyphNode = icon ?? (slotKind ? <EquipmentGlyph slot={slotKind} size={variant === "plate" ? 28 : 20} /> : <span>{item ? "✓" : "+"}</span>);
+    if (variant === "plate") {
+      return (
+        <button
+          {...props}
+          ref={ref}
+          type={props.type ?? "button"}
+          aria-label={props["aria-label"] ?? `${slot}: ${item ?? "empty"}`}
+          data-empty={!item || undefined}
+          data-enchanted={enchanted ? "true" : undefined}
+          className={cn("sky-equipment-slot sky-equipment-slot--plate", className)}
+        >
+          <span className="sky-equipment-slot__head">
+            <span>{slot}</span>
+            {bipedSlot && <em>{bipedSlot}</em>}
+          </span>
+          <span className="sky-equipment-slot__bezel" aria-hidden="true">
+            {glyphNode}
+            {enchanted && (
+              <span className="sky-equipment-slot__enchant">
+                <Icon name="enchant" size={9} />
+              </span>
+            )}
+          </span>
+          <strong className="sky-equipment-slot__name">{item ?? "Not equipped"}</strong>
+          <i className="sky-equipment-slot__bar" aria-hidden="true" />
+        </button>
+      );
+    }
+    return (
+      <button
+        {...props}
+        ref={ref}
+        type={props.type ?? "button"}
+        aria-label={props["aria-label"] ?? `${slot}: ${item ?? "empty"}`}
+        data-empty={!item || undefined}
+        data-enchanted={enchanted ? "true" : undefined}
+        className={cn("sky-equipment-slot", className)}
+      >
+        <span className="sky-equipment-slot__icon" aria-hidden="true">
+          {glyphNode}
+          {enchanted && (
+            <span className="sky-equipment-slot__enchant">
+              <Icon name="enchant" size={8} />
+            </span>
+          )}
+        </span>
+        <span className="sky-equipment-slot__copy">
+          <small>{slot}{bipedSlot && <em>{bipedSlot}</em>}</small>
+          <strong>{item ?? "Empty slot"}</strong>
+          {subtitle && <span>{subtitle}</span>}
+        </span>
+        <span className="sky-equipment-slot__arrow" aria-hidden="true">›</span>
+      </button>
+    );
+  },
 );
 SkyEquipmentSlot.displayName = "SkyEquipmentSlot";
 
@@ -504,7 +588,27 @@ export const SkySwitch = React.forwardRef<HTMLButtonElement, SkySwitchProps>(
 SkySwitch.displayName = "SkySwitch";
 
 export const SkySlider = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
-  ({ className, ...props }, ref) => <input {...props} ref={ref} type="range" className={cn("sky-slider", className)} />,
+  ({ className, style, value, defaultValue, min = 0, max = 100, onChange, ...props }, ref) => {
+    const lo = Number(min);
+    const hi = Number(max);
+    const span = Number.isFinite(hi - lo) && hi > lo ? hi - lo : 100;
+    const rawNum = value !== undefined ? Number(value) : defaultValue !== undefined ? Number(defaultValue) : lo;
+    const pct = Number.isFinite(rawNum) ? Math.max(0, Math.min(100, ((rawNum - lo) / span) * 100)) : 0;
+    return (
+      <input
+        {...props}
+        ref={ref}
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        defaultValue={defaultValue}
+        onChange={onChange}
+        style={{ "--sky-slider-pct": `${pct}%`, ...style } as React.CSSProperties}
+        className={cn("sky-slider", className)}
+      />
+    );
+  },
 );
 SkySlider.displayName = "SkySlider";
 

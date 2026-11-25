@@ -4,6 +4,7 @@ import {
   SKYULTRA_CONTROLLER_GLYPHS,
   connectSkyUltraDeclarativeSounds,
   connectSkyUltraInputScopes,
+  createSkyUltraGame,
   getSkyUltraRuntimeInfo,
   getSkyWebView,
   installSkyUltraCompetitorShims,
@@ -23,6 +24,7 @@ import {
   updateSkyUltraSettings,
   writeLocalSkyUltraProfileStore,
   type JsonValue,
+  type SkyUltraActiveBookSnapshot,
   type SkyUltraControllerGlyphFamily,
   type SkyUltraBarterDisplayMode,
   type SkyUltraContainerDisplayMode,
@@ -37,6 +39,7 @@ import { enterSkyInputScope, getSkyInputScopeDepth } from "../interaction.js";
 import { SkyRingMeter, SkyThemeScope } from "../core.js";
 import { SkyCursorScope, SkyMenuHeader, SkyBrand, SkyNavigationRail, SkyWelcomeBanner } from "../chrome.js";
 import { EquipmentGlyph } from "./EquipmentGlyph.js";
+import type { ReadingBookState } from "./BookReader.js";
 import { equipmentSlots } from "./EquipmentPanel.js";
 import { Icon, itemIcon, type IconName } from "./icons.js";
 import { ItemThumbnail } from "./ItemThumbnail.js";
@@ -57,19 +60,88 @@ const ActorsPage = React.memo(
     prev.obscured === next.obscured &&
     (prev.player?.inventory?.length ?? 0) === (next.player?.inventory?.length ?? 0),
 );
-const InventoryPage = lazy(() => loadMenuPage("inventory"));
+const InventoryPage = React.memo(lazy(() => loadMenuPage("inventory")));
 const BarterPage = lazy(() => import("./BarterPage.js"));
 const ContainerPage = lazy(() => import("./ContainerPage.js"));
 const MannequinPage = lazy(() => import("./MannequinPage.js"));
-const MagicPage = lazy(() => import("./MagicPage.js"));
-const FavoritesPage = lazy(() => import("./FavoritesPage.js"));
-const CharacterPage = lazy(() => loadMenuPage("character"));
-const SettingsPage = lazy(() => loadMenuPage("settings"));
-const PerformancePage = lazy(() => loadMenuPage("performance"));
-const WidgetsPage = lazy(() => loadMenuPage("widgets"));
-const DevStudioPage = lazy(() => loadMenuPage("devtools"));
-const GuidePage = lazy(() => loadMenuPage("guide"));
+const RawMagicPage = lazy(() => import("./MagicPage.js"));
+const MagicPage = React.memo(
+  RawMagicPage,
+  (prev, next) =>
+    prev.bridge === next.bridge &&
+    prev.obscured === next.obscured &&
+    prev.displayMode === next.displayMode &&
+    prev.pauseWorld === next.pauseWorld &&
+    prev.onChangeDisplayMode === next.onChangeDisplayMode &&
+    prev.onTogglePauseWorld === next.onTogglePauseWorld &&
+    prev.onClose === next.onClose &&
+    prev.player?.playerName === next.player?.playerName &&
+    prev.player?.magicka?.current === next.player?.magicka?.current &&
+    prev.player?.magicka?.max === next.player?.magicka?.max &&
+    prev.player?.activeEffects === next.player?.activeEffects,
+);
+const RawFavoritesPage = lazy(() => import("./FavoritesPage.js"));
+const FavoritesPage = React.memo(
+  RawFavoritesPage,
+  (prev, next) =>
+    prev.bridge === next.bridge &&
+    prev.obscured === next.obscured &&
+    prev.displayMode === next.displayMode &&
+    prev.pauseWorld === next.pauseWorld &&
+    prev.onChangeDisplayMode === next.onChangeDisplayMode &&
+    prev.onTogglePauseWorld === next.onTogglePauseWorld &&
+    prev.onClose === next.onClose &&
+    prev.player?.playerName === next.player?.playerName,
+);
+const RawBlacksmithPage = lazy(() => import("./BlacksmithPage.js"));
+const BlacksmithPage = React.memo(
+  RawBlacksmithPage,
+  (prev, next) =>
+    prev.bridge === next.bridge &&
+    prev.obscured === next.obscured &&
+    prev.displayMode === next.displayMode &&
+    prev.pauseWorld === next.pauseWorld &&
+    prev.onChangeDisplayMode === next.onChangeDisplayMode &&
+    prev.onTogglePauseWorld === next.onTogglePauseWorld &&
+    prev.onClose === next.onClose &&
+    prev.player?.playerName === next.player?.playerName,
+);
+const RawEnchantingPage = lazy(() => import("./EnchantingPage.js"));
+const EnchantingPage = React.memo(
+  RawEnchantingPage,
+  (prev, next) =>
+    prev.bridge === next.bridge &&
+    prev.obscured === next.obscured &&
+    prev.displayMode === next.displayMode &&
+    prev.pauseWorld === next.pauseWorld &&
+    prev.onChangeDisplayMode === next.onChangeDisplayMode &&
+    prev.onTogglePauseWorld === next.onTogglePauseWorld &&
+    prev.onClose === next.onClose &&
+    prev.player?.playerName === next.player?.playerName,
+);
+const RawAlchemyPage = lazy(() => import("./AlchemyPage.js"));
+const AlchemyPage = React.memo(
+  RawAlchemyPage,
+  (prev, next) =>
+    prev.bridge === next.bridge &&
+    prev.obscured === next.obscured &&
+    prev.displayMode === next.displayMode &&
+    prev.pauseWorld === next.pauseWorld &&
+    prev.onChangeDisplayMode === next.onChangeDisplayMode &&
+    prev.onTogglePauseWorld === next.onTogglePauseWorld &&
+    prev.onClose === next.onClose &&
+    prev.player?.playerName === next.player?.playerName,
+);
+const CharacterPage = React.memo(lazy(() => loadMenuPage("character")));
+const SettingsPage = React.memo(lazy(() => loadMenuPage("settings")));
+const PerformancePage = React.memo(lazy(() => loadMenuPage("performance")));
+const WidgetsPage = React.memo(lazy(() => loadMenuPage("widgets")));
+const DevStudioPage = React.memo(lazy(() => loadMenuPage("devtools")));
+const GuidePage = React.memo(lazy(() => loadMenuPage("guide")));
 const FieldOverlays = lazy(() => import("./FieldOverlays.js"));
+const StandaloneBookReader = lazy(() =>
+  import("./BookReader.js").then((mod) => ({ default: mod.BookReader })),
+);
 const appModuleStartedAt = performance.now();
 const HOST_SETTINGS_CACHE_KEY = "skyultra.hostSettingsCache.v1";
 
@@ -100,6 +172,7 @@ function SessionReadyBeacon({ epoch, bridge }: { epoch: number; bridge: ReturnTy
     let cancelled = false;
     let raf1 = 0;
     let raf2 = 0;
+    let raf3 = 0;
     let fallback = 0;
     let signaled = false;
     const done = (): void => {
@@ -108,7 +181,13 @@ function SessionReadyBeacon({ epoch, bridge }: { epoch: number; bridge: ReturnTy
       void markSkyUltraPageReady(bridge, epoch > 0 ? { epoch } : undefined).catch(() => undefined);
     };
     raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(done);
+      raf2 = requestAnimationFrame(() => {
+        if (epoch > 0) {
+          raf3 = requestAnimationFrame(done);
+        } else {
+          done();
+        }
+      });
     });
     if (epoch === 0) {
       fallback = window.setTimeout(done, 60);
@@ -117,6 +196,7 @@ function SessionReadyBeacon({ epoch, bridge }: { epoch: number; bridge: ReturnTy
       cancelled = true;
       cancelAnimationFrame(raf1);
       cancelAnimationFrame(raf2);
+      cancelAnimationFrame(raf3);
       if (fallback) window.clearTimeout(fallback);
     };
   }, [bridge, epoch]);
@@ -139,86 +219,7 @@ export function App(): React.JSX.Element {
   const runtime = useMemo(() => getSkyUltraRuntimeInfo(), []);
   const [profileStore, setProfileStore] = useState<SkyUltraProfileStoreV2>(() => readLocalSkyUltraProfileStore());
   const [uiPrefs, setUiPrefs] = useState<SkyUltraUiPreferences>(() => readSkyUltraUiPrefs());
-  const cadence = useCadence(bridge);
-  const { player, status: playerStatus } = usePlayer(bridge, cadence.runRef);
-  const [route, setRouteState] = useState<Route>(() => {
-    try {
-      const raw = window.localStorage.getItem("skyultra.switchState");
-      if (raw) {
-        const parsed = JSON.parse(raw) as { route?: Route; ts?: number };
-        if (parsed.ts && Date.now() - parsed.ts < 15000 && parsed.route) {
-          return parsed.route;
-        }
-      }
-    } catch {
-      // Ignore storage access errors
-    }
-    return "overview";
-  });
-  const [theme, setTheme] = useState<Palette>(() => {
-    const saved = readSkyUltraUiPrefs().defaultTheme;
-    return palettes.some((p) => p.value === saved) ? (saved as Palette) : "dragonstone";
-  });
-  const [themeOpen, setThemeOpen] = useState(false);
-  const [previewEngine, setPreviewEngine] = useState("CEF");
-  const [hostSettings, setHostSettings] = useState<SkyUltraSettings>(() => readCachedHostSettings());
-  const [initialItemId, setInitialItemId] = useState("");
-  const [initialCategory, setInitialCategory] = useState("all");
-  const [inspectModRequest, setInspectModRequest] = useState<{ modId: string; nonce: number } | null>(null);
-  const routeRef = useRef(route);
-  const sessionEpochRef = useRef(0);
-  const [sessionReadyEpoch, setSessionReadyEpoch] = useState(0);
   const [sessionDormant, setSessionDormant] = useState(false);
-  const [closingStandalone, setClosingStandalone] = useState(false);
-  const [tabTransitionSplash, setTabTransitionSplash] = useState<string | null>(null);
-  const [splashPreviewOpen, setSplashPreviewOpen] = useState(false);
-  const tabTransitionTimerRef = useRef(0);
-  const tabTransitionPrefRef = useRef(uiPrefs.tabTransition);
-  const motionPrefRef = useRef(uiPrefs.motion);
-  tabTransitionPrefRef.current = uiPrefs.tabTransition;
-  motionPrefRef.current = uiPrefs.motion;
-  const setRoute = useCallback((next: Route): void => {
-    if (next === routeRef.current) return;
-    leaveMenuPage();
-    preloadMenuPage(next);
-    routeRef.current = next;
-    setRouteState(next);
-    window.clearTimeout(tabTransitionTimerRef.current);
-    if (tabTransitionPrefRef.current === "cinematic" && motionPrefRef.current !== "reduced") {
-      const targetTitle = navigation.find((item) => item.id === next)?.title ?? next;
-      setTabTransitionSplash(targetTitle);
-      tabTransitionTimerRef.current = window.setTimeout(() => {
-        setTabTransitionSplash(null);
-      }, 165);
-    } else {
-      setTabTransitionSplash(null);
-    }
-  }, []);
-  const [openingDataMs, setOpeningDataMs] = useState<number | null>(null);
-  const playerAvailable = useRef(false);
-  playerAvailable.current = Boolean(player?.available);
-  const [firstFrameMs, setFirstFrameMs] = useState(0);
-  const [navigationFrameMs, setNavigationFrameMs] = useState(0);
-  const [dataFrameMs, setDataFrameMs] = useState(0);
-  const [openingFrameMs, setOpeningFrameMs] = useState<number | null>(null);
-  const [overlay, setOverlay] = useState<"help" | "commands" | null>(null);
-  const [pinnedCount, setPinnedCount] = useState(0);
-  const [hotkey, setHotkey] = useState<SkyUltraHotkeyBinding>(defaultSkyUltraHotkey);
-  const [keyboardHotkey, setKeyboardHotkey] = useState<SkyUltraHotkeyBinding>(defaultSkyUltraKeyboardHotkey);
-  const [glyphFamily, setGlyphFamily] = useState<SkyUltraControllerGlyphFamily>("keyboard");
-  const [virtualCursor, setVirtualCursor] = useState<{
-    enabled: boolean;
-    x: number;
-    y: number;
-    targetLabel: string;
-  }>({
-    enabled: false,
-    x: 640,
-    y: 360,
-    targetLabel: "READY",
-  });
-  const [virtualKeyboardOpen, setVirtualKeyboardOpen] = useState(false);
-  const [virtualKeyboardStandalone, setVirtualKeyboardStandalone] = useState(false);
   const [standaloneInventory, setStandaloneInventory] = useState<boolean>(() => {
     try {
       return new URLSearchParams(window.location.search).get("mode") === "inventory";
@@ -275,6 +276,211 @@ export function App(): React.JSX.Element {
       return false;
     }
   });
+  const [standaloneBlacksmith, setStandaloneBlacksmith] = useState<boolean>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("mode") === "blacksmith";
+    } catch {
+      return false;
+    }
+  });
+  const [standaloneEnchanting, setStandaloneEnchanting] = useState<boolean>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("mode") === "enchanting";
+    } catch {
+      return false;
+    }
+  });
+  const [standaloneAlchemy, setStandaloneAlchemy] = useState<boolean>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("mode") === "alchemy";
+    } catch {
+      return false;
+    }
+  });
+  const [standaloneBook, setStandaloneBook] = useState<boolean>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("mode") === "book";
+    } catch {
+      return false;
+    }
+  });
+  const [bookLoadEpoch, setBookLoadEpoch] = useState<number>(0);
+  const [activeBookSnapshot, setActiveBookSnapshot] = useState<SkyUltraActiveBookSnapshot | null>(null);
+  const [activeBookNotice, setActiveBookNotice] = useState<string | null>(null);
+  const [busyTakingBook, setBusyTakingBook] = useState<boolean>(false);
+  const standaloneBookRef = useRef<boolean>(standaloneBook);
+  standaloneBookRef.current = standaloneBook;
+  const activeBookSnapshotRef = useRef<SkyUltraActiveBookSnapshot | null>(activeBookSnapshot);
+  activeBookSnapshotRef.current = activeBookSnapshot;
+  const handleTakeActiveBookRef = useRef<() => void>(() => {});
+  const isStandaloneOverlay =
+    standaloneInventory ||
+    standaloneBarter ||
+    standaloneMagic ||
+    standaloneFavorites ||
+    standaloneContainer ||
+    standaloneMannequin ||
+    standaloneLoot ||
+    standalonePickpocket ||
+    standaloneBlacksmith ||
+    standaloneEnchanting ||
+    standaloneAlchemy ||
+    standaloneBook;
+  const [route, setRouteState] = useState<Route>(() => {
+    try {
+      const raw = window.localStorage.getItem("skyultra.switchState");
+      if (raw) {
+        const parsed = JSON.parse(raw) as { route?: Route; ts?: number };
+        if (parsed.ts && Date.now() - parsed.ts < 15000 && parsed.route) {
+          return parsed.route;
+        }
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+    return "overview";
+  });
+  const cadence = useCadence(bridge, !isStandaloneOverlay && route === "performance");
+  const { player, status: playerStatus } = usePlayer(bridge, cadence.runRef);
+  const [theme, setTheme] = useState<Palette>(() => {
+    const saved = readSkyUltraUiPrefs().defaultTheme;
+    return palettes.some((p) => p.value === saved) ? (saved as Palette) : "dragonstone";
+  });
+  const [themeOpen, setThemeOpen] = useState(false);
+  const [previewEngine, setPreviewEngine] = useState("CEF");
+  const [hostSettings, setHostSettings] = useState<SkyUltraSettings>(() => readCachedHostSettings());
+  const [initialItemId, setInitialItemId] = useState("");
+  const [initialCategory, setInitialCategory] = useState("all");
+  const [inspectModRequest, setInspectModRequest] = useState<{ modId: string; nonce: number } | null>(null);
+  const routeRef = useRef(route);
+  const bridgeRef = useRef(bridge);
+  bridgeRef.current = bridge;
+  const sessionEpochRef = useRef(0);
+  const [sessionReadyEpoch, setSessionReadyEpoch] = useState(0);
+  const [closingStandalone, setClosingStandalone] = useState(false);
+  const [tabTransitionSplash, setTabTransitionSplash] = useState<string | null>(null);
+  const [previewSplashGate, setPreviewSplashGate] = useState(false);
+  const [splashPreviewOpen, setSplashPreviewOpen] = useState(false);
+  const tabTransitionTimerRef = useRef(0);
+  const previewSplashGateRafRef = useRef(0);
+  const splashPreviewWasOpenRef = useRef(false);
+  const tabTransitionPrefRef = useRef(uiPrefs.tabTransition);
+  const motionPrefRef = useRef(uiPrefs.motion);
+  tabTransitionPrefRef.current = uiPrefs.tabTransition;
+  motionPrefRef.current = uiPrefs.motion;
+  const setRoute = useCallback((next: Route): void => {
+    if (next === routeRef.current) return;
+    const prevRoute = routeRef.current;
+    const nextWillSplash = tabTransitionPrefRef.current === "cinematic" && motionPrefRef.current !== "reduced";
+    leaveMenuPage();
+    void bridgeRef.current?.request("game.closeItemPreview", {}).catch(() => undefined);
+    if (nextWillSplash) {
+      void bridgeRef.current?.request("game.closeActorPreview", { hold: true }).catch(() => undefined);
+    } else if (prevRoute === "overview" || prevRoute === "actors" || prevRoute === "inventory") {
+      void bridgeRef.current?.request("game.closeActorPreview", {}).catch(() => undefined);
+    }
+    preloadMenuPage(next);
+    routeRef.current = next;
+    setRouteState(next);
+    window.clearTimeout(tabTransitionTimerRef.current);
+    cancelAnimationFrame(previewSplashGateRafRef.current);
+    if (nextWillSplash) {
+      const targetTitle = navigation.find((item) => item.id === next)?.title ?? next;
+      setPreviewSplashGate(true);
+      setTabTransitionSplash(targetTitle);
+      tabTransitionTimerRef.current = window.setTimeout(() => {
+        setTabTransitionSplash(null);
+      }, 165);
+    } else {
+      setTabTransitionSplash(null);
+      setPreviewSplashGate(false);
+    }
+  }, []);
+  useLayoutEffect(() => {
+    if (tabTransitionSplash !== null || !previewSplashGate) return;
+    void bridgeRef.current?.request("game.closeActorPreview", { releaseAfterPaint: true }).catch(() => undefined);
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        previewSplashGateRafRef.current = 0;
+        setPreviewSplashGate(false);
+      });
+      previewSplashGateRafRef.current = raf2;
+    });
+    previewSplashGateRafRef.current = raf1;
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [tabTransitionSplash, previewSplashGate]);
+  useLayoutEffect(() => {
+    if (splashPreviewOpen) {
+      splashPreviewWasOpenRef.current = true;
+      void bridgeRef.current?.request("game.closeActorPreview", { hold: true }).catch(() => undefined);
+      void bridgeRef.current?.request("game.closeItemPreview", {}).catch(() => undefined);
+      return;
+    }
+    if (splashPreviewWasOpenRef.current) {
+      splashPreviewWasOpenRef.current = false;
+      void bridgeRef.current?.request("game.closeActorPreview", { releaseAfterPaint: true }).catch(() => undefined);
+    }
+  }, [splashPreviewOpen]);
+  const [openingDataMs, setOpeningDataMs] = useState<number | null>(null);
+  const playerAvailable = useRef(false);
+  playerAvailable.current = Boolean(player?.available);
+  const [firstFrameMs, setFirstFrameMs] = useState(0);
+  const [navigationFrameMs, setNavigationFrameMs] = useState(0);
+  const [dataFrameMs, setDataFrameMs] = useState(0);
+  const [openingFrameMs, setOpeningFrameMs] = useState<number | null>(null);
+  const [overlay, setOverlay] = useState<"help" | "commands" | null>(null);
+  const [pinnedCount, setPinnedCount] = useState(0);
+  const [hotkey, setHotkey] = useState<SkyUltraHotkeyBinding>(defaultSkyUltraHotkey);
+  const [keyboardHotkey, setKeyboardHotkey] = useState<SkyUltraHotkeyBinding>(defaultSkyUltraKeyboardHotkey);
+  const [glyphFamily, setGlyphFamily] = useState<SkyUltraControllerGlyphFamily>("keyboard");
+  const [virtualCursorEnabled, setVirtualCursorEnabled] = useState(false);
+  const virtualCursorEnabledRef = useRef(false);
+  const virtualCursorStateRef = useRef<{ x: number; y: number; targetLabel: string }>({
+    x: 640,
+    y: 360,
+    targetLabel: "READY",
+  });
+  const virtualCursorElRef = useRef<HTMLDivElement | null>(null);
+  const virtualCursorBadgeRef = useRef<HTMLSpanElement | null>(null);
+  const virtualCursorRafRef = useRef<number>(0);
+  const virtualCursorLabelDirtyRef = useRef<boolean>(false);
+  const scheduleVirtualCursorDomSync = useCallback((resolveLabel = true): void => {
+    if (resolveLabel) {
+      virtualCursorLabelDirtyRef.current = true;
+    }
+    if (virtualCursorRafRef.current !== 0) {
+      return;
+    }
+    virtualCursorRafRef.current = requestAnimationFrame(() => {
+      virtualCursorRafRef.current = 0;
+      if (!virtualCursorEnabledRef.current) {
+        return;
+      }
+      const cur = virtualCursorStateRef.current;
+      if (virtualCursorLabelDirtyRef.current) {
+        virtualCursorLabelDirtyRef.current = false;
+        const hit = document.elementFromPoint(cur.x, cur.y) as HTMLElement | null;
+        const interactive = hit?.closest("button,a,input,textarea,select,[role='button'],[role='tab']") as HTMLElement | null;
+        cur.targetLabel =
+          interactive?.getAttribute("aria-label") ||
+          interactive?.textContent?.trim().slice(0, 22) ||
+          hit?.tagName.toLowerCase() ||
+          "SURFACE";
+      }
+      if (virtualCursorElRef.current) {
+        virtualCursorElRef.current.style.transform = `translate3d(${cur.x}px, ${cur.y}px, 0)`;
+      }
+      if (virtualCursorBadgeRef.current) {
+        virtualCursorBadgeRef.current.textContent = `${cur.targetLabel} · ${cur.x},${cur.y}`;
+      }
+    });
+  }, []);
+  const [virtualKeyboardOpen, setVirtualKeyboardOpen] = useState(false);
+  const [virtualKeyboardStandalone, setVirtualKeyboardStandalone] = useState(false);
   const [vkShift, setVkShift] = useState(false);
   const [vkCaps, setVkCaps] = useState(false);
   const [vkCtrl, setVkCtrl] = useState(false);
@@ -346,8 +552,8 @@ export function App(): React.JSX.Element {
       ? hostSettings.barterDisplayMode
       : "half";
   const menuPauseWorld = hostSettings.menuPauseWorld === true;
-  const inventoryPauseWorld = hostSettings.inventoryPauseWorld === true;
-  const barterPauseWorld = hostSettings.barterPauseWorld === true;
+  const inventoryPauseWorld = hostSettings.inventoryPauseWorld !== false;
+  const barterPauseWorld = hostSettings.barterPauseWorld !== false;
   const containerMode = (value: unknown, fallback: SkyUltraContainerDisplayMode = "half"): SkyUltraContainerDisplayMode =>
     value === "full" || value === "windowed" || value === "half" ? value : fallback;
   const magicDisplayMode = containerMode(hostSettings.magicDisplayMode, "half");
@@ -356,21 +562,18 @@ export function App(): React.JSX.Element {
   const mannequinDisplayMode = containerMode(hostSettings.mannequinDisplayMode, "full");
   const lootDisplayMode = containerMode(hostSettings.lootDisplayMode, "half");
   const pickpocketDisplayMode = containerMode(hostSettings.pickpocketDisplayMode, "half");
-  const magicPauseWorld = hostSettings.magicPauseWorld === true;
-  const favoritesPauseWorld = hostSettings.favoritesPauseWorld === true;
-  const containerPauseWorld = hostSettings.containerPauseWorld === true;
-  const mannequinPauseWorld = hostSettings.mannequinPauseWorld === true;
-  const lootPauseWorld = hostSettings.lootPauseWorld === true;
-  const pickpocketPauseWorld = hostSettings.pickpocketPauseWorld === true;
-  const isStandaloneOverlay =
-    standaloneInventory ||
-    standaloneBarter ||
-    standaloneMagic ||
-    standaloneFavorites ||
-    standaloneContainer ||
-    standaloneMannequin ||
-    standaloneLoot ||
-    standalonePickpocket;
+  const blacksmithDisplayMode = containerMode(hostSettings.blacksmithDisplayMode, "half");
+  const enchantingDisplayMode = containerMode(hostSettings.enchantingDisplayMode, "half");
+  const alchemyDisplayMode = containerMode(hostSettings.alchemyDisplayMode, "half");
+  const magicPauseWorld = hostSettings.magicPauseWorld !== false;
+  const favoritesPauseWorld = hostSettings.favoritesPauseWorld !== false;
+  const containerPauseWorld = hostSettings.containerPauseWorld !== false;
+  const mannequinPauseWorld = hostSettings.mannequinPauseWorld !== false;
+  const lootPauseWorld = hostSettings.lootPauseWorld !== false;
+  const pickpocketPauseWorld = hostSettings.pickpocketPauseWorld !== false;
+  const blacksmithPauseWorld = hostSettings.blacksmithPauseWorld !== false;
+  const enchantingPauseWorld = hostSettings.enchantingPauseWorld !== false;
+  const alchemyPauseWorld = hostSettings.alchemyPauseWorld !== false;
   const activeDisplayMode: SkyUltraDisplayMode = standaloneMagic
     ? magicDisplayMode === "windowed" ? "windowed" : "fullscreen"
     : standaloneFavorites
@@ -383,6 +586,14 @@ export function App(): React.JSX.Element {
     ? lootDisplayMode === "windowed" ? "windowed" : "fullscreen"
     : standalonePickpocket
     ? pickpocketDisplayMode === "windowed" ? "windowed" : "fullscreen"
+    : standaloneBlacksmith
+    ? blacksmithDisplayMode === "windowed" ? "windowed" : "fullscreen"
+    : standaloneEnchanting
+    ? enchantingDisplayMode === "windowed" ? "windowed" : "fullscreen"
+    : standaloneAlchemy
+    ? alchemyDisplayMode === "windowed" ? "windowed" : "fullscreen"
+    : standaloneBook
+    ? "fullscreen"
     : standaloneBarter
     ? barterDisplayMode === "windowed"
       ? "windowed"
@@ -391,12 +602,21 @@ export function App(): React.JSX.Element {
       ? inventoryDisplayMode
       : menuDisplayMode;
 
-  const updateHostSettingsPatch = (patch: Partial<SkyUltraSettings>): void => {
+  const hostSettingsRef = useRef(hostSettings);
+  hostSettingsRef.current = hostSettings;
+  const profileStoreRef = useRef(profileStore);
+  profileStoreRef.current = profileStore;
+  const playerNameRef = useRef(player?.playerName);
+  playerNameRef.current = player?.playerName;
+  const cadenceLockedRef = useRef(cadence.locked);
+  cadenceLockedRef.current = cadence.locked;
+
+  const updateHostSettingsPatch = useCallback((patch: Partial<SkyUltraSettings>): void => {
     const nextSettings: SkyUltraSettings = {
-      ...hostSettings,
+      ...hostSettingsRef.current,
       ...patch,
       schemaVersion: 2,
-      profileState: profileStore as unknown as Record<string, unknown>,
+      profileState: profileStoreRef.current as unknown as Record<string, unknown>,
     };
     setHostSettings(nextSettings);
     writeCachedHostSettings(nextSettings);
@@ -408,7 +628,54 @@ export function App(): React.JSX.Element {
         window.dispatchEvent(new CustomEvent("skyultra:settings-updated", { detail: persisted }));
       })
       .catch(() => undefined);
-  };
+  }, [bridge]);
+
+  const toggleMenuDisplayMode = useCallback((): void => {
+    updateHostSettingsPatch({
+      menuDisplayMode: hostSettingsRef.current.menuDisplayMode === "windowed" ? "fullscreen" : "windowed",
+    });
+  }, [updateHostSettingsPatch]);
+  const toggleMenuPauseWorld = useCallback((): void => {
+    updateHostSettingsPatch({ menuPauseWorld: !(hostSettingsRef.current.menuPauseWorld === true) });
+  }, [updateHostSettingsPatch]);
+  const toggleInventoryDisplayMode = useCallback((): void => {
+    updateHostSettingsPatch({
+      inventoryDisplayMode: hostSettingsRef.current.inventoryDisplayMode === "windowed" ? "fullscreen" : "windowed",
+    });
+  }, [updateHostSettingsPatch]);
+  const toggleInventoryPauseWorld = useCallback((): void => {
+    updateHostSettingsPatch({ inventoryPauseWorld: !(hostSettingsRef.current.inventoryPauseWorld !== false) });
+  }, [updateHostSettingsPatch]);
+  const changeMagicDisplayMode = useCallback((nextMode: SkyUltraContainerDisplayMode): void => {
+    updateHostSettingsPatch({ magicDisplayMode: nextMode });
+  }, [updateHostSettingsPatch]);
+  const toggleMagicPauseWorld = useCallback((): void => {
+    updateHostSettingsPatch({ magicPauseWorld: !(hostSettingsRef.current.magicPauseWorld !== false) });
+  }, [updateHostSettingsPatch]);
+  const changeFavoritesDisplayMode = useCallback((nextMode: SkyUltraContainerDisplayMode): void => {
+    updateHostSettingsPatch({ favoritesDisplayMode: nextMode });
+  }, [updateHostSettingsPatch]);
+  const toggleFavoritesPauseWorld = useCallback((): void => {
+    updateHostSettingsPatch({ favoritesPauseWorld: !(hostSettingsRef.current.favoritesPauseWorld !== false) });
+  }, [updateHostSettingsPatch]);
+  const changeBlacksmithDisplayMode = useCallback((nextMode: SkyUltraContainerDisplayMode): void => {
+    updateHostSettingsPatch({ blacksmithDisplayMode: nextMode });
+  }, [updateHostSettingsPatch]);
+  const toggleBlacksmithPauseWorld = useCallback((): void => {
+    updateHostSettingsPatch({ blacksmithPauseWorld: !(hostSettingsRef.current.blacksmithPauseWorld !== false) });
+  }, [updateHostSettingsPatch]);
+  const changeEnchantingDisplayMode = useCallback((nextMode: SkyUltraContainerDisplayMode): void => {
+    updateHostSettingsPatch({ enchantingDisplayMode: nextMode });
+  }, [updateHostSettingsPatch]);
+  const toggleEnchantingPauseWorld = useCallback((): void => {
+    updateHostSettingsPatch({ enchantingPauseWorld: !(hostSettingsRef.current.enchantingPauseWorld !== false) });
+  }, [updateHostSettingsPatch]);
+  const changeAlchemyDisplayMode = useCallback((nextMode: SkyUltraContainerDisplayMode): void => {
+    updateHostSettingsPatch({ alchemyDisplayMode: nextMode });
+  }, [updateHostSettingsPatch]);
+  const toggleAlchemyPauseWorld = useCallback((): void => {
+    updateHostSettingsPatch({ alchemyPauseWorld: !(hostSettingsRef.current.alchemyPauseWorld !== false) });
+  }, [updateHostSettingsPatch]);
 
   useEffect(() => {
     let active = true;
@@ -448,15 +715,108 @@ export function App(): React.JSX.Element {
     }
   }, [player?.playerName]);
 
-  const selectAndPersistTheme = (nextTheme: Palette): void => {
+  const selectAndPersistTheme = useCallback((nextTheme: Palette): void => {
     setTheme(nextTheme);
-    const updatedStore = updateProfileForContext(profileStore, player?.playerName, {
+    const name = playerNameRef.current;
+    const updatedStore = updateProfileForContext(profileStoreRef.current, name, {
       theme: nextTheme,
       uiPrefs: { defaultTheme: nextTheme },
     });
     setProfileStore(updatedStore);
-    void persistSkyUltraProfileStore(updatedStore, bridge, player?.playerName);
-  };
+    void persistSkyUltraProfileStore(updatedStore, bridge, name);
+  }, [bridge]);
+
+  const gameApi = useMemo(() => createSkyUltraGame(bridge), [bridge]);
+
+  const playerEnchantingLevel = useMemo(() => {
+    const fromSkills = (player?.skills ?? []).find(
+      (s) => s.id.toLowerCase() === "enchanting" || s.label.toLowerCase() === "enchanting",
+    )?.value;
+    const skillNum = typeof fromSkills === "number" && Number.isFinite(fromSkills) ? Math.floor(fromSkills) : 0;
+    const hostNum =
+      typeof hostSettings.playerEnchantingLevel === "number" && Number.isFinite(hostSettings.playerEnchantingLevel)
+        ? Math.floor(hostSettings.playerEnchantingLevel)
+        : 0;
+    return Math.max(skillNum, hostNum);
+  }, [player?.skills, hostSettings.playerEnchantingLevel]);
+
+  useEffect(() => {
+    if (!standaloneBook) return;
+    let cancelled = false;
+    void gameApi
+      .getActiveBookSnapshot()
+      .then((snap) => {
+        if (!cancelled) {
+          setActiveBookSnapshot(snap);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setActiveBookSnapshot({ available: false });
+          setActiveBookNotice(err instanceof Error ? err.message : "Failed to load book text.");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [standaloneBook, bookLoadEpoch, gameApi]);
+
+  const closeStandaloneSession = useCallback((): void => {
+    // Keep a transparent curtain active while C++ hides the view so Main Menu never flashes underneath.
+    setClosingStandalone(true);
+    void closeSkyUltraPage(bridge).catch(() => {
+      setClosingStandalone(false);
+    });
+  }, [bridge]);
+
+  const handleTakeActiveBook = useCallback((): void => {
+    if (busyTakingBook) return;
+    setBusyTakingBook(true);
+    setActiveBookNotice(null);
+    void gameApi
+      .takeActiveBook()
+      .then((res) => {
+        if (res.accepted || res.taken) {
+          closeStandaloneSession();
+          return;
+        }
+        if (res.book) {
+          setActiveBookSnapshot(res.book);
+        }
+        setActiveBookNotice(res.message ?? "Could not take this book.");
+      })
+      .catch((err) => {
+        setActiveBookNotice(err instanceof Error ? err.message : "Could not take this book.");
+      })
+      .finally(() => {
+        setBusyTakingBook(false);
+      });
+  }, [busyTakingBook, closeStandaloneSession, gameApi]);
+  handleTakeActiveBookRef.current = handleTakeActiveBook;
+
+  const standaloneReadingBook = useMemo<ReadingBookState | null>(() => {
+    if (!activeBookSnapshot?.available) return null;
+    const pages = (
+      activeBookSnapshot.pages && activeBookSnapshot.pages.length > 0
+        ? activeBookSnapshot.pages
+        : [activeBookSnapshot.text ?? ""]
+    )
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const images = activeBookSnapshot.images ?? [];
+    const safePages = pages.length > 0 ? pages : [activeBookSnapshot.text?.trim() || "No inscribed text."];
+    const style =
+      activeBookSnapshot.bookStyle ??
+      (safePages.length > 1 ? "book" : "note");
+    return {
+      id: activeBookSnapshot.bookId || activeBookSnapshot.refId || "world-book",
+      title: (activeBookSnapshot.title || "Book").replace(/^\$+/, "").trim() || "Book",
+      text: activeBookSnapshot.text ?? safePages.join("\n\n"),
+      pages: safePages,
+      images,
+      style,
+    };
+  }, [activeBookSnapshot]);
 
   useEffect(() => {
     const onUiPrefs = (event: Event): void => {
@@ -552,18 +912,77 @@ export function App(): React.JSX.Element {
           if (cancelled || !current || current.available === false) return;
           const activeWidgets = current.enabled && Array.isArray(current.widgets) ? current.widgets : [];
           const hasCompass = activeWidgets.includes("compass");
+          const savedHudLayout = resolveEffectiveSkyUltraProfile(
+            readLocalSkyUltraProfileStore(),
+            player?.playerName,
+          ).hudLayout;
+          const savedExcludesCompass = Boolean(
+            savedHudLayout &&
+              Array.isArray(savedHudLayout.widgets) &&
+              !savedHudLayout.widgets.includes("compass"),
+          );
+          const savedPlacements = savedHudLayout?.placements as Record<string, JsonValue> | undefined;
+          const savedCompassRaw = savedPlacements?.compass as Record<string, JsonValue> | undefined;
+          const currentPlacementsObj = current.placements as Record<string, Record<string, JsonValue>> | undefined;
+          const currentCompassRaw = currentPlacementsObj?.compass;
+          const savedCompassRadius =
+            savedCompassRaw && typeof savedCompassRaw.compassRadius === "number"
+              ? Math.max(50, Math.min(1000, Math.round(savedCompassRaw.compassRadius)))
+              : undefined;
+          const currentHasCompassRadius =
+            currentCompassRaw !== undefined && typeof currentCompassRaw.compassRadius === "number";
+          const mergedPlacements =
+            current.placements && Object.keys(current.placements).length > 0
+              ? current.placements
+              : savedPlacements;
+          const mergedColors =
+            current.colors && Object.keys(current.colors).length > 0
+              ? current.colors
+              : (savedHudLayout?.colors as Record<string, string> | undefined);
           if (shouldEnableCompass && (!current.enabled || !hasCompass)) {
+            if (!forceAllow && savedExcludesCompass) {
+              return undefined;
+            }
             const nextWidgets = ["compass", ...activeWidgets.filter((w) => w !== "compass")];
             return bridge.request("ui.configureWidgets", {
               enabled: true,
               widgets: nextWidgets,
-              anchor: current.anchor ?? "top-center",
-              scale: current.scale ?? 1,
-              opacity: current.opacity ?? 0.98,
+              anchor: current.anchor ?? savedHudLayout?.anchor ?? "top-center",
+              scale: current.scale ?? savedHudLayout?.scale ?? 1,
+              opacity: current.opacity ?? savedHudLayout?.opacity ?? 0.98,
               theme,
-              glow: current.glow ?? uiPrefs.neonGlow ?? 100,
-              ...(current.colors ? { colors: current.colors } : {}),
-              ...(current.placements ? { placements: current.placements } : {}),
+              glow: current.glow ?? savedHudLayout?.glow ?? uiPrefs.neonGlow ?? 100,
+              ...(mergedColors ? { colors: mergedColors } : {}),
+              ...(mergedPlacements ? { placements: mergedPlacements } : {}),
+              ...(current.customCode ? { customCode: current.customCode } : {}),
+            });
+          }
+          if (
+            shouldEnableCompass &&
+            current.enabled &&
+            hasCompass &&
+            savedCompassRadius !== undefined &&
+            savedCompassRadius !== 50 &&
+            !currentHasCompassRadius
+          ) {
+            const patchedPlacements = {
+              ...(current.placements ?? {}),
+              compass: {
+                ...(savedCompassRaw ?? {}),
+                ...(currentCompassRaw ?? {}),
+                compassRadius: savedCompassRadius,
+              },
+            };
+            return bridge.request("ui.configureWidgets", {
+              enabled: true,
+              widgets: activeWidgets,
+              anchor: current.anchor ?? savedHudLayout?.anchor ?? "top-center",
+              scale: current.scale ?? savedHudLayout?.scale ?? 1,
+              opacity: current.opacity ?? savedHudLayout?.opacity ?? 0.98,
+              theme: current.theme ?? theme,
+              glow: current.glow ?? savedHudLayout?.glow ?? uiPrefs.neonGlow ?? 100,
+              ...(mergedColors ? { colors: mergedColors } : {}),
+              placements: patchedPlacements,
               ...(current.customCode ? { customCode: current.customCode } : {}),
             });
           }
@@ -577,8 +996,8 @@ export function App(): React.JSX.Element {
               opacity: current.opacity ?? 0.96,
               theme: current.theme ?? theme,
               glow: current.glow ?? uiPrefs.neonGlow ?? 100,
-              ...(current.colors ? { colors: current.colors } : {}),
-              ...(current.placements ? { placements: current.placements } : {}),
+              ...(mergedColors ? { colors: mergedColors } : {}),
+              ...(mergedPlacements ? { placements: mergedPlacements } : {}),
               ...(current.customCode ? { customCode: current.customCode } : {}),
             });
           }
@@ -594,7 +1013,7 @@ export function App(): React.JSX.Element {
       cancelled = true;
       offSync();
     };
-  }, [bridge, hostSettings.replaceSkyrimCompass, player?.available, theme, uiPrefs.neonGlow]);
+  }, [bridge, hostSettings.replaceSkyrimCompass, player?.available, player?.playerName, theme, uiPrefs.neonGlow]);
 
   useLayoutEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -669,6 +1088,10 @@ export function App(): React.JSX.Element {
       mannequinMode?: boolean;
       lootMode?: boolean;
       pickpocketMode?: boolean;
+      blacksmithMode?: boolean;
+      enchantingMode?: boolean;
+      alchemyMode?: boolean;
+      bookMode?: boolean;
       menuDisplayMode?: string;
       inventoryDisplayMode?: string;
       barterDisplayMode?: string;
@@ -678,6 +1101,9 @@ export function App(): React.JSX.Element {
       mannequinDisplayMode?: string;
       lootDisplayMode?: string;
       pickpocketDisplayMode?: string;
+      blacksmithDisplayMode?: string;
+      enchantingDisplayMode?: string;
+      alchemyDisplayMode?: string;
       menuPauseWorld?: boolean;
       inventoryPauseWorld?: boolean;
       barterPauseWorld?: boolean;
@@ -687,6 +1113,10 @@ export function App(): React.JSX.Element {
       mannequinPauseWorld?: boolean;
       lootPauseWorld?: boolean;
       pickpocketPauseWorld?: boolean;
+      blacksmithPauseWorld?: boolean;
+      enchantingPauseWorld?: boolean;
+      alchemyPauseWorld?: boolean;
+      bookPauseWorld?: boolean;
     }>("skyultra.menuSession", (ev) => {
       if (typeof ev?.epoch === "number" && Number.isFinite(ev.epoch)) {
         const nextEpoch = Math.trunc(ev.epoch);
@@ -695,7 +1125,9 @@ export function App(): React.JSX.Element {
       }
       setClosingStandalone(false);
       window.clearTimeout(tabTransitionTimerRef.current);
+      cancelAnimationFrame(previewSplashGateRafRef.current);
       setTabTransitionSplash(null);
+      setPreviewSplashGate(false);
       if (ev?.visible === false) {
         leaveMenuPage();
         setSessionDormant(true);
@@ -707,6 +1139,13 @@ export function App(): React.JSX.Element {
         setStandaloneMannequin(false);
         setStandaloneLoot(false);
         setStandalonePickpocket(false);
+        setStandaloneBlacksmith(false);
+        setStandaloneEnchanting(false);
+        setStandaloneAlchemy(false);
+        setStandaloneBook(false);
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
         setVirtualKeyboardOpen(false);
         setVirtualKeyboardStandalone(false);
         setOverlay(null);
@@ -724,6 +1163,9 @@ export function App(): React.JSX.Element {
       if (ev?.mannequinDisplayMode === "half" || ev?.mannequinDisplayMode === "full" || ev?.mannequinDisplayMode === "windowed") modePatch.mannequinDisplayMode = ev.mannequinDisplayMode;
       if (ev?.lootDisplayMode === "half" || ev?.lootDisplayMode === "full" || ev?.lootDisplayMode === "windowed") modePatch.lootDisplayMode = ev.lootDisplayMode;
       if (ev?.pickpocketDisplayMode === "half" || ev?.pickpocketDisplayMode === "full" || ev?.pickpocketDisplayMode === "windowed") modePatch.pickpocketDisplayMode = ev.pickpocketDisplayMode;
+      if (ev?.blacksmithDisplayMode === "half" || ev?.blacksmithDisplayMode === "full" || ev?.blacksmithDisplayMode === "windowed") modePatch.blacksmithDisplayMode = ev.blacksmithDisplayMode;
+      if (ev?.enchantingDisplayMode === "half" || ev?.enchantingDisplayMode === "full" || ev?.enchantingDisplayMode === "windowed") modePatch.enchantingDisplayMode = ev.enchantingDisplayMode;
+      if (ev?.alchemyDisplayMode === "half" || ev?.alchemyDisplayMode === "full" || ev?.alchemyDisplayMode === "windowed") modePatch.alchemyDisplayMode = ev.alchemyDisplayMode;
       if (typeof ev?.menuPauseWorld === "boolean") modePatch.menuPauseWorld = ev.menuPauseWorld;
       if (typeof ev?.inventoryPauseWorld === "boolean") modePatch.inventoryPauseWorld = ev.inventoryPauseWorld;
       if (typeof ev?.barterPauseWorld === "boolean") modePatch.barterPauseWorld = ev.barterPauseWorld;
@@ -733,6 +1175,10 @@ export function App(): React.JSX.Element {
       if (typeof ev?.mannequinPauseWorld === "boolean") modePatch.mannequinPauseWorld = ev.mannequinPauseWorld;
       if (typeof ev?.lootPauseWorld === "boolean") modePatch.lootPauseWorld = ev.lootPauseWorld;
       if (typeof ev?.pickpocketPauseWorld === "boolean") modePatch.pickpocketPauseWorld = ev.pickpocketPauseWorld;
+      if (typeof ev?.blacksmithPauseWorld === "boolean") modePatch.blacksmithPauseWorld = ev.blacksmithPauseWorld;
+      if (typeof ev?.enchantingPauseWorld === "boolean") modePatch.enchantingPauseWorld = ev.enchantingPauseWorld;
+      if (typeof ev?.alchemyPauseWorld === "boolean") modePatch.alchemyPauseWorld = ev.alchemyPauseWorld;
+      if (typeof ev?.bookPauseWorld === "boolean") modePatch.bookPauseWorld = ev.bookPauseWorld;
       if (Object.keys(modePatch).length > 0) {
         setHostSettings((prev) => {
           const next = { ...prev, ...modePatch };
@@ -748,6 +1194,10 @@ export function App(): React.JSX.Element {
       const nextMannequin = Boolean(ev?.mannequinMode);
       const nextLoot = Boolean(ev?.lootMode);
       const nextPickpocket = Boolean(ev?.pickpocketMode);
+      const nextBlacksmith = Boolean(ev?.blacksmithMode);
+      const nextEnchanting = Boolean(ev?.enchantingMode);
+      const nextAlchemy = Boolean(ev?.alchemyMode);
+      const nextBook = Boolean(ev?.bookMode);
       setStandaloneInventory(nextInventory);
       setStandaloneBarter(nextBarter);
       setStandaloneMagic(nextMagic);
@@ -756,6 +1206,19 @@ export function App(): React.JSX.Element {
       setStandaloneMannequin(nextMannequin);
       setStandaloneLoot(nextLoot);
       setStandalonePickpocket(nextPickpocket);
+      setStandaloneBlacksmith(nextBlacksmith);
+      setStandaloneEnchanting(nextEnchanting);
+      setStandaloneAlchemy(nextAlchemy);
+      setStandaloneBook(nextBook);
+      if (nextBook) {
+        setBookLoadEpoch((n) => n + 1);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
+      } else {
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
+      }
       setVirtualKeyboardOpen(Boolean(ev?.virtualKeyboard));
       setVirtualKeyboardStandalone(Boolean(ev?.virtualKeyboard && ev?.standalone));
       if (
@@ -766,7 +1229,11 @@ export function App(): React.JSX.Element {
         nextContainer ||
         nextMannequin ||
         nextLoot ||
-        nextPickpocket
+        nextPickpocket ||
+        nextBlacksmith ||
+        nextEnchanting ||
+        nextAlchemy ||
+        nextBook
       ) {
         setOverlay(null);
         setThemeOpen(false);
@@ -791,6 +1258,13 @@ export function App(): React.JSX.Element {
           setStandaloneMannequin(false);
           setStandaloneLoot(false);
           setStandalonePickpocket(false);
+          setStandaloneBlacksmith(false);
+          setStandaloneEnchanting(false);
+          setStandaloneAlchemy(false);
+          setStandaloneBook(false);
+          setActiveBookSnapshot(null);
+          setActiveBookNotice(null);
+          setBusyTakingBook(false);
           setOverlay(null);
           setThemeOpen(false);
           setRoute("inventory");
@@ -811,6 +1285,13 @@ export function App(): React.JSX.Element {
           setStandaloneMannequin(false);
           setStandaloneLoot(false);
           setStandalonePickpocket(false);
+          setStandaloneBlacksmith(false);
+          setStandaloneEnchanting(false);
+          setStandaloneAlchemy(false);
+          setStandaloneBook(false);
+          setActiveBookSnapshot(null);
+          setActiveBookNotice(null);
+          setBusyTakingBook(false);
           setOverlay(null);
           setThemeOpen(false);
         }
@@ -828,6 +1309,13 @@ export function App(): React.JSX.Element {
         setStandaloneMannequin(false);
         setStandaloneLoot(false);
         setStandalonePickpocket(false);
+        setStandaloneBlacksmith(false);
+        setStandaloneEnchanting(false);
+        setStandaloneAlchemy(false);
+        setStandaloneBook(false);
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
         setOverlay(null);
         setThemeOpen(false);
       }
@@ -844,6 +1332,13 @@ export function App(): React.JSX.Element {
         setStandaloneMannequin(false);
         setStandaloneLoot(false);
         setStandalonePickpocket(false);
+        setStandaloneBlacksmith(false);
+        setStandaloneEnchanting(false);
+        setStandaloneAlchemy(false);
+        setStandaloneBook(false);
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
         setOverlay(null);
         setThemeOpen(false);
       }
@@ -860,6 +1355,13 @@ export function App(): React.JSX.Element {
         setStandaloneMannequin(false);
         setStandaloneLoot(false);
         setStandalonePickpocket(false);
+        setStandaloneBlacksmith(false);
+        setStandaloneEnchanting(false);
+        setStandaloneAlchemy(false);
+        setStandaloneBook(false);
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
         setOverlay(null);
         setThemeOpen(false);
       }
@@ -876,6 +1378,13 @@ export function App(): React.JSX.Element {
         setStandaloneContainer(false);
         setStandaloneLoot(false);
         setStandalonePickpocket(false);
+        setStandaloneBlacksmith(false);
+        setStandaloneEnchanting(false);
+        setStandaloneAlchemy(false);
+        setStandaloneBook(false);
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
         setOverlay(null);
         setThemeOpen(false);
       }
@@ -892,6 +1401,13 @@ export function App(): React.JSX.Element {
         setStandaloneContainer(false);
         setStandaloneMannequin(false);
         setStandalonePickpocket(false);
+        setStandaloneBlacksmith(false);
+        setStandaloneEnchanting(false);
+        setStandaloneAlchemy(false);
+        setStandaloneBook(false);
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
         setOverlay(null);
         setThemeOpen(false);
       }
@@ -908,32 +1424,135 @@ export function App(): React.JSX.Element {
         setStandaloneContainer(false);
         setStandaloneMannequin(false);
         setStandaloneLoot(false);
+        setStandaloneBlacksmith(false);
+        setStandaloneEnchanting(false);
+        setStandaloneAlchemy(false);
+        setStandaloneBook(false);
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
         setOverlay(null);
         setThemeOpen(false);
+      }
+    });
+    const offBlacksmithMode = bridge.on<{ active?: boolean }>("skyultra.blacksmithMode", (ev) => {
+      const nextActive = Boolean(ev?.active);
+      setClosingStandalone(false);
+      setStandaloneBlacksmith(nextActive);
+      if (nextActive) {
+        setStandaloneInventory(false);
+        setStandaloneBarter(false);
+        setStandaloneMagic(false);
+        setStandaloneFavorites(false);
+        setStandaloneContainer(false);
+        setStandaloneMannequin(false);
+        setStandaloneLoot(false);
+        setStandalonePickpocket(false);
+        setStandaloneEnchanting(false);
+        setStandaloneAlchemy(false);
+        setStandaloneBook(false);
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
+        setOverlay(null);
+        setThemeOpen(false);
+      }
+    });
+    const offEnchantingMode = bridge.on<{ active?: boolean }>("skyultra.enchantingMode", (ev) => {
+      const nextActive = Boolean(ev?.active);
+      setClosingStandalone(false);
+      setStandaloneEnchanting(nextActive);
+      if (nextActive) {
+        setStandaloneInventory(false);
+        setStandaloneBarter(false);
+        setStandaloneMagic(false);
+        setStandaloneFavorites(false);
+        setStandaloneContainer(false);
+        setStandaloneMannequin(false);
+        setStandaloneLoot(false);
+        setStandalonePickpocket(false);
+        setStandaloneBlacksmith(false);
+        setStandaloneAlchemy(false);
+        setStandaloneBook(false);
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
+        setOverlay(null);
+        setThemeOpen(false);
+      }
+    });
+    const offAlchemyMode = bridge.on<{ active?: boolean }>("skyultra.alchemyMode", (ev) => {
+      const nextActive = Boolean(ev?.active);
+      setClosingStandalone(false);
+      setStandaloneAlchemy(nextActive);
+      if (nextActive) {
+        setStandaloneInventory(false);
+        setStandaloneBarter(false);
+        setStandaloneMagic(false);
+        setStandaloneFavorites(false);
+        setStandaloneContainer(false);
+        setStandaloneMannequin(false);
+        setStandaloneLoot(false);
+        setStandalonePickpocket(false);
+        setStandaloneBlacksmith(false);
+        setStandaloneEnchanting(false);
+        setStandaloneBook(false);
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
+        setOverlay(null);
+        setThemeOpen(false);
+      }
+    });
+    const offBookMode = bridge.on<{ active?: boolean }>("skyultra.bookMode", (ev) => {
+      const nextActive = Boolean(ev?.active);
+      setClosingStandalone(false);
+      setStandaloneBook(nextActive);
+      if (nextActive) {
+        setStandaloneInventory(false);
+        setStandaloneBarter(false);
+        setStandaloneMagic(false);
+        setStandaloneFavorites(false);
+        setStandaloneContainer(false);
+        setStandaloneMannequin(false);
+        setStandaloneLoot(false);
+        setStandalonePickpocket(false);
+        setStandaloneBlacksmith(false);
+        setStandaloneEnchanting(false);
+        setStandaloneAlchemy(false);
+        setOverlay(null);
+        setThemeOpen(false);
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
+        setBookLoadEpoch((n) => n + 1);
+      } else {
+        setActiveBookSnapshot(null);
+        setActiveBookNotice(null);
+        setBusyTakingBook(false);
+      }
+    });
+    const offBookActivate = bridge.on("skyultra.bookActivate", () => {
+      if (standaloneBookRef.current && activeBookSnapshotRef.current?.canTake && !activeBookSnapshotRef.current?.taken) {
+        handleTakeActiveBookRef.current();
       }
     });
     const offGamepadCursor = bridge.on<{ dx?: number; dy?: number; x?: number; y?: number }>(
       "skyultra.gamepadCursor",
       (ev) => {
-        setVirtualCursor((c) => {
-          if (!c.enabled) return c;
-          const nextX =
-            typeof ev?.x === "number"
-              ? Math.max(8, Math.min(window.innerWidth - 8, Math.round(ev.x)))
-              : Math.max(8, Math.min(window.innerWidth - 8, Math.round(c.x + (ev?.dx ?? 0) * 14)));
-          const nextY =
-            typeof ev?.y === "number"
-              ? Math.max(8, Math.min(window.innerHeight - 8, Math.round(ev.y)))
-              : Math.max(8, Math.min(window.innerHeight - 8, Math.round(c.y + (ev?.dy ?? 0) * 14)));
-          const hit = document.elementFromPoint(nextX, nextY) as HTMLElement | null;
-          const interactive = hit?.closest("button,a,input,textarea,select,[role='button']") as HTMLElement | null;
-          const label =
-            interactive?.getAttribute("aria-label") ||
-            interactive?.textContent?.trim().slice(0, 22) ||
-            hit?.tagName.toLowerCase() ||
-            "SURFACE";
-          return { ...c, x: nextX, y: nextY, targetLabel: label };
-        });
+        if (!virtualCursorEnabledRef.current) return;
+        const cur = virtualCursorStateRef.current;
+        const nextX =
+          typeof ev?.x === "number"
+            ? Math.max(8, Math.min(window.innerWidth - 8, Math.round(ev.x)))
+            : Math.max(8, Math.min(window.innerWidth - 8, Math.round(cur.x + (ev?.dx ?? 0) * 14)));
+        const nextY =
+          typeof ev?.y === "number"
+            ? Math.max(8, Math.min(window.innerHeight - 8, Math.round(ev.y)))
+            : Math.max(8, Math.min(window.innerHeight - 8, Math.round(cur.y + (ev?.dy ?? 0) * 14)));
+        cur.x = nextX;
+        cur.y = nextY;
+        scheduleVirtualCursorDomSync(true);
       },
     );
     const onFocusIn = (ev: FocusEvent): void => {
@@ -956,23 +1575,26 @@ export function App(): React.JSX.Element {
       offMannequinMode();
       offLootMode();
       offPickpocketMode();
+      offBlacksmithMode();
+      offEnchantingMode();
+      offAlchemyMode();
+      offBookMode();
+      offBookActivate();
       offGamepadCursor();
       shims.uninstall();
       document.removeEventListener("focusin", onFocusIn);
     };
-  }, [bridge]);
+  }, [bridge, scheduleVirtualCursorDomSync]);
 
   useEffect(() => {
-    const resolveTargetLabel = (x: number, y: number): string => {
-      const hit = document.elementFromPoint(x, y) as HTMLElement | null;
-      const interactive = hit?.closest("button,a,input,textarea,select,[role='button'],[role='tab']") as HTMLElement | null;
-      return (
-        interactive?.getAttribute("aria-label") ||
-        interactive?.textContent?.trim().slice(0, 22) ||
-        hit?.tagName.toLowerCase() ||
-        "SURFACE"
-      );
-    };
+    virtualCursorEnabledRef.current = virtualCursorEnabled;
+    if (!virtualCursorEnabled) {
+      if (virtualCursorRafRef.current !== 0) {
+        cancelAnimationFrame(virtualCursorRafRef.current);
+        virtualCursorRafRef.current = 0;
+      }
+      return;
+    }
     const triggerClickAt = (x: number, y: number): void => {
       const el = document.elementFromPoint(x, y) as HTMLElement | null;
       const target = (el?.closest("button,a,input,textarea,select,[role='button'],[role='tab']") as HTMLElement | null) ?? el;
@@ -981,45 +1603,38 @@ export function App(): React.JSX.Element {
         target.click();
       }
     };
-    if (!virtualCursor.enabled) return;
     const onKey = (ev: KeyboardEvent): void => {
+      const cur = virtualCursorStateRef.current;
       const step = ev.shiftKey ? 36 : 18;
       if (ev.key === "ArrowLeft") {
         ev.preventDefault();
-        setVirtualCursor((c) => {
-          const nx = Math.max(8, c.x - step);
-          return { ...c, x: nx, targetLabel: resolveTargetLabel(nx, c.y) };
-        });
+        cur.x = Math.max(8, cur.x - step);
+        scheduleVirtualCursorDomSync(true);
       } else if (ev.key === "ArrowRight") {
         ev.preventDefault();
-        setVirtualCursor((c) => {
-          const nx = Math.min(window.innerWidth - 8, c.x + step);
-          return { ...c, x: nx, targetLabel: resolveTargetLabel(nx, c.y) };
-        });
+        cur.x = Math.min(window.innerWidth - 8, cur.x + step);
+        scheduleVirtualCursorDomSync(true);
       } else if (ev.key === "ArrowUp") {
         ev.preventDefault();
-        setVirtualCursor((c) => {
-          const ny = Math.max(8, c.y - step);
-          return { ...c, y: ny, targetLabel: resolveTargetLabel(c.x, ny) };
-        });
+        cur.y = Math.max(8, cur.y - step);
+        scheduleVirtualCursorDomSync(true);
       } else if (ev.key === "ArrowDown") {
         ev.preventDefault();
-        setVirtualCursor((c) => {
-          const ny = Math.min(window.innerHeight - 8, c.y + step);
-          return { ...c, y: ny, targetLabel: resolveTargetLabel(c.x, ny) };
-        });
+        cur.y = Math.min(window.innerHeight - 8, cur.y + step);
+        scheduleVirtualCursorDomSync(true);
       } else if (ev.key === "Enter") {
         const activeTag = document.activeElement?.tagName.toLowerCase();
         if (activeTag !== "textarea") {
           ev.preventDefault();
-          triggerClickAt(virtualCursor.x, virtualCursor.y);
+          triggerClickAt(cur.x, cur.y);
         }
       }
     };
     const onPointerMove = (ev: PointerEvent): void => {
-      const nx = Math.max(8, Math.min(window.innerWidth - 8, Math.round(ev.clientX)));
-      const ny = Math.max(8, Math.min(window.innerHeight - 8, Math.round(ev.clientY)));
-      setVirtualCursor((c) => (c.enabled ? { ...c, x: nx, y: ny, targetLabel: resolveTargetLabel(nx, ny) } : c));
+      const cur = virtualCursorStateRef.current;
+      cur.x = Math.max(8, Math.min(window.innerWidth - 8, Math.round(ev.clientX)));
+      cur.y = Math.max(8, Math.min(window.innerHeight - 8, Math.round(ev.clientY)));
+      scheduleVirtualCursorDomSync(true);
     };
     let rafId = 0;
     let prevAButton = false;
@@ -1036,19 +1651,15 @@ export function App(): React.JSX.Element {
           const dpadY = (pad.buttons[13]?.pressed ? 1 : 0) - (pad.buttons[12]?.pressed ? 1 : 0);
           const dx = Math.abs(lx) > 0.16 ? lx * 11 : Math.abs(rx) > 0.16 ? rx * 14 : dpadX * 9;
           const dy = Math.abs(ly) > 0.16 ? ly * 11 : Math.abs(ry) > 0.16 ? ry * 14 : dpadY * 9;
+          const cur = virtualCursorStateRef.current;
           if (dx !== 0 || dy !== 0) {
-            setVirtualCursor((c) => {
-              const nx = Math.max(8, Math.min(window.innerWidth - 8, Math.round(c.x + dx)));
-              const ny = Math.max(8, Math.min(window.innerHeight - 8, Math.round(c.y + dy)));
-              return { ...c, x: nx, y: ny, targetLabel: resolveTargetLabel(nx, ny) };
-            });
+            cur.x = Math.max(8, Math.min(window.innerWidth - 8, Math.round(cur.x + dx)));
+            cur.y = Math.max(8, Math.min(window.innerHeight - 8, Math.round(cur.y + dy)));
+            scheduleVirtualCursorDomSync(true);
           }
           const aPressed = Boolean(pad.buttons[0]?.pressed);
           if (aPressed && !prevAButton) {
-            setVirtualCursor((c) => {
-              triggerClickAt(c.x, c.y);
-              return c;
-            });
+            triggerClickAt(cur.x, cur.y);
           }
           prevAButton = aPressed;
         }
@@ -1060,10 +1671,14 @@ export function App(): React.JSX.Element {
     window.addEventListener("pointermove", onPointerMove, { passive: true });
     return () => {
       cancelAnimationFrame(rafId);
+      if (virtualCursorRafRef.current !== 0) {
+        cancelAnimationFrame(virtualCursorRafRef.current);
+        virtualCursorRafRef.current = 0;
+      }
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("pointermove", onPointerMove);
     };
-  }, [virtualCursor.enabled, virtualCursor.x, virtualCursor.y]);
+  }, [virtualCursorEnabled, scheduleVirtualCursorDomSync]);
   useEffect(() => {
     let cancelled = false;
     // Warm up replacement menus and primary command modules staggered during idle frames
@@ -1075,6 +1690,10 @@ export function App(): React.JSX.Element {
       () => import("./MannequinPage.js"),
       () => import("./MagicPage.js"),
       () => import("./FavoritesPage.js"),
+      () => import("./BlacksmithPage.js"),
+      () => import("./EnchantingPage.js"),
+      () => import("./AlchemyPage.js"),
+      () => import("./BookReader.js"),
       () => loadMenuPage("actors"),
       () => loadMenuPage("character"),
       () => loadMenuPage("settings"),
@@ -1118,7 +1737,10 @@ export function App(): React.JSX.Element {
       } else if (ev?.visible === false) {
         leaveMenuPage();
         setClosingStandalone(false);
+        window.clearTimeout(tabTransitionTimerRef.current);
+        cancelAnimationFrame(previewSplashGateRafRef.current);
         setTabTransitionSplash(null);
+        setPreviewSplashGate(false);
         setSessionDormant(true);
       }
     });
@@ -1156,17 +1778,9 @@ export function App(): React.JSX.Element {
     pageScroll.current?.scrollTo({ top: 0 });
   }, [route]);
 
-  const closeStandaloneSession = (): void => {
-    // Keep a transparent curtain active while C++ hides the view so Main Menu never flashes underneath.
-    setClosingStandalone(true);
-    void closeSkyUltraPage(bridge).catch(() => {
-      setClosingStandalone(false);
-    });
-  };
-
   useEffect(() => {
     const keyboard = (event: KeyboardEvent): void => {
-      if (isMenuSearchKey(event) && !document.querySelector(".sky-hotkey-record.is-active")) {
+      if (!standaloneBook && isMenuSearchKey(event) && !document.querySelector(".sky-hotkey-record.is-active")) {
         // Capture before a focused button can interpret Space as activation.
         event.preventDefault();
         event.stopPropagation();
@@ -1198,7 +1812,12 @@ export function App(): React.JSX.Element {
       const target = event.target as HTMLElement | null;
       if (target?.closest("input,textarea,select,[contenteditable=true]") || event.altKey || event.ctrlKey || event.metaKey)
         return;
-      if (isStandaloneOverlay && event.key === "Tab") {
+      if (standaloneBook && !standaloneReadingBook && event.key === "Escape") {
+        event.preventDefault();
+        closeStandaloneSession();
+        return;
+      }
+      if (isStandaloneOverlay && event.key === "Tab" && !(standaloneBook && activeBookSnapshot?.activateKeyCode === "Tab")) {
         event.preventDefault();
         closeStandaloneSession();
         return;
@@ -1211,7 +1830,7 @@ export function App(): React.JSX.Element {
     };
     window.addEventListener("keydown", keyboard, true);
     return () => window.removeEventListener("keydown", keyboard, true);
-  }, [bridge, cadence.locked, isStandaloneOverlay, overlay, themeOpen, virtualKeyboardStandalone]);
+  }, [bridge, cadence.locked, closeStandaloneSession, isStandaloneOverlay, overlay, standaloneBook, standaloneReadingBook, activeBookSnapshot?.activateKeyCode, themeOpen, virtualKeyboardStandalone]);
   const categories = useMemo(() => [...new Set((player?.inventory ?? []).map((item) => item.category))].sort(), [player?.inventory]);
   const equippedSlots = useMemo(
     () =>
@@ -1248,12 +1867,22 @@ export function App(): React.JSX.Element {
     : "4E 201 · Tamriel";
   const activeEffectTotal = player?.activeEffectCount ?? player?.activeEffects?.length ?? 0;
   const hotkeyLabel = formatSkyUltraHotkey(hotkey, "keyboard");
-  const navigate = (next: Route): void => { if (!cadence.locked) { setRoute(next); setThemeOpen(false); setOverlay(null); } };
-  const inspectInventory = (id = "", category = "all"): void => { setInitialItemId(id); setInitialCategory(category); navigate("inventory"); };
-  const inspectModInDevStudio = (modId: string): void => {
+  const navigate = useCallback((next: Route): void => {
+    if (!cadenceLockedRef.current) {
+      setRoute(next);
+      setThemeOpen(false);
+      setOverlay(null);
+    }
+  }, [setRoute]);
+  const inspectInventory = useCallback((id = "", category = "all"): void => {
+    setInitialItemId(id);
+    setInitialCategory(category);
+    navigate("inventory");
+  }, [navigate]);
+  const inspectModInDevStudio = useCallback((modId: string): void => {
     setInspectModRequest({ modId, nonce: Date.now() });
     navigate("devtools");
-  };
+  }, [navigate]);
   const currentPalette = palettes.find((p) => p.value === theme) ?? palettes[0];
   const cursorAccent = uiPrefs.cursorAccent === "theme" ? currentPalette.color : uiPrefs.cursorAccent;
   const activeRouteIndex = Math.max(0, navigation.findIndex((item) => item.id === route));
@@ -1272,7 +1901,8 @@ export function App(): React.JSX.Element {
     themeOpen ||
     overlay !== null ||
     splashPreviewOpen ||
-    Boolean(tabTransitionSplash);
+    Boolean(tabTransitionSplash) ||
+    previewSplashGate;
 
   return (
     <SkyCursorScope
@@ -1282,7 +1912,12 @@ export function App(): React.JSX.Element {
     >
       <SkyThemeScope
         theme={theme}
-        style={atlasStyle}
+        style={
+          sessionDormant && !closingStandalone
+            ? { ...atlasStyle, visibility: "hidden", pointerEvents: "none" }
+            : atlasStyle
+        }
+        data-session-epoch={sessionReadyEpoch}
         data-theme-family={currentPalette.family}
         data-ui-density={uiPrefs.density}
         data-ui-motion={uiPrefs.motion}
@@ -1299,9 +1934,15 @@ export function App(): React.JSX.Element {
                 ? lootDisplayMode
                 : standalonePickpocket
                   ? pickpocketDisplayMode
-                  : standaloneMannequin
-                    ? mannequinDisplayMode
-                    : undefined
+                  : standaloneBlacksmith
+                    ? blacksmithDisplayMode
+                    : standaloneEnchanting
+                      ? enchantingDisplayMode
+                      : standaloneAlchemy
+                        ? alchemyDisplayMode
+                        : standaloneMannequin
+                          ? mannequinDisplayMode
+                          : undefined
         }
         className={
           "atlas" +
@@ -1311,6 +1952,10 @@ export function App(): React.JSX.Element {
           (standaloneContainer ? ` atlas--standalone-barter atlas--standalone-container atlas--barter-${containerDisplayMode}` : "") +
           (standaloneLoot ? ` atlas--standalone-barter atlas--standalone-container atlas--standalone-loot atlas--barter-${lootDisplayMode}` : "") +
           (standalonePickpocket ? ` atlas--standalone-barter atlas--standalone-container atlas--standalone-pickpocket atlas--barter-${pickpocketDisplayMode}` : "") +
+          (standaloneBlacksmith ? ` atlas--standalone-blacksmith atlas--blacksmith-${blacksmithDisplayMode}` : "") +
+          (standaloneEnchanting ? ` atlas--standalone-enchanting atlas--enchanting-${enchantingDisplayMode}` : "") +
+          (standaloneAlchemy ? ` atlas--standalone-alchemy atlas--alchemy-${alchemyDisplayMode}` : "") +
+          (standaloneBook ? " atlas--standalone-book" : "") +
           (standaloneMannequin ? ` atlas--standalone-mannequin atlas--mannequin-${mannequinDisplayMode}` : "") +
           (standaloneMagic ? ` atlas--standalone-magic atlas--magic-${magicDisplayMode}` : "") +
           (standaloneFavorites ? ` atlas--standalone-favorites atlas--favorites-${favoritesDisplayMode}` : "") +
@@ -1319,11 +1964,8 @@ export function App(): React.JSX.Element {
           (sessionDormant || closingStandalone ? " atlas--dormant" : "")
         }
       >
-        {closingStandalone || sessionDormant ? (
-          <>
-            <div className="sky-standalone-closing-curtain" aria-hidden="true" />
-            <SessionReadyBeacon epoch={sessionReadyEpoch} bridge={bridge} />
-          </>
+        {closingStandalone ? (
+          <div className="sky-standalone-closing-curtain" aria-hidden="true" />
         ) : !keyboardOnly && (<>
         {!isStandaloneOverlay && (
           <SkyNavigationRail
@@ -1430,7 +2072,7 @@ export function App(): React.JSX.Element {
                   <div className="theme-menu" role="group" aria-label="Interface palette">
                     {(
                       [
-                        { id: "darkmode", title: "EYE-COMFORT DARK MODE · SPECIAL VELVET-SLATE SDK UI" },
+                        { id: "darkmode", title: "EYE-COMFORT COLLECTION · 5 LOW-GLARE MATTE VELVET-SLATE THEMES" },
                         { id: "neon", title: "NEON & CYBER MATRIX (CHAMFERED + SCANLINE GRID)" },
                         { id: "celestial", title: "CELESTIAL & ARCANE GLASS (STARLIGHT + RUNIC)" },
                         { id: "classic", title: "CLASSIC TAMRIELIC INLAY (ENGRAVED SERIF)" },
@@ -1853,7 +2495,7 @@ export function App(): React.JSX.Element {
             />
           }
         >
-          <SessionReadyBeacon epoch={sessionReadyEpoch} bridge={bridge} />
+          {!sessionDormant && <SessionReadyBeacon epoch={sessionReadyEpoch} bridge={bridge} />}
           {standaloneMagic ? (
             <MagicPage
               player={player}
@@ -1861,8 +2503,8 @@ export function App(): React.JSX.Element {
               obscured={pageObscured}
               displayMode={magicDisplayMode}
               pauseWorld={magicPauseWorld}
-              onChangeDisplayMode={(nextMode) => updateHostSettingsPatch({ magicDisplayMode: nextMode })}
-              onTogglePauseWorld={() => updateHostSettingsPatch({ magicPauseWorld: !magicPauseWorld })}
+              onChangeDisplayMode={changeMagicDisplayMode}
+              onTogglePauseWorld={toggleMagicPauseWorld}
               onClose={closeStandaloneSession}
             />
           ) : standaloneFavorites ? (
@@ -1872,8 +2514,8 @@ export function App(): React.JSX.Element {
               obscured={pageObscured}
               displayMode={favoritesDisplayMode}
               pauseWorld={favoritesPauseWorld}
-              onChangeDisplayMode={(nextMode) => updateHostSettingsPatch({ favoritesDisplayMode: nextMode })}
-              onTogglePauseWorld={() => updateHostSettingsPatch({ favoritesPauseWorld: !favoritesPauseWorld })}
+              onChangeDisplayMode={changeFavoritesDisplayMode}
+              onTogglePauseWorld={toggleFavoritesPauseWorld}
               onClose={closeStandaloneSession}
             />
           ) : standaloneContainer ? (
@@ -1902,6 +2544,91 @@ export function App(): React.JSX.Element {
               onTogglePauseWorld={() => updateHostSettingsPatch({ lootPauseWorld: !lootPauseWorld })}
               onClose={closeStandaloneSession}
             />
+          ) : standaloneBlacksmith ? (
+            <BlacksmithPage
+              key="blacksmith"
+              player={player}
+              bridge={bridge}
+              obscured={pageObscured}
+              displayMode={blacksmithDisplayMode}
+              pauseWorld={blacksmithPauseWorld}
+              onChangeDisplayMode={changeBlacksmithDisplayMode}
+              onTogglePauseWorld={toggleBlacksmithPauseWorld}
+              onClose={closeStandaloneSession}
+            />
+          ) : standaloneEnchanting ? (
+            <EnchantingPage
+              key="enchanting"
+              player={player}
+              bridge={bridge}
+              obscured={pageObscured}
+              displayMode={enchantingDisplayMode}
+              pauseWorld={enchantingPauseWorld}
+              onChangeDisplayMode={changeEnchantingDisplayMode}
+              onTogglePauseWorld={toggleEnchantingPauseWorld}
+              onClose={closeStandaloneSession}
+            />
+          ) : standaloneAlchemy ? (
+            <AlchemyPage
+              key="alchemy"
+              player={player}
+              bridge={bridge}
+              obscured={pageObscured}
+              displayMode={alchemyDisplayMode}
+              pauseWorld={alchemyPauseWorld}
+              onChangeDisplayMode={changeAlchemyDisplayMode}
+              onTogglePauseWorld={toggleAlchemyPauseWorld}
+              onClose={closeStandaloneSession}
+            />
+          ) : standaloneBook ? (
+            <div className="book-standalone-host">
+              {standaloneReadingBook ? (
+                <StandaloneBookReader
+                  book={standaloneReadingBook}
+                  standalone
+                  playerName={player?.playerName}
+                  theme={theme}
+                  design={uiPrefs.bookReaderDesign ?? "auto"}
+                  themeSync={uiPrefs.bookThemeSync !== false}
+                  canTake={Boolean(activeBookSnapshot?.canTake)}
+                  isStealing={Boolean(activeBookSnapshot?.isStealing)}
+                  taken={Boolean(activeBookSnapshot?.taken)}
+                  busyTaking={busyTakingBook}
+                  onTakeBook={handleTakeActiveBook}
+                  bookValue={activeBookSnapshot?.value ?? 0}
+                  bookWeight={activeBookSnapshot?.weight ?? 0}
+                  teachesSkill={Boolean(activeBookSnapshot?.teachesSkill)}
+                  skillName={activeBookSnapshot?.skillName ?? ""}
+                  teachesSpell={Boolean(activeBookSnapshot?.teachesSpell)}
+                  spellName={activeBookSnapshot?.spellName ?? ""}
+                  notice={activeBookNotice}
+                  activateKeyLabel={activeBookSnapshot?.activateKeyLabel || "E"}
+                  activateKeyCode={activeBookSnapshot?.activateKeyCode ?? ""}
+                  activateKey={activeBookSnapshot?.activateKey ?? ""}
+                  onClose={closeStandaloneSession}
+                />
+              ) : activeBookSnapshot && !activeBookSnapshot.available ? (
+                <div className="inventory-book-modal">
+                  <div className="inventory-book-reader surface" role="dialog" aria-modal="true" aria-label="Book Reader">
+                    <header className="inventory-book-reader__header">
+                      <div className="inventory-book-reader__title-group">
+                        <span className="eyebrow">SKYULTRA CHRONICLE · READER UNAVAILABLE</span>
+                        <h2>Book text unavailable</h2>
+                        <div className="book-reader-world-banner">
+                          {activeBookNotice || "Unable to read the active world book snapshot."}
+                        </div>
+                      </div>
+                      <div className="inventory-book-reader__actions">
+                        <button type="button" className="book-action-btn is-close" onClick={closeStandaloneSession}>
+                          <span>Close</span>
+                          <kbd>ESC</kbd>
+                        </button>
+                      </div>
+                    </header>
+                  </div>
+                </div>
+              ) : null}
+            </div>
           ) : standalonePickpocket ? (
             <ContainerPage
               key="pickpocket"
@@ -1945,12 +2672,8 @@ export function App(): React.JSX.Element {
               standalone
               displayMode={inventoryDisplayMode}
               pauseWorld={inventoryPauseWorld}
-              onToggleDisplayMode={() =>
-                updateHostSettingsPatch({
-                  inventoryDisplayMode: inventoryDisplayMode === "windowed" ? "fullscreen" : "windowed",
-                })
-              }
-              onTogglePauseWorld={() => updateHostSettingsPatch({ inventoryPauseWorld: !inventoryPauseWorld })}
+              onToggleDisplayMode={toggleInventoryDisplayMode}
+              onTogglePauseWorld={toggleInventoryPauseWorld}
               onClose={closeStandaloneSession}
             />
           ) : (
@@ -1965,16 +2688,21 @@ export function App(): React.JSX.Element {
                   initialId={initialItemId}
                   displayMode={menuDisplayMode}
                   pauseWorld={menuPauseWorld}
-                  onToggleDisplayMode={() =>
-                    updateHostSettingsPatch({
-                      menuDisplayMode: menuDisplayMode === "windowed" ? "fullscreen" : "windowed",
-                    })
-                  }
-                  onTogglePauseWorld={() => updateHostSettingsPatch({ menuPauseWorld: !menuPauseWorld })}
+                  onToggleDisplayMode={toggleMenuDisplayMode}
+                  onTogglePauseWorld={toggleMenuPauseWorld}
                 />
               )}
               {route === "character" && <CharacterPage player={player} bridge={bridge} />}
-              {route === "settings" && <SettingsPage bridge={bridge} native={runtime.host==="skyrim"} theme={theme} onThemeChange={selectAndPersistTheme} playerName={player?.playerName} />}
+              {route === "settings" && (
+                <SettingsPage
+                  bridge={bridge}
+                  native={runtime.host === "skyrim"}
+                  theme={theme}
+                  onThemeChange={selectAndPersistTheme}
+                  playerName={player?.playerName}
+                  playerEnchantingLevel={playerEnchantingLevel}
+                />
+              )}
               {route === "performance" && <PerformancePage showWorkload={false} bridge={bridge} native={runtime.host === "skyrim"} cadence={cadence} engine={engine} theme={theme} openingFrameMs={openingFrameMs} openingDataMs={openingDataMs} firstFrameMs={firstFrameMs} navigationFrameMs={navigationFrameMs} dataFrameMs={dataFrameMs} detected={engineDetected} setPreviewEngine={setPreviewEngine} />}
               {route === "widgets" && <WidgetsPage showPatterns={false} player={player} bridge={bridge} native={runtime.host === "skyrim"} theme={theme} onNavigate={navigate} onInspectMod={inspectModInDevStudio} onPinnedChange={setPinnedCount} />}
               {route === "devtools" && <DevStudioPage bridge={bridge} native={runtime.host === "skyrim"} inspectRequest={inspectModRequest} />}
@@ -1994,6 +2722,7 @@ export function App(): React.JSX.Element {
           />
         )}
       </main>
+      {!standaloneBook && (
       <footer className="app-footer">
         <span className="app-footer__brand">
           <strong>SKYULTRA</strong>
@@ -2003,7 +2732,7 @@ export function App(): React.JSX.Element {
         <span className="app-footer__telemetry">
           <i className="status-dot" />
           {runtime.host === "skyrim" ? "LIVE SKYRIM DATA" : "PREVIEW FIXTURE"} · {engine.toUpperCase()}
-          {standaloneMagic ? " · SPELLBOOK" : standaloneFavorites ? " · FAVORITES" : standaloneLoot ? " · CORPSE LOOT" : standalonePickpocket ? " · PICKPOCKET" : standaloneContainer ? " · STORAGE CONTAINER" : standaloneMannequin ? " · MANNEQUIN" : standaloneBarter ? " · VENDOR BARTER" : standaloneInventory ? " · PLAYER INVENTORY" : pinnedCount > 0 ? ` · ${pinnedCount} HUDS PINNED` : " · HUDS STANDBY"}
+          {standaloneMagic ? " · SPELLBOOK" : standaloneFavorites ? " · FAVORITES" : standaloneBlacksmith ? " · BLACKSMITH" : standaloneEnchanting ? " · ARCANE ENCHANTER" : standaloneAlchemy ? " · ALCHEMY LAB" : standaloneBook ? " · BOOK READER" : standaloneLoot ? " · CORPSE LOOT" : standalonePickpocket ? " · PICKPOCKET" : standaloneContainer ? " · STORAGE CONTAINER" : standaloneMannequin ? " · MANNEQUIN" : standaloneBarter ? " · VENDOR BARTER" : standaloneInventory ? " · PLAYER INVENTORY" : pinnedCount > 0 ? ` · ${pinnedCount} HUDS PINNED` : " · HUDS STANDBY"}
         </span>
         <div className="app-footer__actions">
           <button
@@ -2021,16 +2750,18 @@ export function App(): React.JSX.Element {
           <button
             type="button"
             title="Toggle Analog-Stick / D-Pad / Arrow-Key Virtual Cursor"
-            onClick={() =>
-              setVirtualCursor((c) => ({
-                enabled: !c.enabled,
+            onClick={() => {
+              const nextEnabled = !virtualCursorEnabledRef.current;
+              virtualCursorEnabledRef.current = nextEnabled;
+              virtualCursorStateRef.current = {
                 x: Math.round(window.innerWidth * 0.5),
                 y: Math.round(window.innerHeight * 0.5),
                 targetLabel: "CENTER",
-              }))
-            }
+              };
+              setVirtualCursorEnabled(nextEnabled);
+            }}
           >
-            <kbd>{virtualCursor.enabled ? "ON" : "OFF"}</kbd> V-CURSOR
+            <kbd>{virtualCursorEnabled ? "ON" : "OFF"}</kbd> V-CURSOR
           </button>
           <button
             type="button"
@@ -2062,18 +2793,22 @@ export function App(): React.JSX.Element {
           <kbd>{hotkeyLabel.toUpperCase()}</kbd> {isStandaloneOverlay ? "FULL MENU" : "REOPENS"}
         </span>
       </footer>
+      )}
     </div>
     </>)}
-    {keyboardOnly && <SessionReadyBeacon epoch={sessionReadyEpoch} bridge={bridge} />}
-    {virtualCursor.enabled && (
+    {keyboardOnly && !sessionDormant && <SessionReadyBeacon epoch={sessionReadyEpoch} bridge={bridge} />}
+    {virtualCursorEnabled && (
       <div
+        ref={virtualCursorElRef}
         className="sky-virtual-cursor"
-        style={{ left: `${virtualCursor.x}px`, top: `${virtualCursor.y}px` }}
+        style={{
+          transform: `translate3d(${virtualCursorStateRef.current.x}px, ${virtualCursorStateRef.current.y}px, 0)`,
+        }}
         aria-hidden="true"
       >
         <i />
-        <span className="sky-virtual-cursor__badge">
-          {virtualCursor.targetLabel} · {virtualCursor.x},{virtualCursor.y}
+        <span ref={virtualCursorBadgeRef} className="sky-virtual-cursor__badge">
+          {virtualCursorStateRef.current.targetLabel} · {virtualCursorStateRef.current.x},{virtualCursorStateRef.current.y}
         </span>
       </div>
     )}

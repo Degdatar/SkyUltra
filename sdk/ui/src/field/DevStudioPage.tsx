@@ -34,6 +34,8 @@ import {
   type SkyWebViewAPI,
 } from "@skyultra/sdk";
 import { SkyFrame } from "../widgets.js";
+import { SkyColorWheel } from "../ColorWheel.js";
+import { SkyEquipmentSlot, SkyIcon, SkyEquipmentGlyph, SkyRangeSlider, SkySlider, skyEquipmentSlotIds, skyIconNames } from "../index.js";
 import { Icon } from "./icons.js";
 import { Empty, SectionTitle } from "./pieces.js";
 
@@ -350,6 +352,8 @@ export default function DevStudioPage({
   const [pgLatencyMs, setPgLatencyMs] = useState<number | null>(null);
   const [pgBusy, setPgBusy] = useState<boolean>(false);
   const [pgSnippetTarget, setPgSnippetTarget] = useState<"ts" | "js" | "papyrus">("ts");
+  const [sandboxColor, setSandboxColor] = useState<string>("#68b5ff");
+  const [sandboxSlider, setSandboxSlider] = useState<number>(105);
 
   const [mbId, setMbId] = useState<string>("author.my_hud");
   const [mbName, setMbName] = useState<string>("My SkyUltra Overlay");
@@ -583,13 +587,16 @@ export default function DevStudioPage({
     };
   }, [doctorPickerOpen]);
 
-  const refreshSnapshot = useCallback(async () => {
+  const refreshSnapshot = useCallback(async (forceAudit = false) => {
     if (!native) {
       setSnapshot(createPreviewFixtureSnapshot(previewSampleState));
       return;
     }
     try {
-      const next = await readSkyUltraDeveloperSnapshot(bridge);
+      const next = await readSkyUltraDeveloperSnapshot(
+        bridge,
+        forceAudit ? { forceAudit: true } : undefined,
+      );
       setSnapshot(next);
     } catch (err) {
       setStatusNote(err instanceof Error ? err.message : String(err));
@@ -804,6 +811,64 @@ export default function DevStudioPage({
     }
   };
 
+  const bridgeProfiler = useMemo(() => {
+    const entries = snapshot.bridgeLog;
+    if (!entries.length) {
+      return { avgMs: 0, p95Ms: 0, maxMs: 0, slowestMethod: "—", errorRatePct: 0 };
+    }
+    const durations = entries.map((e) => (Number.isFinite(e.durationMs) ? e.durationMs : 0)).sort((a, b) => a - b);
+    const totalMs = durations.reduce((acc, v) => acc + v, 0);
+    const p95Index = Math.min(durations.length - 1, Math.floor(durations.length * 0.95));
+    const maxEntry = [...entries].sort((a, b) => b.durationMs - a.durationMs)[0];
+    const errs = entries.filter((e) => e.status === "denied" || e.status === "error").length;
+    return {
+      avgMs: totalMs / durations.length,
+      p95Ms: durations[p95Index] ?? 0,
+      maxMs: maxEntry?.durationMs ?? 0,
+      slowestMethod: maxEntry?.method ?? "—",
+      errorRatePct: (errs / entries.length) * 100,
+    };
+  }, [snapshot.bridgeLog]);
+
+  const handleExportDiagnosticBundle = (): void => {
+    const bundle = {
+      exportedAt: new Date().toISOString(),
+      nativeMode: native,
+      hostMetrics: {
+        processWorkingSetBytes: snapshot.processWorkingSetBytes,
+        hostGpuMs: snapshot.hostGpuMs,
+        compositorGpuMs: snapshot.compositorGpuMs,
+        callbackCpuMs: snapshot.callbackCpuMs,
+        hotReloadEnabled: snapshot.hotReloadEnabled,
+        hotReloadTotalCount: snapshot.hotReloadTotalCount,
+      },
+      views: snapshot.views.map((v) => ({
+        modId: v.modId,
+        configId: v.configId,
+        engine: v.engine,
+        layer: v.layer,
+        visible: v.visible,
+        dimensions: `${v.width}x${v.height}`,
+        surfaceBytes: v.surfaceBytes,
+      })),
+      mods: snapshot.mods.map((m) => ({
+        id: m.id,
+        name: m.name,
+        version: m.version,
+        findingCount: m.findings.length,
+        findings: m.findings,
+      })),
+      bridgeProfiler,
+      recentErrors: snapshot.bridgeLog.filter((e) => e.status === "denied" || e.status === "error").slice(0, 25),
+    };
+    if (navigator.clipboard) {
+      void navigator.clipboard.writeText(JSON.stringify(bundle, null, 2));
+      setStatusNote(
+        `Exported diagnostic support bundle (${snapshot.views.length} views, ${snapshot.mods.length} mods, ${snapshot.bridgeLog.length} calls) to clipboard.`,
+      );
+    }
+  };
+
   return (
     <div className="page dev-studio-page">
       <div className="page-lead page-lead--compact">
@@ -830,11 +895,22 @@ export default function DevStudioPage({
           </button>
           <button
             type="button"
+            className="char-stage-btn"
+            disabled={Boolean(snapshot.auditPending)}
+            onClick={() => void refreshSnapshot(true)}
+          >
+            <Icon name="archive" size={13} /> {snapshot.auditPending ? "Auditing packages…" : "Re-audit Packages"}
+          </button>
+          <button
+            type="button"
             className={"char-stage-btn" + (snapshot.hotReloadEnabled ? " char-stage-btn--primary" : "")}
             disabled={busy}
             onClick={() => void handleReloadMod(undefined, !snapshot.hotReloadEnabled)}
           >
             Watcher: {snapshot.hotReloadEnabled ? "ACTIVE" : "OFF"}
+          </button>
+          <button type="button" className="char-stage-btn" onClick={handleExportDiagnosticBundle}>
+            <Icon name="download" size={13} /> Export Diagnostic Bundle
           </button>
         </div>
       </div>
@@ -1360,6 +1436,29 @@ export default function DevStudioPage({
               </button>
             </div>
           </SectionTitle>
+
+          <div className="dev-bridge-profiler" aria-label="Bridge latency and error profiler">
+            <div className="settings-kpi-pill">
+              <small>MEAN BRIDGE LATENCY</small>
+              <strong>{bridgeProfiler.avgMs.toFixed(2)} ms</strong>
+              <span>Across {snapshot.bridgeLog.length} captured call(s)</span>
+            </div>
+            <div className="settings-kpi-pill">
+              <small>P95 TAIL LATENCY</small>
+              <strong>{bridgeProfiler.p95Ms.toFixed(2)} ms</strong>
+              <span>Native IPC + Skyrim query turnaround</span>
+            </div>
+            <div className="settings-kpi-pill">
+              <small>PEAK SPIKE METHOD</small>
+              <strong>{bridgeProfiler.maxMs.toFixed(2)} ms</strong>
+              <span>{bridgeProfiler.slowestMethod}</span>
+            </div>
+            <div className="settings-kpi-pill">
+              <small>DENIAL / ERROR RATE</small>
+              <strong>{bridgeProfiler.errorRatePct.toFixed(1)}%</strong>
+              <span>{deniedTotal} denied or faulted request(s)</span>
+            </div>
+          </div>
 
           <div className="dev-filter-toolbar">
             <div className="dev-filter-group" role="group" aria-label="Filter bridge entries by type">
@@ -2412,6 +2511,144 @@ export default function DevStudioPage({
                   </button>
                 );
               })}
+            </div>
+          </SkyFrame>
+
+          <SkyFrame
+            eyebrow="REUSABLE COLOR WHEEL COMPONENT & LIVE ACCENT SANDBOX"
+            title="SkyColorWheel & Live --sky-accent CSS Sandbox"
+            actions={
+              <button
+                type="button"
+                className="char-stage-btn char-stage-btn--primary"
+                onClick={() => {
+                  const snippet = `<SkyColorWheel mode="inline" size={156} label="Accent" value="${sandboxColor}" onChange={setColor} />`;
+                  if (navigator.clipboard) {
+                    void navigator.clipboard.writeText(snippet);
+                    setStatusNote(`Copied ${snippet}`);
+                  }
+                }}
+              >
+                <Icon name="copy" size={13} /> Copy JSX
+              </button>
+            }
+          >
+            <div className="workbench-color-sandbox">
+              <SkyColorWheel
+                mode="inline"
+                size={156}
+                label="Interactive --sky-accent Wheel"
+                value={sandboxColor}
+                onChange={setSandboxColor}
+              />
+              <div
+                className="workbench-color-sandbox__preview"
+                style={{ "--sky-accent": sandboxColor } as React.CSSProperties}
+              >
+                <span className="eyebrow" style={{ color: sandboxColor }}>
+                  LIVE MODDER TOKEN PREVIEW · {sandboxColor.toUpperCase()}
+                </span>
+                <p>
+                  Changes from <code>SkyColorWheel</code> drive custom accents immediately over transparent GPU surfaces or
+                  mod panels via CSS variables.
+                </p>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px" }}>
+                  <SkyColorWheel
+                    mode="popover"
+                    size={146}
+                    label="Compact Popover Mode"
+                    value={sandboxColor}
+                    onChange={setSandboxColor}
+                  />
+                  <button
+                    type="button"
+                    className="char-stage-btn char-stage-btn--primary"
+                    style={{
+                      background: `linear-gradient(180deg, color-mix(in srgb, ${sandboxColor} 88%, #fff), ${sandboxColor})`,
+                      borderColor: sandboxColor,
+                      color: "#0b111c",
+                    }}
+                    onClick={() => setStatusNote(`Applied sample accent ${sandboxColor.toUpperCase()} in sandbox.`)}
+                  >
+                    <Icon name="palette" size={13} /> Sample Accent CTA
+                  </button>
+                </div>
+                <div style={{ "--sky-accent": sandboxColor, display: "grid", gap: "10px", marginTop: "6px" } as React.CSSProperties}>
+                  <SkyRangeSlider
+                    label="Precision Instrument Slider (SkyRangeSlider)"
+                    min={50}
+                    max={150}
+                    step={5}
+                    unit="%"
+                    value={sandboxSlider}
+                    onValueChange={setSandboxSlider}
+                  />
+                  <SkySlider
+                    aria-label="Compact SkySlider fixture"
+                    min={50}
+                    max={150}
+                    value={sandboxSlider}
+                    onChange={(e) => setSandboxSlider(Number(e.currentTarget.value))}
+                  />
+                </div>
+              </div>
+            </div>
+          </SkyFrame>
+
+          <SkyFrame
+            eyebrow="EXPORTED @skyultra/ui ICONOGRAPHY & ARMORY SLOT PLATES · CLICK TO COPY JSX"
+            title="@skyultra/ui Sculpted Icons & Armory Slots"
+          >
+            <div className="workshop-icons-showcase">
+              <div className="workshop-equipment-showcase" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))", display: "grid", gap: "10px" }}>
+                <SkyEquipmentSlot variant="plate" slotKind="body" slot="Body" item="Nordic Cuirass" enchanted />
+                <SkyEquipmentSlot variant="plate" slotKind="cape" slot="Cape" bipedSlot="46" item="Traveler Cloak" />
+                <SkyEquipmentSlot variant="plate" slotKind="lantern" slot="Lantern" bipedSlot="49" item="Iron Lantern" enchanted />
+              </div>
+              <div className="workshop-glyph-grid">
+                {skyEquipmentSlotIds.map((slotId) => (
+                  <button
+                    key={slotId}
+                    type="button"
+                    className="workshop-icon-chip workshop-icon-chip--glyph"
+                    title={`Copy <SkyEquipmentGlyph slot="${slotId}" size={28} />`}
+                    onClick={() => {
+                      const snippet = `<SkyEquipmentGlyph slot="${slotId}" size={28} />`;
+                      if (navigator.clipboard) {
+                        void navigator.clipboard.writeText(snippet);
+                        setStatusNote(`Copied ${snippet}`);
+                      }
+                    }}
+                  >
+                    <span className="workshop-icon-chip__well">
+                      <SkyEquipmentGlyph slot={slotId} size={24} />
+                    </span>
+                    <code>{slotId}</code>
+                  </button>
+                ))}
+              </div>
+              <div className="workshop-icon-grid">
+                {skyIconNames.map((iconName) => (
+                  <button
+                    key={iconName}
+                    type="button"
+                    className="workshop-icon-chip"
+                    title={`Copy <SkyIcon name="${iconName}" size={18} />`}
+                    onClick={() => {
+                      const snippet = `<SkyIcon name="${iconName}" size={18} />`;
+                      if (navigator.clipboard) {
+                        void navigator.clipboard.writeText(snippet);
+                        setStatusNote(`Copied ${snippet}`);
+                      }
+                    }}
+                  >
+                    <span className="workshop-icon-chip__well">
+                      <SkyIcon name={iconName} size={17} />
+                    </span>
+                    <code>{iconName}</code>
+                  </button>
+                ))}
+              </div>
             </div>
           </SkyFrame>
         </div>

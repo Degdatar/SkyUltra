@@ -39,6 +39,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 
 add_library(skyultra_core STATIC
     src/core/BridgeScript.cpp
+    src/core/FrameTrace.cpp
     src/core/ModManifest.cpp
     src/core/ViewManager.cpp
 )
@@ -198,7 +199,8 @@ if(SKYULTRA_BUILD_ULTRALIGHT)
     target_sources(SkyUltra PRIVATE src/ultralight/UltralightRuntimeLoader.cpp)
     target_link_options(SkyUltra PRIVATE
         "/DELAYLOAD:Ultralight.dll"
-        "/DELAYLOAD:UltralightCore.dll")
+        "/DELAYLOAD:UltralightCore.dll"
+        "/DELAYLOAD:WebCore.dll")
     target_compile_definitions(SkyUltra PRIVATE SKYULTRA_WITH_ULTRALIGHT=1)
 endif()
 
@@ -218,6 +220,14 @@ if(SKYULTRA_BUILD_CEF OR SKYULTRA_BUILD_ULTRALIGHT)
     target_link_libraries(skyultra_video PRIVATE
         spdlog::spdlog ole32 oleaut32 mfplat mf mfuuid d3d11 dxgi windowscodecs)
 
+    add_library(skyultra_simd_avx2 STATIC src/render/PixelConvertAvx2.cpp)
+    target_include_directories(skyultra_simd_avx2 PUBLIC include)
+    target_compile_features(skyultra_simd_avx2 PRIVATE cxx_std_20)
+    target_compile_definitions(skyultra_simd_avx2 PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    if(MSVC)
+        target_compile_options(skyultra_simd_avx2 PRIVATE /arch:AVX2)
+    endif()
+
     add_library(skyultra_d3d11_overlay STATIC
         src/render/D3D11Overlay.cpp
         src/render/ActorAnimation.cpp
@@ -231,6 +241,7 @@ if(SKYULTRA_BUILD_CEF OR SKYULTRA_BUILD_ULTRALIGHT)
         CommonLibSSE::CommonLibSSE
         Microsoft::DirectXTK
         skyultra_video
+        skyultra_simd_avx2
         d3dcompiler windowscodecs ole32)
     target_link_libraries(SkyUltra PRIVATE skyultra_d3d11_overlay)
 
@@ -338,6 +349,18 @@ if(SKYULTRA_BUILD_CEF OR SKYULTRA_BUILD_ULTRALIGHT)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/resources/skyultra_compass.swf"
             "${CMAKE_CURRENT_BINARY_DIR}/package/Data/Interface/skyultra_compass.swf"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/skyultra_blacksmith.swf"
+            "${CMAKE_CURRENT_BINARY_DIR}/package/Data/Interface/skyultra_blacksmith.swf"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/skyultra_enchanting.swf"
+            "${CMAKE_CURRENT_BINARY_DIR}/package/Data/Interface/skyultra_enchanting.swf"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/skyultra_book.swf"
+            "${CMAKE_CURRENT_BINARY_DIR}/package/Data/Interface/skyultra_book.swf"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/skyultra_alchemy.swf"
+            "${CMAKE_CURRENT_BINARY_DIR}/package/Data/Interface/skyultra_alchemy.swf"
         COMMAND ${CMAKE_COMMAND}
             "-DSKYULTRA_RESOURCE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/resources"
             "-DSKYULTRA_RESOURCE_DESTINATION=$<TARGET_FILE_DIR:SkyUltra>/resources/SkyUltra/Files"

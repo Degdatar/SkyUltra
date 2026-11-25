@@ -48,6 +48,8 @@ struct ModContentPolicy {
     std::filesystem::path entry_file;
     bool asset_access_enabled{ true };
     std::vector<std::string> network_hosts;
+    // Built-in menu only: optional read-only access to SkyUltra's cached item/portrait PNGs.
+    std::filesystem::path thumbnail_cache_directory;
 };
 
 enum class Anchor : std::uint8_t {

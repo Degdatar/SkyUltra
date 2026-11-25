@@ -1,5 +1,6 @@
 #include "SkyUltra/D3D11Overlay.h"
 #include "SkyUltra/ActorPreview.h"
+#include "SkyUltra/FrameTrace.h"
 #include "SkyUltra/VideoSplash.h"
 #include "SkyUltra/ViewManager.h"
 
@@ -54,7 +55,7 @@ using ResizeBuffersFunction = HRESULT(STDMETHODCALLTYPE*)(REX::W32::IDXGISwapCha
 
 constexpr std::size_t kPresentVtableIndex = 8;
 constexpr std::size_t kResizeBuffersVtableIndex = 13;
-constexpr std::size_t kSwapChainVtableEntries = 18;
+constexpr std::size_t kSwapChainVtableEntries = 64;
 constexpr std::string_view kUiPassMenuName = "SkyUltraOverlay";
 
 std::atomic<IWebRuntime*> g_runtime{};
@@ -107,6 +108,7 @@ struct TimingAccumulator {
 };
 std::mutex g_performance_mutex;
 std::atomic<std::int64_t> g_performance_lease_until_ms{};
+std::atomic_uint64_t g_composite_frame_sequence{ 0 };
 bool PerformanceMonitoringActive()
 {
     auto until=g_performance_lease_until_ms.load(std::memory_order_relaxed);
@@ -141,7 +143,10 @@ OverlayTimingMetric SummarizeTiming(const TimingAccumulator& metric,std::chrono:
     std::sort(sorted.begin(),sorted.begin()+metric.count);
     double total{};for (std::size_t index=0;index<metric.count;++index) total+=sorted[index];
     result.mean_ms=total/static_cast<double>(metric.count);
-    result.p95_ms=sorted[(metric.count*95+99)/100-1];result.max_ms=sorted[metric.count-1];
+    result.p50_ms=sorted[(metric.count*50+99)/100-1];
+    result.p95_ms=sorted[(metric.count*95+99)/100-1];
+    result.p99_ms=sorted[(metric.count*99+99)/100-1];
+    result.max_ms=sorted[metric.count-1];
     result.age_ms=std::chrono::duration<double,std::milli>(now-metric.last).count();
     return result;
 }
@@ -182,7 +187,7 @@ bool PageAwaitingReady(ViewId id, std::uint64_t current_paint_sequence = 0)
     const auto now = std::chrono::steady_clock::now();
     if (found->second.ready_received) {
         if (current_paint_sequence > found->second.min_paint_sequence ||
-            now - found->second.ready_at >= std::chrono::milliseconds(90)) {
+            now - found->second.ready_at >= std::chrono::milliseconds(350)) {
             g_page_loads.erase(found);
             g_active_page_loads.store(static_cast<std::uint32_t>(g_page_loads.size()), std::memory_order_release);
             return false;
@@ -192,7 +197,7 @@ bool PageAwaitingReady(ViewId id, std::uint64_t current_paint_sequence = 0)
     if (found->second.started.time_since_epoch().count() == 0) found->second.started = now;
     const bool warm_view = g_painted_views.contains(id);
     const auto timeout = warm_view
-        ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::milliseconds(650))
+        ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::milliseconds(1200))
         : std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(20));
     if (now - found->second.started < timeout) return true;
     g_page_loads.erase(found);
@@ -207,7 +212,9 @@ std::array<std::atomic_bool, 2> g_vr_trigger_fallback{};
 std::array<std::atomic_bool, 2> g_vr_keyboard_button_fallback{};
 std::array<std::atomic<int>, 2> g_vr_stick_y_fallback{};
 std::array<std::atomic<std::uint64_t>, 2> g_vr_stick_tick{};
-std::array<void*, kSwapChainVtableEntries> g_hooked_vtable{};
+// Slot 0 stores original_vtable[-1] (MSVC RTTI CompleteObjectLocator) so
+// HookedVtableEntries() behaves like a full COM/C++ vtable.
+std::array<void*, kSwapChainVtableEntries + 1> g_hooked_vtable{};
 void** g_original_vtable{};
 REX::W32::IDXGISwapChain* g_hooked_swap_chain{};
 ComPtr<IDXGISwapChain> g_hooked_swap_chain_ref;
@@ -217,6 +224,43 @@ std::mutex g_present_hook_mutex;
 bool g_ui_menu_registered{};
 bool g_logged_missing_ui_message_queue{};
 bool g_logged_present_hook_superseded{};
+
+[[nodiscard]] void** HookedVtableEntries() noexcept
+{
+    return g_hooked_vtable.data() + 1;
+}
+
+[[nodiscard]] bool IsReadableMemory(const void* address, std::size_t bytes) noexcept
+{
+    if (address == nullptr || bytes == 0) {
+        return false;
+    }
+    constexpr DWORD kReadableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+        PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    auto cursor = reinterpret_cast<std::uintptr_t>(address);
+    std::size_t remaining = bytes;
+    while (remaining > 0) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(reinterpret_cast<const void*>(cursor), &mbi, sizeof(mbi)) != sizeof(mbi)) {
+            return false;
+        }
+        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0 ||
+            (mbi.Protect & kReadableMask) == 0) {
+            return false;
+        }
+        const auto region_end = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+        if (region_end <= cursor) {
+            return false;
+        }
+        const auto available = static_cast<std::size_t>(region_end - cursor);
+        if (available >= remaining) {
+            return true;
+        }
+        cursor = region_end;
+        remaining -= available;
+    }
+    return true;
+}
 
 #if defined(ENABLE_SKYRIM_VR)
 class OpenVrOverlayManager final {
@@ -1514,7 +1558,13 @@ public:
             return false;
         }
 #endif
+        RecordPresentInterval();
         return DrawIntoTarget(nullptr, true);
+    }
+
+    [[nodiscard]] bool NeedsPresentFallback() const noexcept
+    {
+        return logged_missing_ui_target_.load(std::memory_order_acquire);
     }
 
     void ShutdownVR() noexcept
@@ -1597,39 +1647,237 @@ private:
         std::size_t slot_{};
     };
 
-    class ContextStateScope final {
+    class D3D11StateBackup final {
     public:
-        ContextStateScope(ID3D11DeviceContext1* context, ID3DDeviceContextState* isolated_state) :
+        explicit D3D11StateBackup(ID3D11DeviceContext* context) :
             context_(context)
         {
-            if (context_ == nullptr || isolated_state == nullptr) {
-                context_ = nullptr;
+            if (context_ == nullptr) {
                 return;
             }
-            context_->SwapDeviceContextState(isolated_state, previous_state_.GetAddressOf());
-            context_->ClearState();
+            context_->OMGetRenderTargets(
+                D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs_.data(), &dsv_);
+            context_->OMGetBlendState(&blend_state_, blend_factor_, &sample_mask_);
+            context_->OMGetDepthStencilState(&depth_stencil_state_, &stencil_ref_);
+
+            context_->RSGetState(&rasterizer_state_);
+            context_->RSGetViewports(&viewport_count_, viewports_.data());
+            context_->RSGetScissorRects(&scissor_count_, scissors_.data());
+
+            context_->IAGetPrimitiveTopology(&topology_);
+            context_->IAGetInputLayout(&input_layout_);
+            context_->IAGetVertexBuffers(
+                0,
+                kSavedVbSlots,
+                vertex_buffers_.data(),
+                vertex_strides_.data(),
+                vertex_offsets_.data());
+            context_->IAGetIndexBuffer(&index_buffer_, &index_format_, &index_offset_);
+
+            vs_instance_count_ = static_cast<UINT>(kMaxClassInstances);
+            context_->VSGetShader(&vs_, vs_instances_.data(), &vs_instance_count_);
+            context_->VSGetConstantBuffers(0, kSavedCbSlots, vs_cbuffers_.data());
+
+            ps_instance_count_ = static_cast<UINT>(kMaxClassInstances);
+            context_->PSGetShader(&ps_, ps_instances_.data(), &ps_instance_count_);
+            context_->PSGetConstantBuffers(0, kSavedCbSlots, ps_cbuffers_.data());
+            context_->PSGetSamplers(0, kSavedSamplerSlots, ps_samplers_.data());
+            context_->PSGetShaderResources(0, kSavedPsSrvSlots, ps_srvs_.data());
+
+            gs_instance_count_ = static_cast<UINT>(kMaxClassInstances);
+            hs_instance_count_ = static_cast<UINT>(kMaxClassInstances);
+            ds_instance_count_ = static_cast<UINT>(kMaxClassInstances);
+            context_->GSGetShader(&gs_, gs_instances_.data(), &gs_instance_count_);
+            context_->HSGetShader(&hs_, hs_instances_.data(), &hs_instance_count_);
+            context_->DSGetShader(&ds_, ds_instances_.data(), &ds_instance_count_);
+            ClearGeometryAndTessellationIfBound();
         }
 
-        ContextStateScope(const ContextStateScope&) = delete;
-        ContextStateScope& operator=(const ContextStateScope&) = delete;
-        ~ContextStateScope()
+        D3D11StateBackup(const D3D11StateBackup&) = delete;
+        D3D11StateBackup& operator=(const D3D11StateBackup&) = delete;
+
+        void ClearGeometryAndTessellationIfBound() noexcept
         {
-            if (context_ != nullptr && previous_state_ != nullptr) {
-                context_->SwapDeviceContextState(previous_state_.Get(), nullptr);
+            if (context_ == nullptr) {
+                return;
+            }
+            if (gs_ != nullptr) {
+                context_->GSSetShader(nullptr, nullptr, 0);
+            }
+            if (hs_ != nullptr) {
+                context_->HSSetShader(nullptr, nullptr, 0);
+            }
+            if (ds_ != nullptr) {
+                context_->DSSetShader(nullptr, nullptr, 0);
             }
         }
 
-        [[nodiscard]] bool Active() const noexcept { return context_ != nullptr; }
+        void UnbindPsShaderResources() noexcept
+        {
+            if (context_ == nullptr) {
+                return;
+            }
+            std::array<ID3D11ShaderResourceView*, kSavedPsSrvSlots> null_srvs{};
+            context_->PSSetShaderResources(0, kSavedPsSrvSlots, null_srvs.data());
+        }
+
+        ~D3D11StateBackup()
+        {
+            if (context_ != nullptr) {
+                // Unbind PS SRVs before OMSetRenderTargets so an active overlay
+                // texture cannot trip D3D11's RTV/SRV hazard and drop Skyrim's RTV.
+                UnbindPsShaderResources();
+                context_->OMSetRenderTargets(
+                    D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs_.data(), dsv_);
+                context_->OMSetBlendState(blend_state_, blend_factor_, sample_mask_);
+                context_->OMSetDepthStencilState(depth_stencil_state_, stencil_ref_);
+
+                context_->RSSetState(rasterizer_state_);
+                context_->RSSetViewports(
+                    viewport_count_, viewport_count_ > 0 ? viewports_.data() : nullptr);
+                context_->RSSetScissorRects(
+                    scissor_count_, scissor_count_ > 0 ? scissors_.data() : nullptr);
+
+                context_->IASetPrimitiveTopology(topology_);
+                context_->IASetInputLayout(input_layout_);
+                context_->IASetVertexBuffers(
+                    0,
+                    kSavedVbSlots,
+                    vertex_buffers_.data(),
+                    vertex_strides_.data(),
+                    vertex_offsets_.data());
+                context_->IASetIndexBuffer(index_buffer_, index_format_, index_offset_);
+
+                context_->VSSetShader(vs_, vs_instances_.data(), vs_instance_count_);
+                context_->VSSetConstantBuffers(0, kSavedCbSlots, vs_cbuffers_.data());
+
+                context_->PSSetShader(ps_, ps_instances_.data(), ps_instance_count_);
+                context_->PSSetConstantBuffers(0, kSavedCbSlots, ps_cbuffers_.data());
+                context_->PSSetSamplers(0, kSavedSamplerSlots, ps_samplers_.data());
+                context_->PSSetShaderResources(0, kSavedPsSrvSlots, ps_srvs_.data());
+
+                if (gs_ != nullptr) {
+                    context_->GSSetShader(gs_, gs_instances_.data(), gs_instance_count_);
+                }
+                if (hs_ != nullptr) {
+                    context_->HSSetShader(hs_, hs_instances_.data(), hs_instance_count_);
+                }
+                if (ds_ != nullptr) {
+                    context_->DSSetShader(ds_, ds_instances_.data(), ds_instance_count_);
+                }
+            }
+            ReleaseAll();
+        }
 
     private:
-        ID3D11DeviceContext1* context_{};
-        ComPtr<ID3DDeviceContextState> previous_state_;
+        void ReleaseAll() noexcept
+        {
+            const auto release_one = [](auto*& ptr) noexcept {
+                if (ptr != nullptr) {
+                    ptr->Release();
+                    ptr = nullptr;
+                }
+            };
+            const auto release_array = [&release_one](auto& items) noexcept {
+                for (auto*& item : items) {
+                    release_one(item);
+                }
+            };
+            const auto release_instances = [&release_one](auto& items, UINT count) noexcept {
+                const auto limit = std::min<std::size_t>(count, items.size());
+                for (std::size_t index = 0; index < limit; ++index) {
+                    release_one(items[index]);
+                }
+            };
+
+            release_array(rtvs_);
+            release_one(dsv_);
+            release_one(blend_state_);
+            release_one(depth_stencil_state_);
+            release_one(rasterizer_state_);
+            release_one(input_layout_);
+            release_array(vertex_buffers_);
+            release_one(index_buffer_);
+
+            release_one(vs_);
+            release_instances(vs_instances_, vs_instance_count_);
+            release_array(vs_cbuffers_);
+
+            release_one(ps_);
+            release_instances(ps_instances_, ps_instance_count_);
+            release_array(ps_cbuffers_);
+            release_array(ps_samplers_);
+            release_array(ps_srvs_);
+
+            release_one(gs_);
+            release_instances(gs_instances_, gs_instance_count_);
+            release_one(hs_);
+            release_instances(hs_instances_, hs_instance_count_);
+            release_one(ds_);
+            release_instances(ds_instances_, ds_instance_count_);
+        }
+
+        static constexpr std::size_t kMaxClassInstances = D3D11_SHADER_MAX_INTERFACES;
+        static constexpr UINT kSavedVbSlots = 4;
+        static constexpr UINT kSavedCbSlots = 4;
+        static constexpr UINT kSavedSamplerSlots = 4;
+        static constexpr UINT kSavedPsSrvSlots = 16;
+
+        ID3D11DeviceContext* context_{};
+        std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> rtvs_{};
+        ID3D11DepthStencilView* dsv_{};
+        ID3D11BlendState* blend_state_{};
+        FLOAT blend_factor_[4]{};
+        UINT sample_mask_{};
+        ID3D11DepthStencilState* depth_stencil_state_{};
+        UINT stencil_ref_{};
+
+        ID3D11RasterizerState* rasterizer_state_{};
+        std::array<D3D11_VIEWPORT, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE> viewports_{};
+        UINT viewport_count_{ static_cast<UINT>(D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE) };
+        std::array<D3D11_RECT, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE> scissors_{};
+        UINT scissor_count_{ static_cast<UINT>(D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE) };
+
+        D3D11_PRIMITIVE_TOPOLOGY topology_{ D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED };
+        ID3D11InputLayout* input_layout_{};
+        std::array<ID3D11Buffer*, kSavedVbSlots> vertex_buffers_{};
+        std::array<UINT, kSavedVbSlots> vertex_strides_{};
+        std::array<UINT, kSavedVbSlots> vertex_offsets_{};
+        ID3D11Buffer* index_buffer_{};
+        DXGI_FORMAT index_format_{ DXGI_FORMAT_UNKNOWN };
+        UINT index_offset_{};
+
+        ID3D11VertexShader* vs_{};
+        std::array<ID3D11ClassInstance*, kMaxClassInstances> vs_instances_{};
+        UINT vs_instance_count_{};
+        std::array<ID3D11Buffer*, kSavedCbSlots> vs_cbuffers_{};
+
+        ID3D11PixelShader* ps_{};
+        std::array<ID3D11ClassInstance*, kMaxClassInstances> ps_instances_{};
+        UINT ps_instance_count_{};
+        std::array<ID3D11Buffer*, kSavedCbSlots> ps_cbuffers_{};
+        std::array<ID3D11SamplerState*, kSavedSamplerSlots> ps_samplers_{};
+        std::array<ID3D11ShaderResourceView*, kSavedPsSrvSlots> ps_srvs_{};
+
+        ID3D11GeometryShader* gs_{};
+        std::array<ID3D11ClassInstance*, kMaxClassInstances> gs_instances_{};
+        UINT gs_instance_count_{};
+        ID3D11HullShader* hs_{};
+        std::array<ID3D11ClassInstance*, kMaxClassInstances> hs_instances_{};
+        UINT hs_instance_count_{};
+        ID3D11DomainShader* ds_{};
+        std::array<ID3D11ClassInstance*, kMaxClassInstances> ds_instances_{};
+        UINT ds_instance_count_{};
     };
 
 #if defined(ENABLE_SKYRIM_VR)
     void DrawVr()
     {
         const std::scoped_lock draw_lock(draw_mutex_);
+        if (!g_visible.load(std::memory_order_acquire)) {
+            vr_overlays_.HideAll();
+            return;
+        }
         auto* device = reinterpret_cast<ID3D11Device*>(RE::BSGraphics::Renderer::GetDevice());
         auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
         if (device == nullptr || renderer == nullptr) {
@@ -1642,27 +1890,17 @@ private:
             return;
         }
 
-        ComPtr<ID3D11RenderTargetView> target;
-        ComPtr<ID3D11DepthStencilView> depth_stencil;
-        context->OMGetRenderTargets(1, target.GetAddressOf(), depth_stencil.GetAddressOf());
-        std::array<D3D11_VIEWPORT, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE> viewports{};
-        UINT viewport_count = static_cast<UINT>(viewports.size());
-        context->RSGetViewports(&viewport_count, viewports.data());
-        (void)EnsureContextState(device, context);
-        ContextStateScope context_state(context1_.Get(), isolated_context_state_.Get());
-        auto* runtime = g_runtime.load(std::memory_order_acquire);
-        if (runtime != nullptr) {
-            runtime->PumpFrame(device, context);
-        }
-        if (!context_state.Active()) {
-            context->OMSetRenderTargets(1, target.GetAddressOf(), depth_stencil.Get());
-            context->RSSetViewports(viewport_count, viewports.data());
+        {
+            D3D11StateBackup context_state(context);
+            auto* runtime = g_runtime.load(std::memory_order_acquire);
+            if (runtime != nullptr) {
+                runtime->PumpFrame(device, context);
+            }
         }
 
         const std::scoped_lock views_lock(g_overlay_views_mutex);
         const auto& views = g_overlay_views;
         if (!g_visible.load(std::memory_order_acquire)) {
-            WarmupFrameworkSplash(device, context);
             vr_overlays_.HideAll();
             return;
         }
@@ -1682,7 +1920,10 @@ private:
 
     bool DrawIntoTarget(REX::W32::IDXGISwapChain* game_swap_chain, bool ui_pass, bool already_pumped = false)
     {
-        [[maybe_unused]] CallbackCpuTiming callback_cpu_timing(g_visible.load(std::memory_order_relaxed));
+        if (!g_visible.load(std::memory_order_acquire)) {
+            return false;
+        }
+        [[maybe_unused]] CallbackCpuTiming callback_cpu_timing(true);
         auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
         if(renderer==nullptr)return false;
         // Lock order is engine renderer -> SkyUltra draw -> overlay views ->
@@ -1694,7 +1935,7 @@ private:
         // lock. Consume its marker here as well as at the fast Present entry.
         if(!ui_pass && g_ui_pass_composited.exchange(false,std::memory_order_acq_rel))return false;
         const std::scoped_lock draw_lock(draw_mutex_);
-        if (ui_pass && !g_visible.load(std::memory_order_acquire)) {
+        if (!g_visible.load(std::memory_order_acquire)) {
             return false;
         }
 
@@ -1738,35 +1979,11 @@ private:
             return false;
         }
 
-        const auto visible = g_visible.load(std::memory_order_acquire);
         auto* runtime = g_runtime.load(std::memory_order_acquire);
-        if (!visible) {
-            WarmupFrameworkSplash(device, context);
-            WarmupActorPreviewRenderer(device);
-            if (!already_pumped && runtime != nullptr && runtime->NeedsImmediateContextPump(device, context)) {
-                EnsureContextThreadProtection(device,context);
-                const ContextThreadScope context_thread_scope(context_multithread_.Get());
-                (void)EnsureContextState(device, context);
-                ComPtr<ID3D11RenderTargetView> target;
-                ComPtr<ID3D11DepthStencilView> depth_stencil;
-                context->OMGetRenderTargets(1, target.GetAddressOf(), depth_stencil.GetAddressOf());
-                std::array<D3D11_VIEWPORT, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE> viewports{};
-                UINT viewport_count = static_cast<UINT>(viewports.size());
-                context->RSGetViewports(&viewport_count, viewports.data());
-                ContextStateScope context_state(context1_.Get(), isolated_context_state_.Get());
-                runtime->PumpFrame(device, context);
-                if (!context_state.Active()) {
-                    context->OMSetRenderTargets(1, target.GetAddressOf(), depth_stencil.Get());
-                    context->RSSetViewports(viewport_count, viewports.data());
-                }
-            }
-            return false;
-        }
         EnsureContextThreadProtection(device,context);
-        // Keep capture, state swaps, browser command-list execution, model
+        // Keep capture, state backup, browser command-list execution, model
         // redraw/export, sprite composition and restoration in one transaction.
         const ContextThreadScope context_thread_scope(context_multithread_.Get());
-        (void)EnsureContextState(device, context);
         if (views.empty()) {
             if (!logged_missing_view_) {
                 SKSE::log::error("SkyUltra overlay is visible but has no registered browser views.");
@@ -1787,21 +2004,36 @@ private:
         std::array<D3D11_VIEWPORT, D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE> viewports{};
         UINT viewport_count = static_cast<UINT>(viewports.size());
         ComPtr<ID3D11RenderTargetView> window_render_target;
+        UINT target_width{};
+        UINT target_height{};
         if (ui_pass) {
-            // The engine menu callback runs with Skyrim's UI target bound. Composite into it
-            // directly instead of trying to infer which swap-chain buffer Present will show.
+            // The engine menu callback runs with Skyrim's UI target bound. Validate it
+            // before backing up state or pumping any browser D3D11 work.
             context->OMGetRenderTargets(1, target.GetAddressOf(), depth_stencil.GetAddressOf());
             context->RSGetViewports(&viewport_count, viewports.data());
             if (target == nullptr) {
-                if (!logged_missing_ui_target_) {
+                if (!logged_missing_ui_target_.exchange(true, std::memory_order_acq_rel)) {
                     SKSE::log::warn("SkyUltra UI-pass menu ran without a bound render target; using Present fallback.");
-                    logged_missing_ui_target_ = true;
                 }
                 return false;
             }
+            ComPtr<ID3D11Resource> target_resource;
+            ComPtr<ID3D11Texture2D> target_texture;
+            target->GetResource(target_resource.GetAddressOf());
+            if (target_resource == nullptr || FAILED(target_resource.As(&target_texture))) {
+                if (!logged_missing_ui_target_.exchange(true, std::memory_order_acq_rel)) {
+                    SKSE::log::warn("SkyUltra UI-pass render target is not a D3D11 texture; using Present fallback.");
+                }
+                return false;
+            }
+            D3D11_TEXTURE2D_DESC target_desc{};
+            target_texture->GetDesc(&target_desc);
+            target_width = target_desc.Width;
+            target_height = target_desc.Height;
+            if (target_width == 0 || target_height == 0) {
+                return false;
+            }
         } else {
-            // Capture output references before PumpFrame; Ultralight uses this immediate context
-            // for its off-screen work and leaves its own render target bound.
             context->OMGetRenderTargets(1, target.GetAddressOf(), depth_stencil.GetAddressOf());
             context->RSGetViewports(&viewport_count, viewports.data());
             if (render_window != nullptr && render_window->swapChain == game_swap_chain &&
@@ -1809,9 +2041,29 @@ private:
                 window_render_target =
                     reinterpret_cast<ID3D11RenderTargetView*>(render_window->renderView);
             }
+            if (!EnsureBackBuffer(game_swap_chain, target.Get(), window_render_target.Get())) {
+                if (!logged_back_buffer_failure_) {
+                    SKSE::log::error("SkyUltra could not create a D3D11 view for Skyrim's back buffer.");
+                    logged_back_buffer_failure_ = true;
+                }
+                return false;
+            }
+            target = back_buffer_rtv_;
+            target_width = back_buffer_width_;
+            target_height = back_buffer_height_;
+            if (target_width == 0 || target_height == 0) {
+                return false;
+            }
+            viewport_count = 1;
+            viewports[0] = D3D11_VIEWPORT{
+                0.0F, 0.0F, static_cast<float>(target_width), static_cast<float>(target_height), 0.0F, 1.0F };
         }
 
-        ContextStateScope context_state(context1_.Get(), isolated_context_state_.Get());
+        if (!logged_state_backup_ready_) {
+            SKSE::log::info("SkyUltra will back up and restore D3D11 pipeline state around its overlay pass.");
+            logged_state_backup_ready_ = true;
+        }
+        D3D11StateBackup context_state(context);
         [[maybe_unused]] auto gpu_timing_scope = BeginGpuTiming(context);
         if (!already_pumped && runtime != nullptr) {
             runtime->PumpFrame(device, context);
@@ -1825,7 +2077,7 @@ private:
         }
         // Decode/upload splash frame before background actor/item renders so splash playback stays smooth.
         const auto splash_frame = TickFrameworkSplash(device_.Get(), context_.Get());
-        if (!already_pumped) {
+        if (!already_pumped && !FrameworkSplashActive()) {
             preview_owners_.clear();
             for (const auto& overlay_view : views) {
                 if (overlay_view.view != nullptr && overlay_view.config.visible && overlay_view.config.opacity > 0.0F) {
@@ -1833,48 +2085,8 @@ private:
                 }
             }
             RenderActorPreviews(device, context, preview_owners_);
-            if (!FrameworkSplashActive()) {
-                WarmupFrameworkSplash(device, context);
-                WarmupActorPreviewRenderer(device);
-            }
         }
 
-        UINT target_width{};
-        UINT target_height{};
-        if (ui_pass) {
-            ComPtr<ID3D11Resource> target_resource;
-            ComPtr<ID3D11Texture2D> target_texture;
-            target->GetResource(target_resource.GetAddressOf());
-            if (target_resource == nullptr || FAILED(target_resource.As(&target_texture))) {
-                if (!logged_missing_ui_target_) {
-                    SKSE::log::warn("SkyUltra UI-pass render target is not a D3D11 texture; using Present fallback.");
-                    logged_missing_ui_target_ = true;
-                }
-                return false;
-            }
-            D3D11_TEXTURE2D_DESC target_desc{};
-            target_texture->GetDesc(&target_desc);
-            target_width = target_desc.Width;
-            target_height = target_desc.Height;
-        } else {
-            if (!EnsureBackBuffer(game_swap_chain, target.Get(), window_render_target.Get())) {
-                if (!logged_back_buffer_failure_) {
-                    SKSE::log::error("SkyUltra could not create a D3D11 view for Skyrim's back buffer.");
-                    logged_back_buffer_failure_ = true;
-                }
-                return false;
-            }
-            target = back_buffer_rtv_;
-            target_width = back_buffer_width_;
-            target_height = back_buffer_height_;
-            viewport_count = 1;
-            viewports[0] = D3D11_VIEWPORT{
-                0.0F, 0.0F, static_cast<float>(target_width), static_cast<float>(target_height), 0.0F, 1.0F };
-        }
-
-        if (target_width == 0 || target_height == 0) {
-            return false;
-        }
         if (viewport_count == 0 || viewports[0].Width <= 0.0F || viewports[0].Height <= 0.0F) {
             viewport_count = 1;
             viewports[0] = D3D11_VIEWPORT{
@@ -1885,13 +2097,17 @@ private:
         const auto viewport_left = static_cast<LONG>(std::lround(active_viewport.TopLeftX));
         const auto viewport_top = static_cast<LONG>(std::lround(active_viewport.TopLeftY));
 
-        // PumpFrame may have rebound Ultralight's off-screen target; put Skyrim's UI target back.
+        // PumpFrame may have bound Ultralight's off-screen target or left PS SRVs bound;
+        // unbind PS SRVs before putting Skyrim's target back to prevent RTV/SRV hazards.
+        context_state.UnbindPsShaderResources();
         context_->OMSetRenderTargets(1, target.GetAddressOf(), ui_pass ? depth_stencil.Get() : nullptr);
         context_->RSSetViewports(viewport_count, viewports.data());
+        context_state.ClearGeometryAndTessellationIfBound();
         sprite_batch_->SetViewport(active_viewport);
         preview_frame_lifetimes_.clear();
         painted_view_ids_.clear();
         gpu_timing_scope.BeginComposite();
+        const auto composite_seq = g_composite_frame_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
         sprite_batch_->Begin(DirectX::SpriteSortMode_Deferred, blend_state_.Get());
         bool drew_view{};
         bool drew_cursor{};
@@ -1921,6 +2137,15 @@ private:
                 continue;
             }
             const bool page_awaiting_ready = PageAwaitingReady(view->Id(), view->PaintSequence());
+            if (page_awaiting_ready) {
+                if ((!config.transparent || config.layer == ViewLayer::Panel || config.id == "SkyUltra.Menu") && FrameworkSplashActive()) {
+                    if (splash_frame != nullptr) {
+                        drew_view = true;
+                    }
+                    splashed_views_.push_back(config.id);
+                }
+                continue;
+            }
 
             ID3D11ShaderResourceView* shader_resource_view{};
             RECT source{};
@@ -1932,24 +2157,31 @@ private:
                     static_cast<LONG>(frame->source_rect.x + frame->source_rect.width),
                     static_cast<LONG>(frame->source_rect.y + frame->source_rect.height),
                 };
-            } else if (auto frame = view->TakeFrame()) {
-                auto& software = software_textures_[view->Id()];
-                if (!EnsureViewTexture(software, frame->size)) {
-                    if (!logged_software_texture_failure_) {
-                        SKSE::log::error("SkyUltra could not create a D3D11 texture for a software-rendered view.");
-                        logged_software_texture_failure_ = true;
-                    }
-                    continue;
+            } else {
+                const auto existing_sw = software_textures_.find(view->Id());
+                if (existing_sw == software_textures_.end() ||
+                    existing_sw->second.shader_resource_view == nullptr) {
+                    view->InvalidateSoftwareSurface();
                 }
-                UploadFrame(software, *frame);
-                shader_resource_view = software.shader_resource_view.Get();
-                source = RECT{ 0, 0, static_cast<LONG>(frame->size.width),
-                    static_cast<LONG>(frame->size.height) };
-            } else if (const auto software = software_textures_.find(view->Id());
-                software != software_textures_.end() && software->second.shader_resource_view != nullptr) {
-                shader_resource_view = software->second.shader_resource_view.Get();
-                source = RECT{ 0, 0, static_cast<LONG>(software->second.size.width),
-                    static_cast<LONG>(software->second.size.height) };
+                if (auto frame = view->TakeFrame()) {
+                    auto& software = software_textures_[view->Id()];
+                    if (!EnsureViewTexture(software, frame->size)) {
+                        if (!logged_software_texture_failure_) {
+                            SKSE::log::error("SkyUltra could not create a D3D11 texture for a software-rendered view.");
+                            logged_software_texture_failure_ = true;
+                        }
+                        continue;
+                    }
+                    UploadFrame(software, *frame);
+                    shader_resource_view = software.shader_resource_view.Get();
+                    source = RECT{ 0, 0, static_cast<LONG>(frame->size.width),
+                        static_cast<LONG>(frame->size.height) };
+                } else if (const auto software = software_textures_.find(view->Id());
+                    software != software_textures_.end() && software->second.shader_resource_view != nullptr) {
+                    shader_resource_view = software->second.shader_resource_view.Get();
+                    source = RECT{ 0, 0, static_cast<LONG>(software->second.size.width),
+                        static_cast<LONG>(software->second.size.height) };
+                }
             }
 
             if (!page_awaiting_ready && shader_resource_view != nullptr &&
@@ -1969,7 +2201,7 @@ private:
             }
 
             if ((!config.transparent || config.layer == ViewLayer::Panel || config.id == "SkyUltra.Menu") && FrameworkSplashActive()) {
-                if (splash_frame != nullptr || DrawLoadingBackdrop(config, viewport_size, viewport_left, viewport_top)) {
+                if (splash_frame != nullptr) {
                     drew_view = true;
                 }
                 if (shader_resource_view != nullptr && !page_awaiting_ready && !known_painted_views_.contains(view->Id())) {
@@ -2035,32 +2267,35 @@ private:
             const auto opacity = std::clamp(config.opacity, 0.0F, 1.0F);
             const auto tint = DirectX::XMVectorSet(opacity, opacity, opacity, opacity);
             sprite_batch_->Draw(shader_resource_view, destination, &clipped_source, tint);
+            TraceMarkComposited(view->Id(), view->PaintSequence(), composite_seq);
             if (!known_painted_views_.contains(view->Id())) {
                 painted_view_ids_.push_back(view->Id());
             }
             drew_view = true;
             // Native actor pixels share this view's ordering, opacity and clip.
             // They never pass through a browser CPU bitmap or image encoder.
-            if (const auto preview = GetActorPreviewFrame(view->Id()); preview && preview->shader_resource_view != nullptr) {
-                const auto& rect = preview->normalized_bounds;
-                const RectF actor_bounds{bounds.x + rect.x * bounds.width,
-                    bounds.y + rect.y * bounds.height, rect.width * bounds.width, rect.height * bounds.height};
-                const auto actor_left = std::max(clipped_left, actor_bounds.x);
-                const auto actor_top = std::max(clipped_top, actor_bounds.y);
-                const auto actor_right = std::min(clipped_right, actor_bounds.x + actor_bounds.width);
-                const auto actor_bottom = std::min(clipped_bottom, actor_bounds.y + actor_bounds.height);
-                if (actor_bounds.width > 0.0F && actor_bounds.height > 0.0F && actor_right > actor_left && actor_bottom > actor_top) {
-                    const RECT actor_destination{viewport_left + static_cast<LONG>(std::lround(actor_left)),
-                        viewport_top + static_cast<LONG>(std::lround(actor_top)),
-                        viewport_left + static_cast<LONG>(std::lround(actor_right)),
-                        viewport_top + static_cast<LONG>(std::lround(actor_bottom))};
-                    const RECT actor_source{
-                        static_cast<LONG>(std::lround((actor_left-actor_bounds.x)/actor_bounds.width*preview->size.width)),
-                        static_cast<LONG>(std::lround((actor_top-actor_bounds.y)/actor_bounds.height*preview->size.height)),
-                        static_cast<LONG>(std::lround((actor_right-actor_bounds.x)/actor_bounds.width*preview->size.width)),
-                        static_cast<LONG>(std::lround((actor_bottom-actor_bounds.y)/actor_bounds.height*preview->size.height))};
-                    sprite_batch_->Draw(static_cast<ID3D11ShaderResourceView*>(preview->shader_resource_view), actor_destination, &actor_source, tint);
-                    preview_frame_lifetimes_.push_back(preview->lifetime);
+            if (!FrameworkSplashActive() && !page_awaiting_ready) {
+                if (const auto preview = GetActorPreviewFrame(view->Id(), view->PaintSequence()); preview && preview->shader_resource_view != nullptr) {
+                    const auto& rect = preview->normalized_bounds;
+                    const RectF actor_bounds{bounds.x + rect.x * bounds.width,
+                        bounds.y + rect.y * bounds.height, rect.width * bounds.width, rect.height * bounds.height};
+                    const auto actor_left = std::max(clipped_left, actor_bounds.x);
+                    const auto actor_top = std::max(clipped_top, actor_bounds.y);
+                    const auto actor_right = std::min(clipped_right, actor_bounds.x + actor_bounds.width);
+                    const auto actor_bottom = std::min(clipped_bottom, actor_bounds.y + actor_bounds.height);
+                    if (actor_bounds.width > 0.0F && actor_bounds.height > 0.0F && actor_right > actor_left && actor_bottom > actor_top) {
+                        const RECT actor_destination{viewport_left + static_cast<LONG>(std::lround(actor_left)),
+                            viewport_top + static_cast<LONG>(std::lround(actor_top)),
+                            viewport_left + static_cast<LONG>(std::lround(actor_right)),
+                            viewport_top + static_cast<LONG>(std::lround(actor_bottom))};
+                        const RECT actor_source{
+                            static_cast<LONG>(std::lround((actor_left-actor_bounds.x)/actor_bounds.width*preview->size.width)),
+                            static_cast<LONG>(std::lround((actor_top-actor_bounds.y)/actor_bounds.height*preview->size.height)),
+                            static_cast<LONG>(std::lround((actor_right-actor_bounds.x)/actor_bounds.width*preview->size.width)),
+                            static_cast<LONG>(std::lround((actor_bottom-actor_bounds.y)/actor_bounds.height*preview->size.height))};
+                        sprite_batch_->Draw(static_cast<ID3D11ShaderResourceView*>(preview->shader_resource_view), actor_destination, &actor_source, tint);
+                        preview_frame_lifetimes_.push_back(preview->lifetime);
+                    }
                 }
             }
         }
@@ -2116,11 +2351,6 @@ private:
             logged_missing_texture_ = true;
         }
 
-        // Keep the engine's menu pass bound for whatever draws after this menu callback.
-        if (ui_pass) {
-            context_->OMSetRenderTargets(1, target.GetAddressOf(), depth_stencil.Get());
-            context_->RSSetViewports(viewport_count, viewports.data());
-        }
         if (drew_view && ui_pass && !logged_first_ui_composite_) {
             SKSE::log::info("SkyUltra composited its first browser frame in Skyrim's UI pass ({}x{} target).",
                 target_width, target_height);
@@ -2137,69 +2367,27 @@ private:
         return composited;
     }
 
-    void EnsureContextThreadProtection(ID3D11Device* device,ID3D11DeviceContext* context)
+    void EnsureContextThreadProtection(ID3D11Device* device, ID3D11DeviceContext* context)
     {
-        if(thread_protected_context_.Get()!=context) {
-            context_multithread_.Reset();thread_protected_context_=context;
-            logged_context_thread_protection_=false;
-            if((device->GetCreationFlags()&D3D11_CREATE_DEVICE_SINGLETHREADED)==0)
+        if (thread_protected_context_.Get() != context) {
+            context_multithread_.Reset();
+            thread_protected_context_ = context;
+            logged_context_thread_protection_ = false;
+            if ((device->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED) == 0) {
                 (void)context->QueryInterface(IID_PPV_ARGS(context_multithread_.GetAddressOf()));
-        }
-        if(context_multithread_ && !context_multithread_->GetMultithreadProtected())
-            context_multithread_->SetMultithreadProtected(TRUE);
-        if(!logged_context_thread_protection_) {
-            SKSE::log::info("SkyUltra render synchronization v3: Skyrim renderer lock active; D3D11 immediate-context protection {}. Full pass guarded through state restoration.",
-                context_multithread_&&context_multithread_->GetMultithreadProtected()?"enabled":"unavailable");
-            logged_context_thread_protection_=true;
-        }
-        // Never turn protection off: this immediate context is shared with the
-        // engine and other plugins, including CEF's shared-texture path.
-    }
-
-    bool EnsureContextState(ID3D11Device* device, ID3D11DeviceContext* context)
-    {
-        if (context_state_device_.Get() == device && context_state_context_.Get() == context) {
-            return context1_ != nullptr && isolated_context_state_ != nullptr;
-        }
-
-        isolated_context_state_.Reset();
-        context1_.Reset();
-        context_state_device_ = device;
-        context_state_context_ = context;
-        const auto log_context_state_fallback = [this] {
-            if (!logged_context_state_fallback_) {
-                SKSE::log::warn("SkyUltra could not create a D3D11.1 context-state object; "
-                                "only render-target and viewport state will be restored.");
-                logged_context_state_fallback_ = true;
             }
-        };
-
-        ComPtr<ID3D11Device1> device1;
-        ComPtr<ID3D11DeviceContext1> context1;
-        if (FAILED(device->QueryInterface(IID_PPV_ARGS(device1.GetAddressOf()))) ||
-            FAILED(context->QueryInterface(IID_PPV_ARGS(context1.GetAddressOf())))) {
-            log_context_state_fallback();
-            return false;
         }
-
-        const auto feature_level = device->GetFeatureLevel();
-        D3D_FEATURE_LEVEL selected_feature_level{};
-        const UINT flags = (device->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED) != 0 ?
-            D3D11_1_CREATE_DEVICE_CONTEXT_STATE_SINGLETHREADED : 0U;
-        if (FAILED(device1->CreateDeviceContextState(flags, &feature_level, 1,
-                D3D11_SDK_VERSION, __uuidof(ID3D11Device), &selected_feature_level,
-                isolated_context_state_.ReleaseAndGetAddressOf()))) {
-            isolated_context_state_.Reset();
-            log_context_state_fallback();
-            return false;
+        if (context_multithread_ && !context_multithread_->GetMultithreadProtected()) {
+            // Leave global D3D11 immediate-context multithread mode untouched;
+            // SkyrimRendererScope already serializes immediate-context access.
+            context_multithread_.Reset();
         }
-
-        context1_ = std::move(context1);
-        if (!logged_context_state_ready_) {
-            SKSE::log::info("SkyUltra will isolate and restore the complete D3D11 context state around its overlay pass.");
-            logged_context_state_ready_ = true;
+        if (!logged_context_thread_protection_) {
+            SKSE::log::info(
+                "SkyUltra render synchronization v4: Skyrim renderer lock active; D3D11 immediate-context multithread lock {}.",
+                context_multithread_ ? "already enabled" : "not forced");
+            logged_context_thread_protection_ = true;
         }
-        return true;
     }
 
     bool EnsureDevice(ID3D11Device* device, ID3D11DeviceContext* context)
@@ -2213,8 +2401,6 @@ private:
         blend_state_.Reset();
         cursor_srv_.Reset();
         cursor_texture_.Reset();
-        splash_pixel_.Reset();
-        splash_attempted_ = false;
         software_textures_.clear();
         back_buffer_rtv_.Reset();
         back_buffer_.Reset();
@@ -2242,43 +2428,6 @@ private:
             SKSE::log::warn("SkyUltra could not create its in-game mouse cursor texture.");
             logged_cursor_texture_failure_ = true;
         }
-        return true;
-    }
-
-    bool DrawLoadingBackdrop(const ViewConfig& config, SizeU viewport, LONG viewport_left, LONG viewport_top)
-    {
-        if (!splash_attempted_) {
-            splash_attempted_ = true;
-            const std::uint32_t white = 0xFFFFFFFFU;
-            D3D11_TEXTURE2D_DESC desc{};
-            desc.Width = desc.Height = desc.MipLevels = desc.ArraySize = 1;
-            desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-            desc.SampleDesc.Count = 1;
-            desc.Usage = D3D11_USAGE_IMMUTABLE;
-            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            D3D11_SUBRESOURCE_DATA initial{ &white, 4, 0 };
-            ComPtr<ID3D11Texture2D> pixel;
-            if (SUCCEEDED(device_->CreateTexture2D(&desc, &initial, pixel.GetAddressOf()))) {
-                device_->CreateShaderResourceView(pixel.Get(), nullptr, splash_pixel_.GetAddressOf());
-            }
-        }
-        if (!splash_pixel_) return false;
-        auto bounds = ResolveViewBounds(config, viewport);
-        if (config.clip.width > 0.0F && config.clip.height > 0.0F) {
-            const auto right = std::min(bounds.x+bounds.width,config.clip.x+config.clip.width);
-            const auto bottom = std::min(bounds.y+bounds.height,config.clip.y+config.clip.height);
-            bounds.x = std::max(bounds.x,config.clip.x); bounds.y = std::max(bounds.y,config.clip.y);
-            bounds.width = right-bounds.x; bounds.height = bottom-bounds.y;
-        }
-        const LONG left = viewport_left + static_cast<LONG>(std::lround(std::max(0.0F, bounds.x)));
-        const LONG top = viewport_top + static_cast<LONG>(std::lround(std::max(0.0F, bounds.y)));
-        const LONG right = viewport_left + static_cast<LONG>(std::lround(std::min(static_cast<float>(viewport.width), bounds.x + bounds.width)));
-        const LONG bottom = viewport_top + static_cast<LONG>(std::lround(std::min(static_cast<float>(viewport.height), bounds.y + bounds.height)));
-        if (right <= left || bottom <= top) return false;
-        // The opening video owns the splash. Decoder/page startup gets a plain
-        // backdrop so the retired logo screen cannot flash before or after it.
-        sprite_batch_->Draw(splash_pixel_.Get(), RECT{left,top,right,bottom}, nullptr,
-            DirectX::XMVectorSet(0,0,0,1));
         return true;
     }
 
@@ -2597,7 +2746,7 @@ private:
 
     bool EnsureViewTexture(SoftwareTexture& view, SizeU size)
     {
-        if (size.width == 0 || size.height == 0 || size.width > 4096 || size.height > 4096) {
+        if (size.width == 0 || size.height == 0 || size.width > 8192 || size.height > 8192) {
             return false;
         }
         if (view.texture.Get() != nullptr && view.size.width == size.width && view.size.height == size.height) {
@@ -2658,20 +2807,14 @@ private:
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
-    ComPtr<ID3D11Device> context_state_device_;
     ComPtr<ID3D11DeviceContext> thread_protected_context_;
     ComPtr<ID3D11Multithread> context_multithread_;
-    ComPtr<ID3D11DeviceContext> context_state_context_;
-    ComPtr<ID3D11DeviceContext1> context1_;
-    ComPtr<ID3DDeviceContextState> isolated_context_state_;
     ComPtr<ID3D11Texture2D> back_buffer_;
     ComPtr<ID3D11RenderTargetView> back_buffer_rtv_;
     REX::W32::IDXGISwapChain* back_buffer_swap_chain_{};
     ComPtr<ID3D11BlendState> blend_state_;
     ComPtr<ID3D11Texture2D> cursor_texture_;
     ComPtr<ID3D11ShaderResourceView> cursor_srv_;
-    ComPtr<ID3D11ShaderResourceView> splash_pixel_;
-    bool splash_attempted_{};
     struct RetainedViewFrame {
         ComPtr<ID3D11ShaderResourceView> srv;
         RECT source{};
@@ -2696,8 +2839,7 @@ private:
     bool logged_gpu_timing_unavailable_{};
     bool logged_missing_device_{};
     bool logged_missing_context_{};
-    bool logged_context_state_fallback_{};
-    bool logged_context_state_ready_{};
+    bool logged_state_backup_ready_{};
     bool logged_context_thread_protection_{};
     bool logged_missing_view_{};
     bool logged_device_setup_failure_{};
@@ -2709,7 +2851,7 @@ private:
     bool logged_missing_texture_{};
     bool logged_first_ui_composite_{};
     bool logged_first_present_composite_{};
-    bool logged_missing_ui_target_{};
+    std::atomic<bool> logged_missing_ui_target_{};
     bool logged_active_back_buffer_match_{};
     bool logged_unmatched_back_buffer_{};
     std::uint32_t back_buffer_width_{};
@@ -2724,8 +2866,12 @@ OverlayRenderer g_renderer;
 void DrawUiPassMenuFrame() noexcept
 {
     try {
-        (void)InstallD3D11PresentHook();
-        (void)g_renderer.DrawUiPass();
+        if (g_renderer.DrawUiPass()) {
+            return;
+        }
+        if (g_renderer.NeedsPresentFallback()) {
+            (void)InstallD3D11PresentHook();
+        }
     } catch (const std::exception& exception) {
         SKSE::log::error("SkyUltra UI-pass composite failed: {}", exception.what());
     } catch (...) {
@@ -2899,13 +3045,11 @@ void CompleteOverlayPageLoad(ViewId view, std::uint64_t current_paint_sequence)
             const auto elapsed = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-found->second.started).count();
             SKSE::log::info("SkyUltra page {} signalled interface readiness after {:.3f} ms.", view, elapsed);
         }
-        if (current_paint_sequence <= found->second.min_paint_sequence) {
-            found->second.ready_received = true;
-            found->second.ready_at = std::chrono::steady_clock::now();
-            return;
+        if (current_paint_sequence != UINT64_MAX) {
+            found->second.min_paint_sequence = std::max(found->second.min_paint_sequence, current_paint_sequence);
         }
-        g_page_loads.erase(found);
-        g_active_page_loads.store(static_cast<std::uint32_t>(g_page_loads.size()), std::memory_order_release);
+        found->second.ready_received = true;
+        found->second.ready_at = std::chrono::steady_clock::now();
     }
 }
 
@@ -2918,7 +3062,9 @@ void SetOverlayVisible(bool visible) noexcept
 {
     g_visible.store(visible, std::memory_order_release);
     if (!visible) {
-        CancelFrameworkSplash();
+        if (FrameworkSplashActive()) {
+            CancelFrameworkSplash();
+        }
         g_clear_retained_frames.store(true, std::memory_order_release);
         g_cursor_visible.store(false, std::memory_order_release);
         g_ui_pass_composited.store(false, std::memory_order_release);
@@ -3040,10 +3186,13 @@ bool InstallD3D11PresentHook() noexcept
         return false;
     }
     auto* swap_chain = render_window->swapChain;
+    if (!IsReadableMemory(swap_chain, sizeof(void*))) {
+        return false;
+    }
     const std::scoped_lock hook_lock(g_present_hook_mutex);
     if (g_hooked_swap_chain == swap_chain) {
         auto** object_vtable = reinterpret_cast<void***>(swap_chain);
-        if (*object_vtable == g_hooked_vtable.data()) {
+        if (*object_vtable == HookedVtableEntries()) {
             return true;
         }
         if (!g_logged_present_hook_superseded) {
@@ -3054,8 +3203,11 @@ bool InstallD3D11PresentHook() noexcept
     }
     const bool rebinding = g_hooked_swap_chain != nullptr;
     if (g_hooked_swap_chain != nullptr) {
+        if (!IsReadableMemory(g_hooked_swap_chain, sizeof(void*))) {
+            return false;
+        }
         auto** old_object_vtable = reinterpret_cast<void***>(g_hooked_swap_chain);
-        if (*old_object_vtable != g_hooked_vtable.data()) {
+        if (*old_object_vtable != HookedVtableEntries()) {
             if (!g_logged_present_hook_superseded) {
                 SKSE::log::warn("SkyUltra's previous swap-chain hook was replaced by another hook; "
                                 "it cannot safely rebind to the current swap chain.");
@@ -3084,17 +3236,30 @@ bool InstallD3D11PresentHook() noexcept
     retained_swap_chain->AddRef();
     auto** object_vtable = reinterpret_cast<void***>(swap_chain);
     auto* original_vtable = *object_vtable;
-    if (original_vtable == nullptr || original_vtable[kPresentVtableIndex] == nullptr ||
+    if (original_vtable == nullptr ||
+        !IsReadableMemory(original_vtable + kPresentVtableIndex, sizeof(void*)) ||
+        !IsReadableMemory(original_vtable + kResizeBuffersVtableIndex, sizeof(void*)) ||
+        original_vtable[kPresentVtableIndex] == nullptr ||
         original_vtable[kResizeBuffersVtableIndex] == nullptr) {
         retained_swap_chain->Release();
         return false;
     }
-    std::copy_n(original_vtable, kSwapChainVtableEntries, g_hooked_vtable.begin());
+    g_hooked_vtable.fill(nullptr);
+    if (IsReadableMemory(original_vtable - 1, sizeof(void*))) {
+        g_hooked_vtable[0] = original_vtable[-1];
+    }
+    auto* const hooked_entries = HookedVtableEntries();
+    for (std::size_t index = 0; index < kSwapChainVtableEntries; ++index) {
+        if (!IsReadableMemory(original_vtable + index, sizeof(void*))) {
+            break;
+        }
+        hooked_entries[index] = original_vtable[index];
+    }
     g_original_present = reinterpret_cast<PresentFunction>(original_vtable[kPresentVtableIndex]);
     g_original_resize_buffers =
         reinterpret_cast<ResizeBuffersFunction>(original_vtable[kResizeBuffersVtableIndex]);
-    g_hooked_vtable[kPresentVtableIndex] = reinterpret_cast<void*>(&PresentHook);
-    g_hooked_vtable[kResizeBuffersVtableIndex] = reinterpret_cast<void*>(&ResizeBuffersHook);
+    hooked_entries[kPresentVtableIndex] = reinterpret_cast<void*>(&PresentHook);
+    hooked_entries[kResizeBuffersVtableIndex] = reinterpret_cast<void*>(&ResizeBuffersHook);
 
     DWORD old_protection{};
     if (!VirtualProtect(swap_chain, sizeof(void*), PAGE_READWRITE, &old_protection)) {
@@ -3104,7 +3269,7 @@ bool InstallD3D11PresentHook() noexcept
         return false;
     }
     InterlockedExchangePointer(
-        reinterpret_cast<PVOID volatile*>(object_vtable), g_hooked_vtable.data());
+        reinterpret_cast<PVOID volatile*>(object_vtable), hooked_entries);
     DWORD ignored{};
     VirtualProtect(swap_chain, sizeof(void*), old_protection, &ignored);
 
@@ -3118,19 +3283,32 @@ bool InstallD3D11PresentHook() noexcept
     return true;
 }
 
+bool IsD3D11PresentHookInstalled() noexcept
+{
+    const std::scoped_lock hook_lock(g_present_hook_mutex);
+    if (g_hooked_swap_chain == nullptr || g_original_vtable == nullptr ||
+        !IsReadableMemory(g_hooked_swap_chain, sizeof(void*))) {
+        return false;
+    }
+    auto** object_vtable = reinterpret_cast<void***>(g_hooked_swap_chain);
+    return *object_vtable == HookedVtableEntries();
+}
+
 void ShutdownD3D11PresentHook() noexcept
 {
     ShutdownFrameworkSplash();
     g_performance_lease_until_ms.store(0,std::memory_order_relaxed);
     ResetPerformance(false);
     ClearActorPreviews();
+    ShutdownActorPreviewShaders();
     { const std::scoped_lock lock(g_page_load_mutex); g_page_loads.clear(); }
     { const std::scoped_lock lock(g_splash_tasks_mutex); g_splash_tasks.clear(); }
     g_renderer.ShutdownVR();
     const std::scoped_lock hook_lock(g_present_hook_mutex);
     if (g_hooked_swap_chain != nullptr && g_original_vtable != nullptr) {
         auto** object_vtable = reinterpret_cast<void***>(g_hooked_swap_chain);
-        if (*object_vtable == g_hooked_vtable.data()) {
+        if (IsReadableMemory(g_hooked_swap_chain, sizeof(void*)) &&
+            *object_vtable == HookedVtableEntries()) {
             DWORD old_protection{};
             if (!VirtualProtect(g_hooked_swap_chain, sizeof(void*), PAGE_READWRITE, &old_protection)) {
                 SKSE::log::error("SkyUltra could not restore the swap-chain vtable during shutdown.");

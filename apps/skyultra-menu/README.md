@@ -20,16 +20,12 @@ The app consumes `@skyultra/ui`; reusable screens live in `sdk/ui/src/field`.
 Public `/menu`, `/game`, `/gameplay`, `/chrome`, `/core` and `/widgets` entries let
 other mods use individual surfaces without importing this entire menu.
 
-The nine modules cover Overview, Actor Observatory (tri-vitals, pinning, smart filters/sort, camera presets, Reset Portrait), Inventory (smart filter chips, `V/W` sort, inline renaming, 4 quick loadouts, 7-design theme-synced Book Reader), Character Sheet, Settings (17 themes across 4 families, motion `TabSplash`, glass intensity, UI scale, Book Reader styles), HUD workshop, Performance Lab, Developer Studio (with Modder Workbench: Bridge Playground, TS/JS/Papyrus snippets, visual `manifest.json` builder & `--sky-*` token inspector) and the Guide. Actor
+The nine modules cover Overview, Actor Observatory (tri-vitals, pinning, smart filters/sort, camera presets, Reset Portrait), Inventory (instant `Space` search on open across SWF Inventory, Barter, Containers, Corpse Loot, Pickpocket, Mannequins, Magic & Favorites, Blacksmithing, Arcane Enchanter with List/Grid views, enchantment renaming & skill-100 Super Enchanting batching, World Book Reader following Settings styles & bound Interact key, `Favorites` & smart filter chips, pack weight/encumbrance telemetry, `V/W` sort, inline renaming, 4 quick loadouts, 7-design theme-synced Book Reader), Character Sheet (Markdown & JSON build dossier export), cleanly separated Settings (21 themes including 5 Eye-Comfort Velvet-Slate themes, `SkyColorWheel` cursor picker, motion `TabSplash`, glass intensity, pure Engine & Runtime tab, Super Enchanting unlock at skill 100, Book Reader styles), HUD workshop (configurable **Compass Marker Radius `50m–1000m`** via slider/presets/custom numeric input, 5-style Dragonblade Portrait Crest with custom HP/MP/SP `SkyColorWheel` bars, Safe Guides, Layout JSON import/export), Performance Lab, Developer Studio (Bridge Latency Profiler, Diagnostic Bundle export, and Modder Workbench with Bridge Playground, `SkyColorWheel` accent sandbox, TS/JS/Papyrus snippets, visual `manifest.json` builder & `--sky-*` token inspector) and the Guide. Actor
 and item studios support lighting, camera controls and exports. Creature captures
 retain missing secondary skin-bone mappings, and single-bone skinned props use
-explicit weights when their vertex layout omits skin attributes. Icon/portrait
-caches live under `Data/SkyUltra/Cache/`; generated dynamic actor portraits include
-identity tokens to avoid reusing another creature's image.
+explicit weights when their vertex layout omits skin attributes. Icon, portrait, and asynchronously compiled preview-shader bytecode caches (`ActorPreviewShaders.dxbc.bin`) live under `Data/SkyUltra/Cache/`; generated dynamic actor portraits include identity tokens to avoid reusing another creature's image, and off-thread startup prewarming compiles/loads preview shaders, Ultralight's deferred-context device, and splash frame 0 without blocking cursor movement or drawing an opaque black loading backdrop.
 
-Passive HUDs (including `skyultra_compass.swf`) use the native UI render pass without the carrier's old
-menu-blocking flag. Skyrim menu transitions suppress HUD views, broadcast synchronized `skyultra.menuSession` epochs, and discard cached surfaces cleanly so windows do not overlap across frames. Verify movement, map-marker dialogs and other overlays after
-changing the renderer; a source check is not a visual/runtime test.
+Passive HUDs (including `skyultra_compass.swf`) use the native UI render pass on flat SE/AE with scoped D3D11 state save/restore (no eager DXGI swap-chain `Present` hook or `ClearState`) and skip idle compositor work, preserving dynamic lighting and shader mods without the carrier's old menu-blocking flag. Built-in menus and HUD widgets run at display-aware backend cadence (up to **120 FPS** via CEF's internal scheduler or **30–240 Hz** on Ultralight) unless capped explicitly, with zero-hop shared-memory live heading (`__skyultraReadLiveHeading`), coalescing `skyultra.compassHeading` updates, configurable `50m–1000m` local marker scanning, and Performance Lab end-to-end sampled pipeline telemetry (`p50`/`p95`/`p99`). Skyrim menu transitions suppress HUD views, broadcast synchronized `skyultra.menuSession` epochs, and discard cached surfaces cleanly so windows do not overlap across frames. Verify movement, map-marker dialogs and other overlays after changing the renderer; a source check is not a visual/runtime test.
 
 ## Build and package (developer action)
 
@@ -41,7 +37,7 @@ parameters before packaging or installation.
 The package includes the plugin, `SkyUltra/skyultra.menu/manifest.json`,
 `Files/index.html`, `Files/hud.html`, `Files/SkyUltraBridge.js`, bundled web assets,
 native/Papyrus scripts, the trimmed 16-file CEF runtime (`locales/en-US.pak` only, with `SkyUltraCefSubprocess.pdb` staged separately in `Diagnostics/`), Ultralight assets, and configured menu-launcher
-assets (`9` SWF carriers). Copy the **contents** of its `Data` folder into the chosen mod output,
+assets (`12` SWF carriers). Copy the **contents** of its `Data` folder into the chosen mod output,
 preserving relative paths. The plugin DLL alone is insufficient.
 
 ## Settings and author documentation
@@ -59,3 +55,7 @@ Independent mod pages explicitly install their own shims before legacy scripts.
 See the [SDK walkthrough](../../docs/SDK_GUIDE.md), [native API](../../api/README.md),
 [PrismaUI guide](../../docs/PRISMAUI_MIGRATION.md), [Magelight guide](../../docs/MAGELIGHT_UI_MIGRATION.md),
 and [credits/dependency inventory](../../docs/THIRD_PARTY_LIBRARIES.md).
+
+## Contributors
+
+Special thanks to [**Marty Edwar**](https://www.instagram.com/martinedwar1) (created the opening splash screen, performed its voice-over, and helped with HUD development) and [**StabbyINK**](https://www.nexusmods.com/profile/StabbyINK) (helped with UI/UX design and the development of SkyUltra Menus).

@@ -53,7 +53,7 @@ public:
         config.id_utf8=id.data();config.id_length=static_cast<std::uint32_t>(id.size());
         config.pixel_width=width;config.pixel_height=height;
         config.bounds={0,0,static_cast<float>(width),static_cast<float>(height)};
-        config.opacity=1;config.scale=1;config.max_fps=60;
+        config.opacity=1;config.scale=1;config.max_fps=SKYULTRA_FPS_UNCAPPED;
         config.flags=SKYULTRA_VIEW_ENABLE_JAVASCRIPT | SKYULTRA_VIEW_ENABLE_GAMEPAD |
             (visible?SKYULTRA_VIEW_VISIBLE:0) | (transparent?SKYULTRA_VIEW_TRANSPARENT:0) |
             (click_through?SKYULTRA_VIEW_CLICK_THROUGH:0);

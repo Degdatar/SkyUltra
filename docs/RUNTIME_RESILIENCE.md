@@ -51,7 +51,7 @@ A bridge batch still outstanding after 10 seconds is reported as stalled. Accept
 
 The CEF subprocess observes WebGL context-loss notifications without cancelling or replacing the mod's own event handling. Context loss is not proof of a GPU-process crash: a page can intentionally lose a WebGL context. Developer Studio therefore reports renderer crashes and context-loss signals separately. Chromium's GPU process remains shared, so these counters do not promise complete per-mod GPU isolation.
 
-SkyUltra no longer overrides Chromium's renderer/background-window scheduling with blanket background-priority switches. Hidden views still use `WasHidden`, and explicit Suspend unloads pages so their scripts stop too. CEF's **120 FPS maximum**, normal lower per-view caps, and Ultralight pacing remain unchanged. These changes need in-game profiling; source checks alone do not establish a performance improvement.
+SkyUltra no longer overrides Chromium's renderer/background-window scheduling with blanket background-priority switches. Hidden views still use `WasHidden`, staggered one-at-a-time priming yields immediately to visible views and menu opens, and explicit Suspend unloads pages so their scripts stop too. CEF uses internal Viz scheduling (`external_begin_frame_enabled = FALSE`) targeting the active display refresh rate capped at **120 FPS**, Ultralight drives visual presentation from Skyrim's render cadence (`30–240` Hz) with bounded command-list replay alongside its `8,333`-microsecond idle worker cadence, and both engines honor explicit lower per-view caps. These changes need in-game profiling; source checks alone do not establish a performance improvement.
 
 ## Compact CEF runtime layout
 

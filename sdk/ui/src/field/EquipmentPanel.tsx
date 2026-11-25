@@ -108,6 +108,15 @@ export function EquipmentSelection({ player, selected, enabled, bridge, obscured
 }): React.JSX.Element {
   const isEnchanted = Boolean(selected?.enchanted || selected?.enchantments?.length);
   const enchantTitle = selected?.enchantmentName || selected?.enchantments?.map(e => e.name).join(' · ') || 'Enchanted';
+  const ingredientEffects = Array.isArray(selected?.ingredientEffects) && selected.ingredientEffects.length > 0
+    ? selected.ingredientEffects.slice(0, 4)
+    : null;
+  const ingredientTotal = ingredientEffects
+    ? (typeof selected?.totalEffectCount === 'number' && selected.totalEffectCount > 0 ? selected.totalEffectCount : ingredientEffects.length)
+    : 0;
+  const ingredientKnown = ingredientEffects
+    ? (typeof selected?.knownEffectCount === 'number' ? selected.knownEffectCount : ingredientEffects.filter(e => e.known).length)
+    : 0;
   const useAction = resolveItemUseAction(selected);
   const canEquip = Boolean(selected?.equipSlots?.length);
   const canCharge = Boolean(selected && (selected.canCharge || selected.enchantmentCharge !== undefined || (selected.category === 'weapon' && isEnchanted)));
@@ -122,7 +131,7 @@ export function EquipmentSelection({ player, selected, enabled, bridge, obscured
   const dmgDelta = hasDamage && compareBase && typeof compareBase.damage === 'number' ? Math.round(selected!.damage! - compareBase.damage) : null;
   const armorDelta = hasArmor && compareBase && typeof compareBase.armorRating === 'number' ? Math.round(selected!.armorRating! - compareBase.armorRating) : null;
   return <div className={'equipment-selection' + (selected?.equipped ? ' is-equipped' : '') + (isEnchanted ? ' is-enchanted' : '')}>
-    <div className="selection-art" aria-hidden="true">{selected ? <ItemThumbnail item={selected} bridge={bridge} paused={obscured} /> : <EquipmentGlyph slot="mainHand" />}{selected && isEnchanted && <span className="selection-art__enchant-badge" title={enchantTitle}><Icon name="flame" size={12} /></span>}</div>
+    <div className="selection-art" aria-hidden="true">{selected ? <ItemThumbnail item={selected} bridge={bridge} paused={obscured} /> : <EquipmentGlyph slot="mainHand" />}{selected && isEnchanted && <span className="selection-art__enchant-badge" title={enchantTitle}><Icon name="enchant" size={12} /></span>}</div>
     <div className="selection-copy">
       <div className="selection-copy__top">
         <span className="eyebrow">
@@ -135,25 +144,35 @@ export function EquipmentSelection({ player, selected, enabled, bridge, obscured
           )}
           {isEnchanted && (
             <em className="selection-enchant-pill">
-              <Icon name="flame" size={10} />
+              <Icon name="enchant" size={10} />
               ENCHANTED
               {selected?.enchantmentCharge !== undefined ? ` · ${selected.enchantmentCharge}%` : ''}
               {enchantCount > 1 ? ` · ${enchantCount} EFFECTS` : ''}
             </em>
           )}
+          {ingredientEffects && (
+            <em className={`selection-ingredient-pill${ingredientKnown >= ingredientTotal ? ' is-complete' : ingredientKnown === 0 ? ' is-unlearned' : ''}`}>
+              <Icon name="ingredient" size={10} />
+              {ingredientKnown === 0
+                ? `UNLEARNED · 0/${ingredientTotal}`
+                : ingredientKnown >= ingredientTotal
+                  ? `ALL LEARNED · ${ingredientKnown}/${ingredientTotal}`
+                  : `${ingredientKnown}/${ingredientTotal} LEARNED`}
+            </em>
+          )}
         </span>
         {selected && (
           <div className="selection-properties">
-            {hasDamage && <span><Icon name="target" size={11} /><strong>{Math.round(selected.damage!)}</strong><small>DMG{dmgDelta ? <em className={dmgDelta > 0 ? 'item-delta-pos' : 'item-delta-neg'}> ({dmgDelta > 0 ? '+' : ''}{dmgDelta})</em> : null}</small></span>}
+            {hasDamage && <span><Icon name="sword" size={11} /><strong>{Math.round(selected.damage!)}</strong><small>DMG{dmgDelta ? <em className={dmgDelta > 0 ? 'item-delta-pos' : 'item-delta-neg'}> ({dmgDelta > 0 ? '+' : ''}{dmgDelta})</em> : null}</small></span>}
             {hasArmor && <span><Icon name="shield" size={11} /><strong>{Math.round(selected.armorRating!)}</strong><small>{selected.armorWeightClass === 'heavy' ? 'HEAVY AR' : selected.armorWeightClass === 'light' ? 'LIGHT AR' : 'ARMOR'}{armorDelta ? <em className={armorDelta > 0 ? 'item-delta-pos' : 'item-delta-neg'}> ({armorDelta > 0 ? '+' : ''}{armorDelta})</em> : null}</small></span>}
             <span><Icon name="gold" size={11} /><strong>{selected.value.toLocaleString()}</strong><small>VALUE</small></span>
-            <span><strong>{selected.weight}</strong><small>WEIGHT</small></span>
+            <span><Icon name="weight" size={11} /><strong>{selected.weight}</strong><small>WEIGHT</small></span>
             <span><strong>{selected.count.toLocaleString()}</strong><small>OWNED</small></span>
           </div>
         )}
       </div>
       <div className="selection-copy__headline">
-        <h3 title={selected?.name}>{isEnchanted && <Icon name="flame" size={13} />}{selected?.name ?? 'Discover what you carry'}</h3>
+        <h3 title={selected?.name}>{isEnchanted && <Icon name="enchant" size={13} />}{selected?.name ?? 'Discover what you carry'}</h3>
         <span className="selection-category">
           {typeDetail ?? 'Choose an item from your pack'}
           {selected?.speed ? ` · Speed ${selected.speed}` : ''}
@@ -169,17 +188,34 @@ export function EquipmentSelection({ player, selected, enabled, bridge, obscured
         <div className="selection-enchantments" aria-label="Item enchantments" tabIndex={0}>
           {selected.enchantments?.length ? selected.enchantments.map((eff, idx) => (
             <div className="selection-enchantment" key={`${eff.name}-${idx}`}>
-              <Icon name="flame" size={11} />
+              <Icon name="enchant" size={11} />
               <strong>{eff.name}</strong>
               {eff.description && <span>{eff.description}</span>}
             </div>
           )) : (
             <div className="selection-enchantment">
-              <Icon name="flame" size={11} />
+              <Icon name="enchant" size={11} />
               <strong>{selected.enchantmentName || 'Enchanted Item'}</strong>
               <span>Arcane enchantment active</span>
             </div>
           )}
+        </div>
+      )}
+      {selected && ingredientEffects && (
+        <div className="selection-ingredient-effects" aria-label="Ingredient effects">
+          {ingredientEffects.map((eff, idx) => (
+            <div
+              key={`${selected.id}-sel-ing-${eff.slot}-${idx}`}
+              title={eff.known ? `${eff.name || 'Alchemical Effect'} (Learned)` : 'Eat or mix at an Alchemy Lab to learn'}
+              className={`selection-ingredient-effect${
+                eff.known ? ` is-learned ${eff.isHostile || eff.isDetrimental ? 'is-poison' : 'is-potion'}` : ' is-unlearned'
+              }`}
+            >
+              {eff.known ? <Icon name="check" size={10} /> : <em>?</em>}
+              <strong>{eff.known ? (eff.name || 'Alchemical Effect') : 'Unknown Effect'}</strong>
+              <span className="selection-ingredient-state">{eff.known ? 'Learned' : 'Unlearned'}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -206,7 +242,7 @@ export function EquipmentSelection({ player, selected, enabled, bridge, obscured
       )}
       {canCharge && (
         <button type="button" className="control-button selection-action-btn selection-action-btn--charge" disabled={!enabled} onClick={() => onItemAction?.(selected, 'charge', 1)} title="Recharge this enchanted item using a filled Soul Gem">
-          <Icon name="flame" size={11} /> Charge
+          <Icon name="enchant" size={11} /> Charge
         </button>
       )}
       {canDrop && (
@@ -250,7 +286,7 @@ export function EquipmentPanel({
   eyebrowOverride,
   subtitleOverride,
   hideVitals = false,
-  initialMotion = true,
+  initialMotion = false,
   hideStudioControls = false,
   onSelect,
   onChange,
@@ -272,8 +308,19 @@ export function EquipmentPanel({
   onSelect(item: Item): void;
   onChange(item: Item, slot: SkyUltraEquipmentSlot, unequip?: boolean): void;
 }): React.JSX.Element {
+  const isHiddenSlotItem = (candidate: Item | null | undefined): boolean => {
+    const lower = (candidate?.name ?? '').trim().toLowerCase();
+    return (
+      !lower ||
+      lower.startsWith('<missing name') ||
+      lower === 'missing name' ||
+      lower.includes('genitalcover') ||
+      lower.includes('genital cover')
+    );
+  };
   const slotButton = ({ id, label, biped }: typeof equipmentSlots[number]): React.JSX.Element => {
-    const item = player?.equipment[id] ?? null;
+    const rawItem = player?.equipment[id] ?? null;
+    const item = rawItem && !isHiddenSlotItem(rawItem) ? rawItem : null;
     const itemEnchanted = Boolean(item?.enchanted || item?.enchantments?.length);
     const fits = fitsEquipmentSlot(dragging ?? selected, id);
     const meta = formatItemCombatMeta(item);
@@ -281,14 +328,15 @@ export function EquipmentPanel({
       <button type="button" className="equipment-slot" data-equip-slot={id} disabled={busy || obscured} aria-label={label + ': ' + (item?.name ?? 'Empty') + (fits ? '. Equip selected item' : '')}
         title={label + (biped ? ' · slot ' + biped : '') + '\n' + (item?.name ?? 'Empty') + (meta ? '\n' + meta : '') + (fits ? '\nEquip ' + (dragging ?? selected)?.name : '')}
         onClick={() => { if (selected && fits) onChange(selected, id); else if (item) onSelect(item); }}>
-        <span className="equipment-slot__label">{label}{biped && <em>{biped}</em>}</span><span className="equipment-slot__bezel"><span className="equipment-slot__art"><EquipmentGlyph slot={id} />{item && <ItemThumbnail item={item} bridge={bridge} paused={obscured} />}{itemEnchanted && <span className="equipment-slot__enchant" title={item?.enchantmentName || 'Enchanted'}><Icon name="flame" size={9} /></span>}</span></span>
+        <span className="equipment-slot__label">{label}{biped && <em>{biped}</em>}</span><span className="equipment-slot__bezel"><span className="equipment-slot__art"><EquipmentGlyph slot={id} />{item && <ItemThumbnail item={item} bridge={bridge} paused={obscured} />}{itemEnchanted && <span className="equipment-slot__enchant" title={item?.enchantmentName || 'Enchanted'}><Icon name="enchant" size={9} /></span>}</span></span>
         <strong>{item?.name ?? 'Not equipped'}</strong>
+        <i className="equipment-slot__bar" aria-hidden="true" />
       </button>
       {item && !!item.equipSlots?.length && <button className="equipment-unequip" disabled={busy || obscured || !bridge} onClick={() => onChange(item, id, true)} aria-label={'Unequip ' + item.name + ' from ' + label} title={'Unequip ' + item.name}>×</button>}
     </div>;
   };
   const actor: Npc = actorOverride ?? { referenceId: '20', baseFormId: '7', name: player?.playerName ?? 'Player', race: '', sex: '' };
-  const occupied = equipmentSlots.filter(slot => !!player?.equipment[slot.id]).length;
+  const occupied = equipmentSlots.filter(slot => !isHiddenSlotItem(player?.equipment[slot.id])).length;
   const canDropOnModel = fitsEquipmentSlot(dragging ?? selected, 'auto');
   return <section className="surface outfit-panel" aria-label="Outfit and equipment">
     <div className="outfit-heading"><div><span className="eyebrow">{eyebrowOverride ?? 'CHARACTER EQUIPMENT'}</span><h2 title={actorOverride?.name ?? player?.playerName}>{actorOverride?.name ?? player?.playerName ?? 'Your character'}</h2><p>{subtitleOverride ?? player?.location ?? 'Your journey, your equipment'}<span>·</span>{occupied} / {equipmentSlots.length} slots equipped</p></div>{!actorOverride && <span className="outfit-level"><small>LEVEL</small><strong>{player?.level ?? '—'}</strong></span>}</div>
@@ -310,6 +358,6 @@ export function EquipmentPanel({
       }} /> : <div className="outfit-placeholder">{actorOverride ? 'Mannequin model appears inside Skyrim.' : 'Player model appears inside Skyrim.'}</div>}</div>
       <div className="equipment-rail equipment-rail--accessories">{equipmentSlots.slice(5).map(slotButton)}</div>
     </div>
-    <div className="outfit-stats"><span><Icon name="shield" size={17} /><small>ARMOR RATING</small><strong>{Math.round(player?.armorRating ?? 0).toLocaleString()}</strong></span><span><Icon name="inventory" size={17} /><small>CARRY WEIGHT</small><strong>{Math.round(player?.carryWeight?.current ?? 0).toLocaleString()} <em>/ {Math.round(player?.carryWeight?.max ?? 0).toLocaleString()}</em></strong></span><span><Icon name="gold" size={17} /><small>GOLD</small><strong>{player?.gold.toLocaleString() ?? '—'}</strong></span></div>
+    <div className="outfit-stats"><span><Icon name="shield" size={17} /><small>ARMOR RATING</small><strong>{Math.round(player?.armorRating ?? 0).toLocaleString()}</strong></span><span><Icon name="weight" size={17} /><small>CARRY WEIGHT</small><strong>{Math.round(player?.carryWeight?.current ?? 0).toLocaleString()} <em>/ {Math.round(player?.carryWeight?.max ?? 0).toLocaleString()}</em></strong></span><span><Icon name="gold" size={17} /><small>GOLD</small><strong>{player?.gold.toLocaleString() ?? '—'}</strong></span></div>
   </section>;
 }

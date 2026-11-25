@@ -50,7 +50,12 @@ function isValidNamedItem(item: Item | null | undefined): item is Item {
   const trimmed = item.name?.trim() ?? '';
   if (!trimmed) return false;
   const lower = trimmed.toLowerCase();
-  return !lower.startsWith('<missing name') && lower !== 'missing name';
+  return (
+    !lower.startsWith('<missing name') &&
+    lower !== 'missing name' &&
+    !lower.includes('genitalcover') &&
+    !lower.includes('genital cover')
+  );
 }
 
 const EMPTY_EQUIPMENT: Player['equipment'] = {
@@ -72,7 +77,7 @@ export default function MannequinPage({
   bridge,
   obscured = false,
   displayMode = 'full',
-  pauseWorld = false,
+  pauseWorld = true,
   onChangeDisplayMode,
   onTogglePauseWorld,
   onClose,
@@ -97,11 +102,24 @@ export default function MannequinPage({
   const action = useRef<AbortController | null>(null);
   const drag = useRef<Drag | null>(null);
   const suppressClick = useRef(false);
+  const hoverSlotRef = useRef('');
+  const lastDragEventRef = useRef<unknown>(null);
+  const lastHitPointRef = useRef({ x: -1, y: -1 });
   const ghostRef = useRef<HTMLDivElement>(null);
   const ghostPoint = useRef({ x: 0, y: 0 });
   const dragImage = useRef<string | undefined>(undefined);
 
   useEffect(() => () => action.current?.abort(), [bridge]);
+  useEffect(() => {
+    if (obscured) {
+      drag.current = null;
+      lastDragEventRef.current = null;
+      lastHitPointRef.current = { x: -1, y: -1 };
+      hoverSlotRef.current = '';
+      setDragging(null);
+      setHoverSlot('');
+    }
+  }, [obscured]);
   useEffect(() => {
     setOffset(0);
   }, [sourceTab, query, category, sort]);
@@ -244,6 +262,8 @@ export default function MannequinPage({
     setSlotSelection(null);
     if (!locked.current) setActionMessage('');
   };
+  const selectItemRef = useRef(selectItem);
+  selectItemRef.current = selectItem;
 
   async function changeMannequinEquipment(item: Item, slot: SkyUltraEquipmentSlot, unequip = false): Promise<void> {
     if (!game || obscured || locked.current || !mannequinRefId) return;
@@ -354,6 +374,9 @@ export default function MannequinPage({
     const current = drag.current;
     if (!current || current.pointer !== pointerId) return;
     drag.current = null;
+    lastDragEventRef.current = null;
+    lastHitPointRef.current = { x: -1, y: -1 };
+    hoverSlotRef.current = '';
     setDragging(null);
     setHoverSlot('');
     try {
@@ -370,36 +393,59 @@ export default function MannequinPage({
       setActionMessage(target ? 'This item does not fit that mannequin slot.' : 'Drop the item onto the mannequin or a matching equipment slot.');
     }
   };
+  const endDragAtPointRef = useRef(endDragAtPoint);
+  endDragAtPointRef.current = endDragAtPoint;
 
   const endDrag = (event: React.PointerEvent<HTMLButtonElement>, cancel = false): void => {
     endDragAtPoint(event.pointerId, event.clientX, event.clientY, cancel, event.currentTarget);
   };
 
+  const handleDragMove = (
+    pointerId: number,
+    clientX: number,
+    clientY: number,
+    nativeEvent?: unknown,
+    preventDefaultFn?: () => void,
+  ): void => {
+    if (nativeEvent != null && lastDragEventRef.current === nativeEvent) return;
+    const current = drag.current;
+    if (!current || current.pointer !== pointerId) return;
+    if (!current.active && Math.hypot(clientX - current.x, clientY - current.y) < 6) return;
+    lastDragEventRef.current = nativeEvent ?? null;
+    const starting = !current.active;
+    current.active = true;
+    preventDefaultFn?.();
+    if (starting) {
+      setDragging(current.item);
+      selectItemRef.current(current.item);
+    }
+    ghostPoint.current = itemDragPosition(clientX, clientY, window.innerWidth, window.innerHeight);
+    if (ghostRef.current) {
+      ghostRef.current.style.transform = `translate3d(${ghostPoint.current.x}px,${ghostPoint.current.y}px,0)`;
+    }
+    const lastHit = lastHitPointRef.current;
+    if (starting || Math.abs(clientX - lastHit.x) >= 3 || Math.abs(clientY - lastHit.y) >= 3) {
+      lastHitPointRef.current = { x: clientX, y: clientY };
+      const nextSlot = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('[data-equip-slot]')?.dataset.equipSlot ?? '';
+      if (nextSlot !== hoverSlotRef.current) {
+        hoverSlotRef.current = nextSlot;
+        setHoverSlot(nextSlot);
+      }
+    }
+  };
+
   useEffect(() => {
     const onWindowPointerMove = (event: PointerEvent): void => {
-      const current = drag.current;
-      if (!current || current.pointer !== event.pointerId) return;
-      if (!current.active && Math.hypot(event.clientX - current.x, event.clientY - current.y) < 6) return;
-      const starting = !current.active;
-      current.active = true;
-      if (starting) {
-        setDragging(current.item);
-        selectItem(current.item);
-      }
-      ghostPoint.current = itemDragPosition(event.clientX, event.clientY, window.innerWidth, window.innerHeight);
-      if (ghostRef.current) {
-        ghostRef.current.style.transform = `translate3d(${ghostPoint.current.x}px,${ghostPoint.current.y}px,0)`;
-      }
-      setHoverSlot(document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-equip-slot]')?.dataset.equipSlot ?? '');
+      handleDragMove(event.pointerId, event.clientX, event.clientY, event);
     };
     const onWindowPointerUp = (event: PointerEvent): void => {
       if (drag.current && drag.current.pointer === event.pointerId) {
-        endDragAtPoint(event.pointerId, event.clientX, event.clientY, false);
+        endDragAtPointRef.current(event.pointerId, event.clientX, event.clientY, false);
       }
     };
     const onWindowPointerCancel = (event: PointerEvent): void => {
       if (drag.current && drag.current.pointer === event.pointerId) {
-        endDragAtPoint(event.pointerId, event.clientX, event.clientY, true);
+        endDragAtPointRef.current(event.pointerId, event.clientX, event.clientY, true);
       }
     };
     window.addEventListener?.('pointermove', onWindowPointerMove, { passive: true });
@@ -410,7 +456,7 @@ export default function MannequinPage({
       window.removeEventListener?.('pointerup', onWindowPointerUp);
       window.removeEventListener?.('pointercancel', onWindowPointerCancel);
     };
-  });
+  }, []);
 
   // Mark items equipped on the mannequin so EquipmentSelection shows Equip / Unequip accurately
   const selectedForMannequin = useMemo(() => {
@@ -609,23 +655,11 @@ export default function MannequinPage({
                       ghostPoint.current = itemDragPosition(event.clientX, event.clientY, window.innerWidth, window.innerHeight);
                       drag.current = { item, pointer: event.pointerId, x: event.clientX, y: event.clientY, active: false };
                     }}
-                    onPointerMove={event => {
-                      const current = drag.current;
-                      if (!current || current.pointer !== event.pointerId) return;
-                      if (!current.active && Math.hypot(event.clientX - current.x, event.clientY - current.y) < 6) return;
-                      const starting = !current.active;
-                      current.active = true;
-                      event.preventDefault();
-                      if (starting) {
-                        setDragging(item);
-                        selectItem(item);
-                      }
-                      ghostPoint.current = itemDragPosition(event.clientX, event.clientY, window.innerWidth, window.innerHeight);
-                      if (ghostRef.current) {
-                        ghostRef.current.style.transform = `translate3d(${ghostPoint.current.x}px,${ghostPoint.current.y}px,0)`;
-                      }
-                      setHoverSlot(document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-equip-slot]')?.dataset.equipSlot ?? '');
-                    }}
+                    onPointerMove={event =>
+                      handleDragMove(event.pointerId, event.clientX, event.clientY, event.nativeEvent, () =>
+                        event.preventDefault(),
+                      )
+                    }
                     onPointerUp={event => endDrag(event)}
                     onPointerCancel={event => endDrag(event, true)}
                   >

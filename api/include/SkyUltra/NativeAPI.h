@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Use backend-default cadence (CEF remains capped at 120 FPS). 0 keeps the 60 FPS API default. */
+/* Use active display refresh cadence (clamped to 1-120 FPS on CEF, 30-240 Hz on Ultralight). 0 uses the same display-aware default. */
 #define SKYULTRA_FPS_UNCAPPED UINT32_MAX
 
 #if defined(_WIN32)
@@ -86,7 +86,7 @@ typedef struct SkyUltraViewConfigV1 {
     float opacity;
     float scale;
     int32_t z_index;
-    /* 0 keeps 60 FPS; positive caps are honored. CEF never exceeds 120 FPS, including the sentinel. */
+    /* 0 or SKYULTRA_FPS_UNCAPPED targets the active display refresh rate; positive values cap per-view FPS (clamped to 1-120 in CEF, 1-240 in Ultralight). */
     uint32_t max_fps;
     uint32_t flags;
     uint32_t layer;

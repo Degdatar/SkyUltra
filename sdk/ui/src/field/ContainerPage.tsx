@@ -87,7 +87,12 @@ function isValidNamedItem(item: Item | null | undefined): item is Item {
   const trimmed = item.name?.trim() ?? '';
   if (!trimmed) return false;
   const lower = trimmed.toLowerCase();
-  return !lower.startsWith('<missing name') && lower !== 'missing name';
+  return (
+    !lower.startsWith('<missing name') &&
+    lower !== 'missing name' &&
+    !lower.includes('genitalcover') &&
+    !lower.includes('genital cover')
+  );
 }
 
 export default function ContainerPage({
@@ -96,7 +101,7 @@ export default function ContainerPage({
   obscured = false,
   variant = 'container',
   displayMode = 'half',
-  pauseWorld = false,
+  pauseWorld = true,
   onChangeDisplayMode,
   onTogglePauseWorld,
   onPlayerChanged,

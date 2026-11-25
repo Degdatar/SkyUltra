@@ -39,6 +39,45 @@ export function focusMenuSearch(root: ParentNode = document): boolean {
   for (const input of Array.from(inputs)) {
     if (input.disabled || input.hidden || !input.getClientRects().length) continue;
     input.focus();
+    if (typeof input.select === 'function') input.select();
+    if (typeof input.addEventListener === 'function') {
+      let timer = 0;
+      let active = true;
+      const cleanup = (): void => {
+        if (!active) return;
+        active = false;
+        if (timer) clearTimeout(timer);
+        input.removeEventListener('beforeinput', onBeforeInput, true);
+        input.removeEventListener('keypress', onKeyPress, true);
+        input.removeEventListener('keyup', onKeyUp, true);
+        input.removeEventListener('blur', cleanup, true);
+      };
+      const onBeforeInput = (ev: Event): void => {
+        if (!active) return;
+        const ie = ev as InputEvent;
+        if (ie.data === ' ' && (!ie.inputType || ie.inputType === 'insertText')) {
+          ev.preventDefault();
+          cleanup();
+        } else if (ie.data) {
+          cleanup();
+        }
+      };
+      const onKeyPress = (ev: Event): void => {
+        if (!active) return;
+        const ke = ev as KeyboardEvent;
+        if (ke.key === ' ') ev.preventDefault();
+      };
+      const onKeyUp = (ev: Event): void => {
+        if (!active) return;
+        const ke = ev as KeyboardEvent;
+        if (ke.key === ' ' || ke.code === 'Space') cleanup();
+      };
+      input.addEventListener('beforeinput', onBeforeInput, true);
+      input.addEventListener('keypress', onKeyPress, true);
+      input.addEventListener('keyup', onKeyUp, true);
+      input.addEventListener('blur', cleanup, true);
+      timer = setTimeout(cleanup, 120) as unknown as number;
+    }
     return true;
   }
   return false;

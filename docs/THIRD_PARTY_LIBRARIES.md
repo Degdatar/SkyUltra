@@ -1,6 +1,13 @@
 # Credits and third-party libraries
 
-Thank you to every maintainer, author and contributor whose work makes SkyUltra possible. Special thanks to **CEF/Chromium**, **Ultralight/WebKit**, **SKSE**, and **CommonLibSSE/CommonLibSSE-NG** for the browser and Skyrim foundations.
+Thank you to every contributor, maintainer, and author whose work makes SkyUltra possible. Special thanks to **CEF/Chromium**, **Ultralight/WebKit**, **SKSE**, and **CommonLibSSE/CommonLibSSE-NG** for the browser and Skyrim foundations.
+
+## Project contributors
+
+| Contributor | Contributions | Link |
+| --- | --- | --- |
+| **Marty Edwar** | Created the SkyUltra opening splash screen, performed its voice-over, and helped with HUD development. | [`instagram.com/martinedwar1`](https://www.instagram.com/martinedwar1) |
+| **StabbyINK** | Helped with UI/UX design and the development of SkyUltra Menus. | [`nexusmods.com/profile/StabbyINK`](https://www.nexusmods.com/profile/StabbyINK) |
 
 This inventory describes the checked-in CMake/vcpkg configuration, frontend package manifests and npm lockfiles. It distinguishes runtime libraries, SDK/UI dependencies and authoring tools. These are project dependencies, **not a list of extra mods players must install**. SkyUI, ENB and shader mods are not required to run SkyUltra.
 

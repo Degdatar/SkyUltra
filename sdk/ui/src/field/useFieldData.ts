@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import {
   getSharedGameSnapshot,
   readSkyUltraUiPrefs,
@@ -7,17 +7,117 @@ import {
   type SkyWebViewAPI,
 } from "@skyultra/sdk";
 import type { ActorResponse, Npc, Palette, Player, Route, Run, SearchResponse } from "./model.js";
+
+function areCompassMarkerIdentitiesEqual(
+  a: Player["compassMarkers"] | undefined,
+  b: Player["compassMarkers"] | undefined,
+): boolean {
+  if (a === b) return true;
+  const listA = a ?? [];
+  const listB = b ?? [];
+  if (listA.length !== listB.length) return false;
+  for (let i = 0; i < listA.length; i++) {
+    const ma = listA[i];
+    const mb = listB[i];
+    if (
+      ma.id !== mb.id ||
+      ma.kind !== mb.kind ||
+      ma.name !== mb.name ||
+      ma.subtitle !== mb.subtitle ||
+      ma.discovered !== mb.discovered ||
+      ma.hostile !== mb.hostile ||
+      ma.elevation !== mb.elevation ||
+      Math.round(ma.distance / 2) !== Math.round(mb.distance / 2)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isHeadingOnlyHudUpdate(prev: Player, next: Player): boolean {
+  return (
+    prev.compassMarkers === next.compassMarkers &&
+    prev.location === next.location &&
+    prev.level === next.level &&
+    prev.gold === next.gold &&
+    prev.armorRating === next.armorRating &&
+    prev.playerName === next.playerName &&
+    prev.calendar === next.calendar &&
+    prev.carryWeight === next.carryWeight &&
+    prev.equipment === next.equipment &&
+    prev.activeEffects === next.activeEffects &&
+    prev.activeEffectCount === next.activeEffectCount &&
+    prev.inventory === next.inventory &&
+    prev.quests === next.quests &&
+    prev.followers === next.followers &&
+    prev.health.current === next.health.current &&
+    prev.health.max === next.health.max &&
+    prev.stamina.current === next.stamina.current &&
+    prev.stamina.max === next.stamina.max &&
+    prev.magicka.current === next.magicka.current &&
+    prev.magicka.max === next.magicka.max
+  );
+}
+
+function isAmbientLiveWorldDrift(prev: Player, next: Player): boolean {
+  return (
+    prev.available === next.available &&
+    prev.playerName === next.playerName &&
+    prev.level === next.level &&
+    prev.gold === next.gold &&
+    prev.armorRating === next.armorRating &&
+    prev.location === next.location &&
+    prev.equipment === next.equipment &&
+    prev.inventory === next.inventory &&
+    prev.inventoryTypeCount === next.inventoryTypeCount &&
+    prev.inventoryItemCount === next.inventoryItemCount &&
+    prev.quests === next.quests &&
+    prev.followers === next.followers &&
+    prev.skills === next.skills &&
+    prev.activeEffectCount === next.activeEffectCount
+  );
+}
+
+function isHudFastMotionOnlyUpdate(prev: Player, next: Player): boolean {
+  return (
+    prev.location === next.location &&
+    prev.level === next.level &&
+    prev.gold === next.gold &&
+    prev.armorRating === next.armorRating &&
+    prev.playerName === next.playerName &&
+    prev.calendar === next.calendar &&
+    prev.carryWeight === next.carryWeight &&
+    prev.equipment === next.equipment &&
+    prev.activeEffects === next.activeEffects &&
+    prev.activeEffectCount === next.activeEffectCount &&
+    prev.inventory === next.inventory &&
+    prev.quests === next.quests &&
+    prev.followers === next.followers &&
+    prev.health.current === next.health.current &&
+    prev.health.max === next.health.max &&
+    prev.magicka.current === next.magicka.current &&
+    prev.magicka.max === next.magicka.max &&
+    prev.stamina.max === next.stamina.max &&
+    Math.abs(prev.stamina.current - next.stamina.current) <= 2 &&
+    areCompassMarkerIdentitiesEqual(prev.compassMarkers, next.compassMarkers)
+  );
+}
+
 export function usePlayer(
   bridge: SkyWebViewAPI,
   busy: MutableRefObject<unknown>,
   scope: "full" | "hud" = "full",
   topics?: readonly SkyUltraGameTopic[],
+  skipHeadingOnlyCommits = false,
 ) {
   const [player, setPlayer] = useState<Player | null>(() => getSharedGameSnapshot(bridge));
   const [status, setStatus] = useState(() =>
     getSharedGameSnapshot(bridge)?.available ? "Connected" : "Reading character data…",
   );
   const [pollMs, setPollMs] = useState<number>(() => readSkyUltraUiPrefs().pollIntervalMs);
+  const lastCommittedRef = useRef<Player | null>(getSharedGameSnapshot(bridge));
+  const lastHeadingCommitMsRef = useRef<number>(0);
   useEffect(() => {
     const onPrefs = (): void => setPollMs(readSkyUltraUiPrefs().pollIntervalMs);
     window.addEventListener("skyultra:ui-prefs", onPrefs);
@@ -31,21 +131,51 @@ export function usePlayer(
       (event) => {
         if (busy.current) return;
         if (!event.available) {
+          lastCommittedRef.current = null;
           setPlayer(null);
           setStatus("Character data is unavailable.");
           return;
         }
-        setPlayer(event.snapshot);
+        const next = event.snapshot;
+        if (lastCommittedRef.current) {
+          const now = performance.now();
+          if (scope === "hud") {
+            const headingOnly = isHeadingOnlyHudUpdate(lastCommittedRef.current, next);
+            if (headingOnly && skipHeadingOnlyCommits) {
+              return;
+            }
+            const fastMotionOnly = !headingOnly && isHudFastMotionOnlyUpdate(lastCommittedRef.current, next);
+            const minIntervalMs = headingOnly ? 350 : fastMotionOnly ? 280 : 0;
+            if (minIntervalMs > 0 && now - lastHeadingCommitMsRef.current < minIntervalMs) {
+              return;
+            }
+          } else if (isHeadingOnlyHudUpdate(lastCommittedRef.current, next)) {
+            let diff = Math.abs((next.heading ?? 0) - (lastCommittedRef.current.heading ?? 0));
+            if (diff > 180) diff = 360 - diff;
+            if (now - lastHeadingCommitMsRef.current < 1500 || diff < 5) {
+              return;
+            }
+          } else if (isAmbientLiveWorldDrift(lastCommittedRef.current, next)) {
+            if (now - lastHeadingCommitMsRef.current < 3000) {
+              return;
+            }
+          }
+          lastHeadingCommitMsRef.current = now;
+        } else {
+          lastHeadingCommitMsRef.current = performance.now();
+        }
+        lastCommittedRef.current = next;
+        setPlayer(next);
         setStatus("Connected");
       },
       {
         scope,
         topics,
-        intervalMs: scope === "hud" ? 10 : Math.max(250, pollMs),
+        intervalMs: scope === "hud" ? 8 : Math.max(250, pollMs),
       },
     );
     return () => subscription.unsubscribe();
-  }, [bridge, busy, scope, pollMs, topicsKey]);
+  }, [bridge, busy, scope, pollMs, topicsKey, skipHeadingOnlyCommits]);
   return { player, status };
 }
 export function useActors(bridge: SkyWebViewAPI, route: Route, radius: number, mode: "nearby" | "followers" | "search", query: string) {
@@ -66,7 +196,7 @@ export function useActors(bridge: SkyWebViewAPI, route: Route, radius: number, m
 }
 let runSequence=0;
 function summarize(frames: number[], engine: string, items: number, theme: Palette): Run { const sorted = [...frames].sort((a, b) => a - b); const averageMs = frames.reduce((a, b) => a + b, 0) / Math.max(1, frames.length); return { id:String(++runSequence),engine, items, theme, viewport:{width:window.innerWidth,height:window.innerHeight,devicePixelRatio:window.devicePixelRatio||1}, averageFps: 1000 / Math.max(.01, averageMs), averageMs, p95Ms: sorted[Math.max(0, Math.ceil(sorted.length * .95) - 1)] ?? 0, slowFrames: frames.filter((frame) => frame > 16.7).length, frames: frames.length }; }
-export function useCadence(bridge?: SkyWebViewAPI) {
+export function useCadence(bridge?: SkyWebViewAPI, enabled = true) {
   const [stats, setStats] = useState({ fps: 0, ms: 0, slow: 0, history: [] as number[] });
   const [running, setRunning] = useState(false); const [elapsed, setElapsed] = useState(0); const [runs, setRuns] = useState<Run[]>([]);
   const [preparing,setPreparing]=useState(false);
@@ -74,6 +204,7 @@ export function useCadence(bridge?: SkyWebViewAPI) {
   const hostVisibility=useRef(bridge?.getVisibility?.().visible ?? true);
   const runRef = useRef<{ start: number; frames: number[]; engine: string; items: number; theme: Palette; onComplete?(run:Run):void } | null>(null); const lastSecond = useRef(-1);
   useEffect(() => {
+    if (!enabled) return;
     let frame = 0; let previous = 0; let bucketStart = 0; let frames: number[] = []; let hostVisible = bridge?.getVisibility?.().visible ?? true;
     const syncTick = (): void => {
       const active = !document.hidden && hostVisible;
@@ -154,6 +285,35 @@ export function useCadence(bridge?: SkyWebViewAPI) {
     const unsubscribe = bridge?.on<{visible:boolean}>("skyultra.visibility",event=>{hostVisible=event.visible;hostVisibility.current=event.visible;visibility();});
     syncTick();
     return () => { window.clearInterval(runTimer); unsubscribe?.(); if (frame) cancelAnimationFrame(frame); document.removeEventListener("visibilitychange", visibility); window.removeEventListener("resize",resize); };
-  }, [bridge]);
-  return { stats, running, preparing, setPreparing, locked:running||preparing, elapsed, runs, runRef, notice, attachNative(id:string,native:NonNullable<Run["native"]>) { setRuns(current=>current.map(run=>run.id===id?{...run,native}:run)); }, start(engine: string, items: number, theme: Palette, onComplete?:(run:Run)=>void) { if (document.hidden || !hostVisibility.current || runRef.current) return; runRef.current = { start: performance.now(), frames: [], engine, items, theme, onComplete }; setNotice(""); setElapsed(0); lastSecond.current = 0; setRunning(true); }, cancel() { runRef.current = null; setRunning(false); setNotice("Capture cancelled. No partial run was saved."); } };
+  }, [bridge, enabled]);
+  return useMemo(
+    () => ({
+      stats,
+      running,
+      preparing,
+      setPreparing,
+      locked: running || preparing,
+      elapsed,
+      runs,
+      runRef,
+      notice,
+      attachNative(id: string, native: NonNullable<Run["native"]>) {
+        setRuns((current) => current.map((run) => (run.id === id ? { ...run, native } : run)));
+      },
+      start(engine: string, items: number, theme: Palette, onComplete?: (run: Run) => void) {
+        if (document.hidden || !hostVisibility.current || runRef.current) return;
+        runRef.current = { start: performance.now(), frames: [], engine, items, theme, onComplete };
+        setNotice("");
+        setElapsed(0);
+        lastSecond.current = 0;
+        setRunning(true);
+      },
+      cancel() {
+        runRef.current = null;
+        setRunning(false);
+        setNotice("Capture cancelled. No partial run was saved.");
+      },
+    }),
+    [stats, running, preparing, elapsed, runs, notice],
+  );
 }

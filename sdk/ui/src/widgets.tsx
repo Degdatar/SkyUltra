@@ -107,3 +107,82 @@ export function SkyCommandPalette({ open, commands, onSelect, onDismiss }: { ope
   const filtered = commands.filter(command => (command.label+" "+(command.keywords??"")).toLowerCase().includes(query.trim().toLowerCase())).slice(0,30);
   return <SkyPopup open={open} title="Go anywhere" description="Find a section, tool, or interface action." onDismiss={onDismiss}><input className="sky-command-search" aria-label="Search commands" placeholder="Type a command…" value={query} onChange={event=>setQuery(event.currentTarget.value)} onKeyDown={event=>{ if(event.key === "Enter" && filtered[0]) { event.preventDefault(); onSelect(filtered[0].id); } }} /><div className="sky-command-list">{filtered.map(command=><button type="button" key={command.id} onClick={()=>onSelect(command.id)}>{command.icon}<span><strong>{command.label}</strong>{command.detail && <small>{command.detail}</small>}</span><span>↵</span></button>)}{!filtered.length && <p>No matching tools.</p>}</div></SkyPopup>;
 }
+
+export interface SkyTacticalHealthStripProps extends React.HTMLAttributes<HTMLDivElement> {
+  current?: number | null;
+  max?: number | null;
+  label?: string;
+}
+
+/** Compact laser-bevel health strip for studio panels and tactical overlays. */
+export function SkyTacticalHealthStrip({ current = null, max = null, label = "HP", className = "", ...props }: SkyTacticalHealthStripProps): React.JSX.Element {
+  const safeCur = current !== null && Number.isFinite(current) ? Math.max(0, Math.round(current)) : null;
+  const safeMax = safeCur !== null ? Math.max(1, Math.round(max !== null && Number.isFinite(max) ? max : Math.max(safeCur, 1))) : null;
+  const pct = safeCur !== null && safeMax !== null ? Math.max(0, Math.min(100, Math.round((safeCur / safeMax) * 100))) : 100;
+  const toneClass = safeCur === 0 ? " is-dead" : pct <= 25 ? " is-critical" : pct <= 50 ? " is-low" : "";
+  return (
+    <div
+      {...props}
+      className={"sky-tactical-health" + toneClass + (className ? " " + className : "")}
+      role="meter"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={safeMax ?? 100}
+      aria-valuenow={safeCur ?? 100}
+    >
+      <span className="sky-tactical-health__badge">
+        <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M19.8 5.4c-2.6-2.5-6.2-.8-7.8 1.5-1.6-2.3-5.2-4-7.8-1.5-3.8 3.6.8 9.6 7.8 14.8 7-5.2 11.6-11.2 7.8-14.8Z" fill="currentColor" fillOpacity=".2" />
+        </svg>
+        <span>{label}</span>
+      </span>
+      <div className="sky-tactical-health__rail"><div className="sky-tactical-health__fill" style={{ width: `${pct}%` }} /></div>
+      <strong className="sky-tactical-health__value">{safeCur !== null && safeMax !== null ? `${safeCur.toLocaleString()} / ${safeMax.toLocaleString()}` : "Base Record"}</strong>
+      <em className="sky-tactical-health__pct">{safeCur !== null ? `${pct}%` : "BASE"}</em>
+    </div>
+  );
+}
+
+export interface SkyStudioScrubberProps {
+  value: number;
+  min?: number;
+  max: number;
+  label?: string;
+  meta?: string;
+  disabled?: boolean;
+  className?: string;
+  onChange(value: number): void;
+}
+
+/** Slim smooth frame/timeline scrubber with glowing indicator and numeric counter. */
+export function SkyStudioScrubber({ value, min = 0, max, label = "Frame", meta, disabled = false, className = "", onChange }: SkyStudioScrubberProps): React.JSX.Element {
+  const [scrubbing, setScrubbing] = React.useState(false);
+  const safeMin = Number.isFinite(min) ? min : 0;
+  const safeMax = Number.isFinite(max) && max > safeMin ? max : safeMin;
+  const clamped = Math.max(safeMin, Math.min(safeMax, Number.isFinite(value) ? Math.round(value) : safeMin));
+  const pct = safeMax > safeMin ? ((clamped - safeMin) / (safeMax - safeMin)) * 100 : 0;
+  return (
+    <div className={"sky-studio-scrubber" + (disabled ? " is-disabled" : "") + (scrubbing ? " is-scrubbing" : "") + (className ? " " + className : "")}>
+      <span className="sky-studio-scrubber__frames">{clamped} <em>/ {safeMax}</em></span>
+      <div className="sky-studio-scrubber__track">
+        <div className="sky-studio-scrubber__fill" style={{ width: `${pct}%` }} />
+        <span className="sky-studio-scrubber__thumb" style={{ left: `${pct}%` }} />
+        <input
+          type="range"
+          className="sky-studio-scrubber__input"
+          aria-label={label}
+          min={safeMin}
+          max={safeMax}
+          value={clamped}
+          disabled={disabled}
+          onPointerDown={() => setScrubbing(true)}
+          onPointerUp={() => setScrubbing(false)}
+          onPointerCancel={() => setScrubbing(false)}
+          onBlur={() => setScrubbing(false)}
+          onChange={(event) => onChange(Number(event.currentTarget.value))}
+        />
+      </div>
+      {meta && <span className="sky-studio-scrubber__meta">{meta}</span>}
+    </div>
+  );
+}

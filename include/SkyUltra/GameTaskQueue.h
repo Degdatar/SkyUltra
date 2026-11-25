@@ -25,6 +25,16 @@ public:
         return true;
     }
 
+    [[nodiscard]] bool PostUI(std::function<void()> task) const
+    {
+        const auto* task_interface = task_interface_.load(std::memory_order_acquire);
+        if (task_interface == nullptr || !task) {
+            return false;
+        }
+        task_interface->AddUITask(std::move(task));
+        return true;
+    }
+
 private:
     std::atomic<const SKSE::TaskInterface*> task_interface_{};
 };

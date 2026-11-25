@@ -37,6 +37,7 @@ import {
   type SkyWebViewAPI,
 } from '@skyultra/sdk';
 import { SkyChoice, SkyToggleSwitch, SkyRangeSlider, SkyFilterChips } from '../core.js';
+import { SkyColorWheel } from '../ColorWheel.js';
 import { SkyHotkeyEditor, SkySettingsSection } from '../chrome.js';
 import { Icon } from './icons.js';
 import { palettes, type Palette } from './model.js';
@@ -47,16 +48,6 @@ const exportOptions = [...skyUltraActorExportResolutions]
 
 const emptyModHotkey: SkyUltraHotkeyBinding = { keyboard: [], gamepad: [], vr: [] };
 
-const cursorSwatches = [
-  { value: 'theme', label: 'Match Theme', hex: '' },
-  { value: '#e8b059', label: 'Dragonstone Gold', hex: '#e8b059' },
-  { value: '#00f0ff', label: 'Cyber Cyan', hex: '#00f0ff' },
-  { value: '#ff2e93', label: 'Synth Magenta', hex: '#ff2e93' },
-  { value: '#39ff14', label: 'Venom Green', hex: '#39ff14' },
-  { value: '#ff1744', label: 'Bloodmoon Red', hex: '#ff1744' },
-  { value: '#be8cff', label: 'Aether Violet', hex: '#be8cff' },
-];
-
 type SettingsCategory = 'all' | 'inventory' | 'magic' | 'profiles' | 'themes' | 'hotkeys' | 'engine' | 'cursor' | 'splash';
 
 export default function SettingsPage({
@@ -65,12 +56,14 @@ export default function SettingsPage({
   theme = 'dragonstone',
   onThemeChange,
   playerName,
+  playerEnchantingLevel = 0,
 }: {
   bridge: SkyWebViewAPI;
   native: boolean;
   theme?: Palette;
   onThemeChange?(next: Palette): void;
   playerName?: string | null;
+  playerEnchantingLevel?: number;
 }): React.JSX.Element {
   const [category, setCategory] = useState<SettingsCategory>(() => {
     try {
@@ -135,6 +128,7 @@ export default function SettingsPage({
     window.addEventListener('skyultra:profile-store', onProfileStore);
     window.addEventListener('skyultra:settings-updated', onSettingsUpdated);
     const refresh = (): void => {
+      if (document.hidden || !(bridge.getVisibility?.().visible ?? true)) return;
       if (native)
         void readSkyUltraSplashStatus(bridge)
           .then((value) => {
@@ -487,6 +481,100 @@ export default function SettingsPage({
         : 'NPC Pickpocketing menu will now keep the Skyrim world live while open.',
     );
   };
+  const changeReplaceSkyrimBlacksmith = (replaceSkyrimBlacksmith: boolean): void => {
+    applyLiveSettingsPatch(
+      { replaceSkyrimBlacksmith },
+      replaceSkyrimBlacksmith
+        ? 'Skyrim Blacksmith replacement enabled — Forge, Skyforge, Tanning Rack, Smelter, Grindstone & Workbench now open skyultra_blacksmith.swf.'
+        : 'Returned Blacksmith stations (Forge, Tanning Rack, Smelter, Grindstone, Workbench) to Vanilla Skyrim / SkyUI Crafting Menu.',
+    );
+  };
+  const changeBlacksmithDisplayMode = (blacksmithDisplayMode: SkyUltraBarterDisplayMode): void => {
+    applyLiveSettingsPatch(
+      { blacksmithDisplayMode },
+      `Blacksmith layout mode set to ${containerModeLabel(blacksmithDisplayMode)}.`,
+    );
+  };
+  const changeBlacksmithPauseWorld = (blacksmithPauseWorld: boolean): void => {
+    applyLiveSettingsPatch(
+      { blacksmithPauseWorld },
+      blacksmithPauseWorld
+        ? 'Blacksmith menu will now pause the Skyrim world while open.'
+        : 'Blacksmith menu will now keep the Skyrim world live while open.',
+    );
+  };
+  const changeReplaceSkyrimEnchanting = (replaceSkyrimEnchanting: boolean): void => {
+    applyLiveSettingsPatch(
+      { replaceSkyrimEnchanting },
+      replaceSkyrimEnchanting
+        ? 'Skyrim Arcane Enchanter replacement enabled — Enchanting tables now open skyultra_enchanting.swf.'
+        : 'Returned Arcane Enchanter stations to Vanilla Skyrim / SkyUI Enchanting Menu.',
+    );
+  };
+  const changeEnchantingDisplayMode = (enchantingDisplayMode: SkyUltraBarterDisplayMode): void => {
+    applyLiveSettingsPatch(
+      { enchantingDisplayMode },
+      `Arcane Enchanter layout mode set to ${containerModeLabel(enchantingDisplayMode)}.`,
+    );
+  };
+  const changeEnchantingPauseWorld = (enchantingPauseWorld: boolean): void => {
+    applyLiveSettingsPatch(
+      { enchantingPauseWorld },
+      enchantingPauseWorld
+        ? 'Arcane Enchanter menu will now pause the Skyrim world while open.'
+        : 'Arcane Enchanter menu will now keep the Skyrim world live while open.',
+    );
+  };
+  const changeSuperEnchanting = (superEnchanting: boolean): void => {
+    applyLiveSettingsPatch(
+      { superEnchanting },
+      superEnchanting
+        ? 'Super Enchanting enabled: unique disenchants, unlimited effects, unrestricted slots, and batch enchanting unlocked.'
+        : 'Super Enchanting disabled: returned to standard enchanting rules.',
+    );
+  };
+  const changeReplaceSkyrimAlchemy = (replaceSkyrimAlchemy: boolean): void => {
+    applyLiveSettingsPatch(
+      { replaceSkyrimAlchemy },
+      replaceSkyrimAlchemy
+        ? 'Skyrim Alchemy Lab menu will automatically open inside SkyUltra Alchemy.'
+        : 'Skyrim Alchemy Lab menu restored to Vanilla / SkyUI Crafting Menu.',
+    );
+  };
+  const changeAlchemyDisplayMode = (alchemyDisplayMode: SkyUltraBarterDisplayMode): void => {
+    applyLiveSettingsPatch(
+      { alchemyDisplayMode },
+      alchemyDisplayMode === 'half'
+        ? 'Alchemy Lab set to Half-Screen Side Panel (keeps the 3D Alchemy Lab & satchel visible).'
+        : alchemyDisplayMode === 'windowed'
+          ? 'Alchemy Lab set to Centered Floating Window.'
+          : 'Alchemy Lab set to Full Screen.',
+    );
+  };
+  const changeAlchemyPauseWorld = (alchemyPauseWorld: boolean): void => {
+    applyLiveSettingsPatch(
+      { alchemyPauseWorld },
+      alchemyPauseWorld
+        ? 'Alchemy Lab menu will now pause the Skyrim world while open.'
+        : 'Alchemy Lab menu will now keep the Skyrim world live while open.',
+    );
+  };
+  const changeReplaceSkyrimBookReader = (replaceSkyrimBookReader: boolean): void => {
+    applyLiveSettingsPatch(
+      { replaceSkyrimBookReader },
+      replaceSkyrimBookReader
+        ? 'Skyrim Book Reader will automatically open inside SkyUltra Book Reader.'
+        : 'Skyrim Book Reader restored to Vanilla / SkyUI Book Menu.',
+    );
+  };
+  const changeBookPauseWorld = (bookPauseWorld: boolean): void => {
+    applyLiveSettingsPatch(
+      { bookPauseWorld },
+      bookPauseWorld
+        ? 'SkyUltra Book Reader will pause the Skyrim world while reading.'
+        : 'SkyUltra Book Reader will keep the Skyrim world live while reading.',
+    );
+  };
   const changeReplaceSkyrimCompass = (replaceSkyrimCompass: boolean): void => {
     applyLiveSettingsPatch(
       { replaceSkyrimCompass },
@@ -506,10 +594,14 @@ export default function SettingsPage({
         replaceSkyrimMannequin: enableSkyUltraMenus,
         replaceSkyrimLoot: enableSkyUltraMenus,
         replaceSkyrimPickpocket: enableSkyUltraMenus,
+        replaceSkyrimBlacksmith: enableSkyUltraMenus,
+        replaceSkyrimEnchanting: enableSkyUltraMenus,
+        replaceSkyrimAlchemy: enableSkyUltraMenus,
+        replaceSkyrimBookReader: enableSkyUltraMenus,
         replaceSkyrimCompass: enableSkyUltraMenus,
       },
       enableSkyUltraMenus
-        ? 'All SkyUltra In-Game Menus & Compass HUD enabled (Player Inventory, Barter, Storage Containers, Corpse Looting, Pickpocketing, Mannequins, Spellbook, Favorites, Sovereign Compass).'
+        ? 'All SkyUltra In-Game Menus & Compass HUD enabled (Player Inventory, Barter, Storage Containers, Corpse Looting, Pickpocketing, Mannequins, Blacksmith Stations, Arcane Enchanter, Alchemy Lab, Spellbook, Favorites, Sovereign Compass).'
         : 'Returned all In-Game Menus & Compass HUD to Skyrim Vanilla / SkyUI.',
     );
   };
@@ -537,6 +629,16 @@ export default function SettingsPage({
     setSelectedModId(cleaned);
     setCustomModInput('');
     setMessage(`Added mod "${cleaned}" to hotkey configuration.`);
+  };
+
+  const changeRuntime = (
+    patch: Partial<NonNullable<SkyUltraSettings['runtime']>>,
+    statusText: string,
+  ): void => {
+    applyLiveSettingsPatch(
+      { runtime: { ...(settings.runtime ?? {}), ...patch } },
+      statusText,
+    );
   };
 
   const resetAllPreferences = (): void => {
@@ -600,13 +702,15 @@ export default function SettingsPage({
   const queryTokens = settingsQuery.trim().toLowerCase();
   const activeCat: SettingsCategory = queryTokens ? 'all' : category;
   const matchesQuery = (keywords: string): boolean => !queryTokens || keywords.toLowerCase().includes(queryTokens);
-  const showInventory = (activeCat === 'all' || activeCat === 'inventory') && matchesQuery('inventory barter container mannequin loot pickpocket replacement display pause stolen weight value');
+  const resolvedEnchantingLevel = Math.max(playerEnchantingLevel ?? 0, settings.playerEnchantingLevel ?? 0);
+  const superEnchantingUnlocked = resolvedEnchantingLevel >= 100;
+  const showInventory = (activeCat === 'all' || activeCat === 'inventory') && matchesQuery('inventory barter container mannequin loot pickpocket blacksmith forge anvil tanning smelter grindstone workbench smithing crafting enchanting enchanter arcane super enchanting disenchant soul gem alchemy lab potion poison ingredient brew book reader replacement display pause stolen weight value');
   const showMagic = (activeCat === 'all' || activeCat === 'magic') && matchesQuery('magic spellbook favorites replacement display pause');
   const showProfiles = (activeCat === 'all' || activeCat === 'profiles') && matchesQuery('profile sync character global defaults json import export');
-  const showThemes = (activeCat === 'all' || activeCat === 'themes') && matchesQuery('theme visual darkmode dragonstone neon glass density motion splash book reader design parchment scale sound stolen lighting preview');
+  const showThemes = (activeCat === 'all' || activeCat === 'themes') && matchesQuery('theme visual darkmode dragonstone neon glass density motion splash book reader design parchment scale sound lighting preview menu display pause');
   const showHotkeys = (activeCat === 'all' || activeCat === 'hotkeys') && matchesQuery('hotkey chord keyboard gamepad vr controller virtual');
-  const showEngine = (activeCat === 'all' || activeCat === 'engine') && matchesQuery('engine cef ultralight runtime multithreaded cpu gpu hot reload resolution vr');
-  const showCursor = (activeCat === 'all' || activeCat === 'cursor') && matchesQuery('cursor telemetry polling export portrait resolution');
+  const showEngine = (activeCat === 'all' || activeCat === 'engine') && matchesQuery('engine cef ultralight runtime multithreaded cpu gpu hot reload');
+  const showCursor = (activeCat === 'all' || activeCat === 'cursor') && matchesQuery('cursor telemetry polling export portrait resolution color wheel');
   const showSplash = (activeCat === 'all' || activeCat === 'splash') && matchesQuery('splash video soundtrack audio replay playback');
   const savedProfileEntries = useMemo(() => Object.values(profileStore.profiles), [profileStore.profiles]);
   const bothMenusEnabled =
@@ -615,14 +719,22 @@ export default function SettingsPage({
     settings.replaceSkyrimContainer !== false &&
     settings.replaceSkyrimMannequin !== false &&
     settings.replaceSkyrimLoot !== false &&
-    settings.replaceSkyrimPickpocket !== false;
+    settings.replaceSkyrimPickpocket !== false &&
+    settings.replaceSkyrimBlacksmith !== false &&
+    settings.replaceSkyrimEnchanting !== false &&
+    settings.replaceSkyrimAlchemy !== false &&
+    settings.replaceSkyrimBookReader !== false;
   const bothMenusDisabled =
     settings.replaceSkyrimInventory === false &&
     settings.replaceSkyrimBarter === false &&
     settings.replaceSkyrimContainer === false &&
     settings.replaceSkyrimMannequin === false &&
     settings.replaceSkyrimLoot === false &&
-    settings.replaceSkyrimPickpocket === false;
+    settings.replaceSkyrimPickpocket === false &&
+    settings.replaceSkyrimBlacksmith === false &&
+    settings.replaceSkyrimEnchanting === false &&
+    settings.replaceSkyrimAlchemy === false &&
+    settings.replaceSkyrimBookReader === false;
 
   return (
     <div className="page settings-page">
@@ -633,7 +745,7 @@ export default function SettingsPage({
             System Settings<span className="title-period">.</span>
           </h1>
           <p>
-            Configure menu replacements, 17 interface themes, per-character profiles, input chords, GPU runtime, and Book Reader studio layouts.
+            Configure menu replacements, 21 interface themes (5 Eye-Comfort), per-character profiles, input chords, GPU runtime, and Book Reader studio layouts.
           </p>
         </div>
         <div className="settings-lead-actions">
@@ -705,10 +817,10 @@ export default function SettingsPage({
               [
                 { id: 'inventory', label: 'Inventory & Barter', sub: 'Replacements, modes & world pause', icon: 'inventory' as const },
                 { id: 'magic', label: 'Magic & Favorites', sub: 'Spellbook & favorites overlays', icon: 'rune' as const },
-                { id: 'themes', label: 'Themes & Visuals', sub: '17 palettes, book reader & glass', icon: 'components' as const },
+                { id: 'themes', label: 'Themes & Visuals', sub: '21 palettes, window & glass', icon: 'components' as const },
                 { id: 'profiles', label: 'Profiles & Sync', sub: 'Per-character & global JSON', icon: 'actors' as const },
                 { id: 'hotkeys', label: 'Hotkeys & VR', sub: 'Keyboard, gamepad & HMD chords', icon: 'target' as const },
-                { id: 'engine', label: 'Engine & Runtime', sub: 'CEF, Ultralight & hot reload', icon: 'performance' as const },
+                { id: 'engine', label: 'Engine & Runtime', sub: 'CEF, Ultralight GPU/CPU & watcher', icon: 'performance' as const },
                 { id: 'cursor', label: 'Cursor & Telemetry', sub: 'Pointer style, polling & 4K export', icon: 'camera' as const },
                 { id: 'splash', label: 'Opening Splash', sub: 'Startup video & soundtrack', icon: 'play' as const },
                 { id: 'all', label: 'All Settings', sub: 'Show every category at once', icon: 'grid' as const },
@@ -796,7 +908,7 @@ export default function SettingsPage({
             <SkyToggleSwitch
               label="Pause Skyrim World in Player Inventory"
               description="Freeze Skyrim's world simulation while the standalone Player Inventory is open (like vanilla Skyrim), or leave it unchecked to browse and equip items while the world stays live."
-              checked={settings.inventoryPauseWorld === true}
+              checked={settings.inventoryPauseWorld !== false}
               onCheckedChange={changeInventoryPauseWorld}
             />
 
@@ -825,11 +937,11 @@ export default function SettingsPage({
               <span>Vendor Barter World Simulation State</span>
               <SkyFilterChips
                 label="Vendor barter world state"
-                value={settings.barterPauseWorld ? 'pause' : 'live'}
+                value={settings.barterPauseWorld !== false ? 'pause' : 'live'}
                 onValueChange={(val) => changeBarterPauseWorld(val === 'pause')}
                 options={[
+                  { value: 'pause', label: 'Pause World (Default · Freeze Simulation)' },
                   { value: 'live', label: 'Live World (Unpaused)' },
-                  { value: 'pause', label: 'Pause World (Freeze Simulation)' },
                 ]}
               />
             </div>
@@ -859,11 +971,11 @@ export default function SettingsPage({
               <span>Storage Container World Simulation State</span>
               <SkyFilterChips
                 label="Storage container world state"
-                value={settings.containerPauseWorld ? 'pause' : 'live'}
+                value={settings.containerPauseWorld !== false ? 'pause' : 'live'}
                 onValueChange={(val) => changeContainerPauseWorld(val === 'pause')}
                 options={[
-                  { value: 'live', label: 'Live World (Default)' },
-                  { value: 'pause', label: 'Pause World (Freeze Simulation)' },
+                  { value: 'pause', label: 'Pause World (Default · Freeze Simulation)' },
+                  { value: 'live', label: 'Live World (Unpaused)' },
                 ]}
               />
             </div>
@@ -893,11 +1005,11 @@ export default function SettingsPage({
               <span>Corpse &amp; Monster Looting World Simulation State</span>
               <SkyFilterChips
                 label="Corpse and monster looting world state"
-                value={settings.lootPauseWorld ? 'pause' : 'live'}
+                value={settings.lootPauseWorld !== false ? 'pause' : 'live'}
                 onValueChange={(val) => changeLootPauseWorld(val === 'pause')}
                 options={[
-                  { value: 'live', label: 'Live World (Default)' },
-                  { value: 'pause', label: 'Pause World (Freeze Simulation)' },
+                  { value: 'pause', label: 'Pause World (Default · Freeze Simulation)' },
+                  { value: 'live', label: 'Live World (Unpaused)' },
                 ]}
               />
             </div>
@@ -927,11 +1039,11 @@ export default function SettingsPage({
               <span>NPC Pickpocketing World Simulation State</span>
               <SkyFilterChips
                 label="NPC pickpocketing world state"
-                value={settings.pickpocketPauseWorld ? 'pause' : 'live'}
+                value={settings.pickpocketPauseWorld !== false ? 'pause' : 'live'}
                 onValueChange={(val) => changePickpocketPauseWorld(val === 'pause')}
                 options={[
-                  { value: 'live', label: 'Live World (Default)' },
-                  { value: 'pause', label: 'Pause World (Freeze Simulation)' },
+                  { value: 'pause', label: 'Pause World (Default · Freeze Simulation)' },
+                  { value: 'live', label: 'Live World (Unpaused)' },
                 ]}
               />
             </div>
@@ -961,14 +1073,159 @@ export default function SettingsPage({
               <span>Mannequin World Simulation State</span>
               <SkyFilterChips
                 label="Mannequin world state"
-                value={settings.mannequinPauseWorld ? 'pause' : 'live'}
+                value={settings.mannequinPauseWorld !== false ? 'pause' : 'live'}
                 onValueChange={(val) => changeMannequinPauseWorld(val === 'pause')}
                 options={[
+                  { value: 'pause', label: 'Pause World (Default · Freeze Simulation)' },
                   { value: 'live', label: 'Live World (Unpaused)' },
-                  { value: 'pause', label: 'Pause World (Freeze Simulation)' },
                 ]}
               />
             </div>
+
+            <SkyToggleSwitch
+              label="Replace Skyrim Blacksmith Stations with SkyUltra Blacksmith"
+              description="When enabled, Blacksmith Forges, the Skyforge, Tanning Racks, Smelters, Grindstones, and Armor Workbenches open SkyUltra's theme-synchronized Blacksmith interface (skyultra_blacksmith.swf). Disable at any time to return to Vanilla Skyrim / SkyUI Crafting Menu."
+              checked={settings.replaceSkyrimBlacksmith !== false}
+              onCheckedChange={changeReplaceSkyrimBlacksmith}
+            />
+
+            <div className="settings-choice">
+              <span>Blacksmith Layout Mode</span>
+              <SkyFilterChips
+                label="Blacksmith layout mode"
+                value={settings.blacksmithDisplayMode ?? 'half'}
+                onValueChange={(val) => changeBlacksmithDisplayMode(val as SkyUltraBarterDisplayMode)}
+                options={[
+                  { value: 'half', label: 'Half Panel (50% · Live World View)' },
+                  { value: 'windowed', label: 'Windowed Overlay' },
+                  { value: 'full', label: 'Full Screen' },
+                ]}
+              />
+            </div>
+
+            <div className="settings-choice">
+              <span>Blacksmith World Simulation State</span>
+              <SkyFilterChips
+                label="Blacksmith world state"
+                value={settings.blacksmithPauseWorld !== false ? 'pause' : 'live'}
+                onValueChange={(val) => changeBlacksmithPauseWorld(val === 'pause')}
+                options={[
+                  { value: 'pause', label: 'Pause World (Default · Freeze Simulation)' },
+                  { value: 'live', label: 'Live World (Unpaused)' },
+                ]}
+              />
+            </div>
+
+            <SkyToggleSwitch
+              label="Replace Skyrim Arcane Enchanter with SkyUltra Enchanter"
+              description="When enabled, Arcane Enchanter tables open SkyUltra's theme-synchronized Enchanting interface (skyultra_enchanting.swf) for binding and disenchanting. Disable at any time to return to Vanilla Skyrim / SkyUI Enchanting Menu."
+              checked={settings.replaceSkyrimEnchanting !== false}
+              onCheckedChange={changeReplaceSkyrimEnchanting}
+            />
+
+            <div className="settings-choice">
+              <span>Arcane Enchanter Layout Mode</span>
+              <SkyFilterChips
+                label="Arcane Enchanter layout mode"
+                value={settings.enchantingDisplayMode ?? 'half'}
+                onValueChange={(val) => changeEnchantingDisplayMode(val as SkyUltraBarterDisplayMode)}
+                options={[
+                  { value: 'half', label: 'Half Panel (50% · Live World View)' },
+                  { value: 'windowed', label: 'Windowed Overlay' },
+                  { value: 'full', label: 'Full Screen' },
+                ]}
+              />
+            </div>
+
+            <div className="settings-choice">
+              <span>Arcane Enchanter World Simulation State</span>
+              <SkyFilterChips
+                label="Arcane Enchanter world state"
+                value={settings.enchantingPauseWorld !== false ? 'pause' : 'live'}
+                onValueChange={(val) => changeEnchantingPauseWorld(val === 'pause')}
+                options={[
+                  { value: 'pause', label: 'Pause World (Default · Freeze Simulation)' },
+                  { value: 'live', label: 'Live World (Unpaused)' },
+                ]}
+              />
+            </div>
+
+            {(superEnchantingUnlocked || Boolean(settings.superEnchanting)) && (
+              <SkyToggleSwitch
+                label="Super Enchanting"
+                description={`Unlocked at Enchanting 100 (current: ${resolvedEnchantingLevel}). Disenchant unique non-quest items, bind unlimited enchantments, remove armor slot restrictions, and batch-enchant multiple armors or weapons at once (requires 1 filled soul gem per piece).`}
+                checked={Boolean(settings.superEnchanting)}
+                onCheckedChange={changeSuperEnchanting}
+              />
+            )}
+
+            <SkyToggleSwitch
+              label="Replace Skyrim Alchemy Lab with SkyUltra"
+              description="Intercept Alchemy Lab stations (skyultra_alchemy.swf) with trait tasting, 4-column ingredient Grid/List views, Known Recipes discovery, Purity perk cleansing, and Distillation Altar batch brewing. Disable anytime to return to Vanilla or SkyUI."
+              checked={settings.replaceSkyrimAlchemy !== false}
+              onCheckedChange={changeReplaceSkyrimAlchemy}
+            />
+
+            <div className="settings-choice">
+              <span>Alchemy Lab Menu Layout</span>
+              <SkyFilterChips
+                label="Alchemy Lab layout"
+                value={settings.alchemyDisplayMode === 'windowed' ? 'windowed' : settings.alchemyDisplayMode === 'full' ? 'full' : 'half'}
+                onValueChange={(val) => changeAlchemyDisplayMode(val as SkyUltraBarterDisplayMode)}
+                options={[
+                  { value: 'half', label: 'Half Screen (Default · 3D Lab Visible)' },
+                  { value: 'full', label: 'Full Screen' },
+                  { value: 'windowed', label: 'Floating Window' },
+                ]}
+              />
+            </div>
+
+            <div className="settings-choice">
+              <span>Alchemy Lab World Simulation State</span>
+              <SkyFilterChips
+                label="Alchemy Lab world state"
+                value={settings.alchemyPauseWorld !== false ? 'pause' : 'live'}
+                onValueChange={(val) => changeAlchemyPauseWorld(val === 'pause')}
+                options={[
+                  { value: 'pause', label: 'Pause World (Default · Freeze Simulation)' },
+                  { value: 'live', label: 'Live World (Unpaused)' },
+                ]}
+              />
+            </div>
+
+            <SkyToggleSwitch
+              label="Replace Skyrim Book Reader with SkyUltra"
+              description="Intercept world books and notes outside your pack in SkyUltra Book Reader with Take / Steal actions. Disable anytime to use Vanilla or SkyUI Book Menu."
+              checked={settings.replaceSkyrimBookReader !== false}
+              onCheckedChange={changeReplaceSkyrimBookReader}
+            />
+
+            <div className="settings-choice">
+              <span>Book Reader World Simulation State</span>
+              <SkyFilterChips
+                label="Book Reader world state"
+                value={settings.bookPauseWorld !== false ? 'pause' : 'live'}
+                onValueChange={(val) => changeBookPauseWorld(val === 'pause')}
+                options={[
+                  { value: 'pause', label: 'Pause World (Default · Freeze Simulation)' },
+                  { value: 'live', label: 'Live World (Unpaused)' },
+                ]}
+              />
+            </div>
+
+            <SkyToggleSwitch
+              label="Show Gold-per-Weight (V/W) efficiency badges"
+              description="Highlight high-value loot ratios across Inventory, Loot, Barter, and Storage Container menus."
+              checked={uiPrefs.showValuePerWeight}
+              onCheckedChange={(showValuePerWeight) => updateUiPref({ showValuePerWeight })}
+            />
+
+            <SkyToggleSwitch
+              label="Stolen &amp; Pickpocket Protection Guard"
+              description="Require confirmation before dropping or selling stolen items and skip owned/stolen items during Smart Loot."
+              checked={uiPrefs.stolenProtection}
+              onCheckedChange={(stolenProtection) => updateUiPref({ stolenProtection })}
+            />
           </SkySettingsSection>
         )}
         {showMagic && (
@@ -999,11 +1256,11 @@ export default function SettingsPage({
               <span>Spellbook World Simulation State</span>
               <SkyFilterChips
                 label="Spellbook world state"
-                value={settings.magicPauseWorld ? 'pause' : 'live'}
+                value={settings.magicPauseWorld !== false ? 'pause' : 'live'}
                 onValueChange={(val) => changeMagicPauseWorld(val === 'pause')}
                 options={[
+                  { value: 'pause', label: 'Pause World (Default · Freeze Simulation)' },
                   { value: 'live', label: 'Live World (Unpaused)' },
-                  { value: 'pause', label: 'Pause World (Freeze Simulation)' },
                 ]}
               />
             </div>
@@ -1031,11 +1288,11 @@ export default function SettingsPage({
               <span>Favorites World Simulation State</span>
               <SkyFilterChips
                 label="Favorites world state"
-                value={settings.favoritesPauseWorld ? 'pause' : 'live'}
+                value={settings.favoritesPauseWorld !== false ? 'pause' : 'live'}
                 onValueChange={(val) => changeFavoritesPauseWorld(val === 'pause')}
                 options={[
+                  { value: 'pause', label: 'Pause World (Default · Freeze Simulation)' },
                   { value: 'live', label: 'Live World (Unpaused)' },
-                  { value: 'pause', label: 'Pause World (Freeze Simulation)' },
                 ]}
               />
             </div>
@@ -1165,7 +1422,7 @@ export default function SettingsPage({
             <div className="settings-theme-showcase">
               {(
                 [
-                  { id: 'darkmode', title: 'EYE-COMFORT DARK MODE · SPECIAL VELVET-SLATE SDK UI ARCHITECTURE (LOW-GLARE)' },
+                  { id: 'darkmode', title: 'EYE-COMFORT COLLECTION · 5 LOW-GLARE MATTE VELVET-SLATE THEMES' },
                   { id: 'classic', title: 'CLASSIC TAMRIELIC INLAY · ENGRAVED SERIF + METALLIC BEVELS (DRAGONSTONE DEFAULT)' },
                   { id: 'neon', title: 'NEON & CYBER MATRIX · CHAMFERED HUD + CYBER GRID + MONO DISPLAY' },
                   { id: 'celestial', title: 'CELESTIAL & ARCANE GLASS · STARLIGHT BLOOM + RUNIC TYPOGRAPHY' },
@@ -1347,18 +1604,24 @@ export default function SettingsPage({
               />
             </div>
 
-            <SkyToggleSwitch
-              label="Show Gold-per-Weight (V/W) efficiency badges"
-              description="Highlight high-value loot ratios across Inventory and Container menus."
-              checked={uiPrefs.showValuePerWeight}
-              onCheckedChange={(showValuePerWeight) => updateUiPref({ showValuePerWeight })}
-            />
+            <div className="settings-choice">
+              <span>SkyUltra Menu Display Mode</span>
+              <SkyFilterChips
+                label="SkyUltra menu display mode"
+                value={settings.menuDisplayMode ?? 'fullscreen'}
+                onValueChange={(val) => changeMenuDisplayMode(val as SkyUltraDisplayMode)}
+                options={[
+                  { value: 'fullscreen', label: 'Full Screen Mode' },
+                  { value: 'windowed', label: 'Windowed Mode (Floating Overlay)' },
+                ]}
+              />
+            </div>
 
             <SkyToggleSwitch
-              label="Stolen &amp; Pickpocket Protection Guard"
-              description="Require confirmation before dropping stolen items and skip owned/stolen items during Smart Loot."
-              checked={uiPrefs.stolenProtection}
-              onCheckedChange={(stolenProtection) => updateUiPref({ stolenProtection })}
+              label="Pause Skyrim World in SkyUltra Menu"
+              description="Freeze Skyrim's world simulation and combat while the main SkyUltra Command Menu is open, or leave it unchecked to keep the world live and moving behind the interface."
+              checked={settings.menuPauseWorld === true}
+              onCheckedChange={changeMenuPauseWorld}
             />
 
             <SkyToggleSwitch
@@ -1374,7 +1637,7 @@ export default function SettingsPage({
           <>
             <SkySettingsSection
               title="Simultaneous Multi-Engine Browser Runtime (CEF + Ultralight)"
-              description="Switch SkyUltra's built-in menu between Chromium CEF (Default) and Ultralight without affecting any other mod. Both engines run concurrently in SkyUltra's D3D11 compositor—so a third-party mod running on Ultralight and SkyUltra running on CEF (or vice versa) render simultaneously at peak GPU performance."
+              description="Configure SkyUltra's browser compositing engines only (Chromium CEF GPU shared textures, Ultralight GPU/CPU pipeline, per-mod engine overrides, multithreaded UI message loop, and live hot-reload watcher). Inventory, Barter, Windowed Display, and VR Head Tracking live in their dedicated categories."
             >
               <div className="settings-choice">
                 <span>SkyUltra Menu Browser Engine (Independent of other mods)</span>
@@ -1405,93 +1668,69 @@ export default function SettingsPage({
                 </div>
               )}
 
-              <SkyToggleSwitch
-                label="Replace Skyrim Inventory with SkyUltra Player Inventory"
-                description="When enabled, opening your normal player inventory in-game (I / Tab → Items) replaces Skyrim's InventoryMenu with SkyUltra's standalone Player Inventory & 3D Character Equip Stage. Disable anytime to use vanilla or SkyUI inventory."
-                checked={settings.replaceSkyrimInventory !== false}
-                onCheckedChange={changeReplaceSkyrimInventory}
-              />
-
               <div className="settings-choice">
-                <span>SkyUltra Menu Display Mode</span>
+                <span>Surface Render Pipeline Mode</span>
                 <SkyFilterChips
-                  label="SkyUltra menu display mode"
-                  value={settings.menuDisplayMode ?? 'fullscreen'}
-                  onValueChange={(val) => changeMenuDisplayMode(val as SkyUltraDisplayMode)}
+                  label="Surface render pipeline mode"
+                  value={settings.runtime?.renderMode ?? 'gpu'}
+                  onValueChange={(val) =>
+                    changeRuntime(
+                      { renderMode: val as 'gpu' | 'cpu' },
+                      `Compositor render pipeline set to ${val.toUpperCase()} mode.`,
+                    )
+                  }
                   options={[
-                    { value: 'fullscreen', label: 'Full Screen Mode' },
-                    { value: 'windowed', label: 'Windowed Mode (Floating Overlay)' },
+                    { value: 'gpu', label: 'Hardware GPU Shared Texture (Recommended)' },
+                    { value: 'cpu', label: 'Software CPU Staging Fallback' },
                   ]}
                 />
               </div>
 
               <SkyToggleSwitch
-                label="Pause Skyrim World in SkyUltra Menu"
-                description="Freeze Skyrim's world simulation and combat while the SkyUltra Menu is open, or leave it unchecked to keep the world live and moving behind the interface."
-                checked={settings.menuPauseWorld === true}
-                onCheckedChange={changeMenuPauseWorld}
-              />
-
-              <div className="settings-choice">
-                <span>Player Inventory Display Mode</span>
-                <SkyFilterChips
-                  label="Player inventory display mode"
-                  value={settings.inventoryDisplayMode ?? 'fullscreen'}
-                  onValueChange={(val) => changeInventoryDisplayMode(val as SkyUltraDisplayMode)}
-                  options={[
-                    { value: 'fullscreen', label: 'Full Screen Mode' },
-                    { value: 'windowed', label: 'Windowed Mode (Floating Overlay)' },
-                  ]}
-                />
-              </div>
-
-              <SkyToggleSwitch
-                label="Pause Skyrim World in Player Inventory"
-                description="Freeze Skyrim's world simulation while the standalone Player Inventory is open (like vanilla Skyrim), or leave it unchecked to browse and equip items while the world stays live."
-                checked={settings.inventoryPauseWorld === true}
-                onCheckedChange={changeInventoryPauseWorld}
+                label="CEF Multi-Threaded Message Loop"
+                description="Run Chromium CEF's UI and IPC pumps on a dedicated native thread so Skyrim's main game thread never stalls during heavy DOM layouts."
+                checked={settings.runtime?.cefMultithreaded !== false}
+                onCheckedChange={(cefMultithreaded) =>
+                  changeRuntime(
+                    { cefMultithreaded },
+                    cefMultithreaded
+                      ? 'CEF Multi-Threaded Message Loop enabled.'
+                      : 'CEF Single-Threaded loop mode selected (restart game to re-bind message pump).',
+                  )
+                }
               />
 
               <SkyToggleSwitch
-                label="Replace Skyrim Vendor Barter Menu with SkyUltra Barter Container"
-                description="When enabled, buying and selling with Skyrim merchants replaces Skyrim's BarterMenu (via skyultra_barter.swf) with SkyUltra's half-screen Barter Container—without the 3D equipment panel, with bottom Vendor/Player switcher tabs and a quantity slider for stacks over 5."
-                checked={settings.replaceSkyrimBarter !== false}
-                onCheckedChange={changeReplaceSkyrimBarter}
+                label="Live Asset &amp; UI Hot-Reload Watcher"
+                description="Watch mod dist/ directories and SkyUltra menu packages for file edits and reload active browser views automatically during mod development."
+                checked={settings.runtime?.hotReload === true}
+                onCheckedChange={(hotReload) =>
+                  changeRuntime(
+                    { hotReload },
+                    hotReload
+                      ? 'Live UI Hot-Reload watcher enabled for mod development.'
+                      : 'Live UI Hot-Reload watcher disabled for maximum release frame stability.',
+                  )
+                }
               />
 
-              <div className="settings-choice">
-                <span>Vendor Barter Container Mode</span>
-                <SkyFilterChips
-                  label="Vendor barter container mode"
-                  value={settings.barterDisplayMode ?? 'half'}
-                  onValueChange={(val) => changeBarterDisplayMode(val as SkyUltraBarterDisplayMode)}
-                  options={[
-                    { value: 'half', label: 'Half Container (Left 50% · Skyrim World Right)' },
-                    { value: 'full', label: 'Full Container (Full Screen)' },
-                    { value: 'windowed', label: 'Windowed Container (Floating Overlay)' },
-                  ]}
-                />
+              <div className="settings-runtime-summary">
+                <div className="settings-kpi-pill">
+                  <small>ACTIVE MENU ENGINE</small>
+                  <strong>{(settings.menuEngine ?? 'cef').toUpperCase()}</strong>
+                  <span>Independent of third-party mod engines</span>
+                </div>
+                <div className="settings-kpi-pill">
+                  <small>RENDER PIPELINE</small>
+                  <strong>{(settings.runtime?.renderMode ?? 'gpu').toUpperCase()} Shared Texture</strong>
+                  <span>{settings.runtime?.cefMultithreaded !== false ? 'Multi-threaded loop' : 'Main-thread loop'}</span>
+                </div>
+                <div className="settings-kpi-pill">
+                  <small>HOT-RELOAD WATCHER</small>
+                  <strong>{settings.runtime?.hotReload ? 'Watching' : 'Release Lock'}</strong>
+                  <span>Zero disk stat overhead when off</span>
+                </div>
               </div>
-
-              <div className="settings-choice">
-                <span>Vendor Barter World Simulation State</span>
-                <SkyFilterChips
-                  label="Vendor barter world state"
-                  value={settings.barterPauseWorld ? 'pause' : 'live'}
-                  onValueChange={(val) => changeBarterPauseWorld(val === 'pause')}
-                  options={[
-                    { value: 'live', label: 'Live World (Unpaused)' },
-                    { value: 'pause', label: 'Pause World (Freeze Simulation)' },
-                  ]}
-                />
-              </div>
-
-              <SkyToggleSwitch
-                label="VR Head Tracking (atGaze HMD Follow)"
-                description="Keep the open SkyUltra menu locked smoothly to your VR headset's gaze direction so you can see the interface wherever you move or turn your head."
-                checked={settings.vrHeadTracking !== false}
-                onCheckedChange={changeVrHeadTracking}
-              />
             </SkySettingsSection>
           </>
         )}
@@ -1500,7 +1739,7 @@ export default function SettingsPage({
           <>
             <SkySettingsSection
               title="Pointer, Live Telemetry & 3D Studio Export"
-              description="Wire up your custom SVG cursor, live Skyrim character snapshot polling cadence, and up to 4K transparent PNG export resolution."
+              description="Wire up your custom SVG cursor with a full 360° color wheel, live Skyrim character snapshot polling cadence, and up to 4K transparent PNG export resolution."
             >
             <SkyToggleSwitch
               label="Custom SkyUltra vector cursor"
@@ -1510,28 +1749,18 @@ export default function SettingsPage({
             />
 
             <div className="settings-choice">
-              <span>Cursor accent color</span>
-              <div className="settings-cursor-swatches">
-                {cursorSwatches.map((sw) => (
-                  <button
-                    key={sw.value}
-                    type="button"
-                    className={
-                      'settings-cursor-pill' +
-                      (uiPrefs.cursorAccent.toLowerCase() === sw.value.toLowerCase() ? ' is-active' : '')
-                    }
-                    onClick={() => updateUiPref({ cursorAccent: sw.value })}
-                  >
-                    <i
-                      style={{
-                        background:
-                          sw.hex || palettes.find((p) => p.value === theme)?.color || '#e8b059',
-                      }}
-                    />
-                    <span>{sw.label}</span>
-                  </button>
-                ))}
-              </div>
+              <span>Cursor Accent Color (360° Color Wheel)</span>
+              <SkyColorWheel
+                mode="inline"
+                size={158}
+                label="Cursor blade fill &amp; rim glow"
+                value={uiPrefs.cursorAccent}
+                allowThemeMatch
+                isThemeMatched={uiPrefs.cursorAccent === 'theme'}
+                themeColor={palettes.find((p) => p.value === theme)?.color ?? '#e8b059'}
+                onResetTheme={() => updateUiPref({ cursorAccent: 'theme' })}
+                onChange={(hex) => updateUiPref({ cursorAccent: hex })}
+              />
             </div>
 
             <div className="settings-choice">

@@ -40,7 +40,7 @@ export default function BarterPage({
   bridge,
   obscured = false,
   displayMode = 'half',
-  pauseWorld = false,
+  pauseWorld = true,
   onChangeDisplayMode,
   onTogglePauseWorld,
   onClose,
@@ -138,7 +138,12 @@ export default function BarterPage({
       const trimmed = item.name?.trim() ?? '';
       if (!trimmed) return false;
       const lower = trimmed.toLowerCase();
-      return !lower.startsWith('<missing name') && lower !== 'missing name';
+      return (
+        !lower.startsWith('<missing name') &&
+        lower !== 'missing name' &&
+        !lower.includes('genitalcover') &&
+        !lower.includes('genital cover')
+      );
     });
   }, [side, snapshot, player]);
 

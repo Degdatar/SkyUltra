@@ -5,6 +5,7 @@ import { actorThumbnailQueue } from "./itemThumbnails.js";
 import type { Player } from "./model.js";
 
 const PLAYER_PORTRAIT_KEY = "0x00000014:0x00000007";
+const lastPortraitSignatureByBridge = new WeakMap<SkyWebViewAPI, string>();
 
 function DragonbornPortraitSvg(): React.JSX.Element {
   return (
@@ -97,21 +98,30 @@ export function PlayerPortrait({
 }): React.JSX.Element {
   const ref = useRef<HTMLSpanElement>(null);
   const requestKey = PLAYER_PORTRAIT_KEY;
-  const [thumbnail, setThumbnail] = useState<SkyUltraItemThumbnail | null>(() =>
-    bridge ? actorThumbnailQueue(bridge).peek(requestKey) ?? null : null,
-  );
-  const lastSignatureRef = useRef<string | undefined>(undefined);
-
-  // Load cached portrait from Overwrite/SkyUltra/Cache/Portraits/ immediately;
-  // only reset when switching to a different character or when the user updates the portrait in-game.
   const playerAvailable = player ? player.available !== false : false;
-  const playerSignature = playerAvailable && player ? player.playerName : "";
+  const playerSignature =
+    playerAvailable && player
+      ? `${player.characterKey || player.playerName}:${player.portraitRevision ?? 0}`
+      : "";
+  const [thumbnail, setThumbnail] = useState<SkyUltraItemThumbnail | null>(() => {
+    if (!bridge) return null;
+    const prevBridgeSig = lastPortraitSignatureByBridge.get(bridge);
+    if (playerSignature && prevBridgeSig !== undefined && prevBridgeSig !== playerSignature) {
+      actorThumbnailQueue(bridge).clear(requestKey);
+      return null;
+    }
+    return actorThumbnailQueue(bridge).peek(requestKey) ?? null;
+  });
+  const lastSignatureRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (!bridge) return;
     const cached = actorThumbnailQueue(bridge).peek(requestKey);
     if (cached) {
-      setThumbnail(cached);
+      const prevBridgeSig = lastPortraitSignatureByBridge.get(bridge);
+      if (!playerSignature || prevBridgeSig === undefined || prevBridgeSig === playerSignature) {
+        setThumbnail(cached);
+      }
     }
     return actorThumbnailQueue(bridge).subscribe(requestKey, (dataUrl) => {
       setThumbnail({ available: true, dataUrl });
@@ -120,11 +130,16 @@ export function PlayerPortrait({
 
   useEffect(() => {
     if (!bridge || !playerSignature) return;
-    if (lastSignatureRef.current !== undefined && lastSignatureRef.current !== playerSignature) {
+    const prevBridgeSig = lastPortraitSignatureByBridge.get(bridge);
+    if (
+      (lastSignatureRef.current !== undefined && lastSignatureRef.current !== playerSignature) ||
+      (prevBridgeSig !== undefined && prevBridgeSig !== playerSignature)
+    ) {
       actorThumbnailQueue(bridge).clear(requestKey);
       setThumbnail(null);
     }
     lastSignatureRef.current = playerSignature;
+    lastPortraitSignatureByBridge.set(bridge, playerSignature);
 
     let active = true;
     let controller: AbortController | null = null;

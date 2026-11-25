@@ -1,5 +1,15 @@
 import { createSkyUltraGame, type SkyUltraItemThumbnail, type SkyWebViewAPI } from '@skyultra/sdk';
 
+const LOCAL_THUMBNAIL_URL_PATTERN =
+  /^file:\/\/\/[^?#]*(?:\/SkyUltra\/Cache\/(?:Items|Portraits)\/[^/?#]+\.png|\/SkyUltraMods\/[A-Za-z0-9_-]+\/__skyultra_cache__\/(?:Items|Portraits)\/[^/?#]+\.png)(?:\?v=\d+)?$/i;
+
+function isValidThumbnailUrl(url?: string): url is string {
+  if (!url) return false;
+  if (url.startsWith('data:image/png;base64,')) return true;
+  if (url.includes('..') || url.includes('\\')) return false;
+  return LOCAL_THUMBNAIL_URL_PATTERN.test(url);
+}
+
 /** One GPU readback at a time, shared by the inventory grid and equipment slots. */
 export function createItemThumbnailQueue(
   load: (id: string, signal?: AbortSignal) => Promise<SkyUltraItemThumbnail>,
@@ -12,7 +22,7 @@ export function createItemThumbnailQueue(
   const normalizeKey = (rawId: string): string => (rawId.endsWith(':stolen') ? rawId.slice(0, -7) : rawId);
   let running = false;
   function notify(id: string, dataUrl?: string): void {
-    if (!dataUrl?.startsWith('data:image/png;base64,')) return;
+    if (!isValidThumbnailUrl(dataUrl)) return;
     listeners.get(id)?.forEach(listener => listener(dataUrl));
   }
   async function pump(): Promise<void> {
@@ -40,7 +50,7 @@ export function createItemThumbnailQueue(
         }
         // Invalid replies never become image sources. A transient busy response
         // is retried when the tile next becomes visible.
-        if (result.available && !result.dataUrl?.startsWith('data:image/png;base64,')) result = { available: false, message: 'Invalid thumbnail image source.' };
+        if (result.available && !isValidThumbnailUrl(result.dataUrl)) result = { available: false, message: 'Invalid thumbnail image source.' };
         const transient =
           !result.available &&
           (!result.message || /busy|timed? out|abort|cancel|no loaded actor|no usable|not ready|not loaded|could not render|pipeline/i.test(result.message));
@@ -69,7 +79,7 @@ export function createItemThumbnailQueue(
       });
     },
     set(rawId: string, dataUrl: string): void {
-      if (!dataUrl?.startsWith('data:image/png;base64,')) return;
+      if (!isValidThumbnailUrl(dataUrl)) return;
       const id = normalizeKey(rawId);
       const entry: SkyUltraItemThumbnail = { available: true, dataUrl };
       cache.delete(id);

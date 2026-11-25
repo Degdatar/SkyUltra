@@ -286,7 +286,7 @@
   --sky-shadow: 0 0 30px rgb(255 23 68 / 22%), 0 16px 40px rgb(0 0 0 / 65%);
 }
 
-/* Eye-Comfort Dark Mode · Special SDK Velvet-Slate UI Architecture */
+/* Eye-Comfort Matte Collection (5 Low-Glare Velvet-Slate Architectures) */
 [data-sky-theme="darkmode"] {
   --sky-bg: #0d1015;
   --sky-surface: #141922;
@@ -309,83 +309,159 @@
     inset 0 1px 0 rgb(255 255 255 / 6%);
 }
 
-/* Special SDK UI Style Overrides for Dark Mode ("velvet-dark") */
-[data-sky-theme="darkmode"] .sky-panel,
-[data-sky-theme="darkmode"] .sky-card {
+[data-sky-theme="warmdusk"] {
+  --sky-bg: #131110;
+  --sky-surface: #1c1917;
+  --sky-raised: #27221f;
+  --sky-border: #3b332d;
+  --sky-text: #ece4db;
+  --sky-muted: #b0a396;
+  --sky-accent: #e6b87d;
+  --sky-accent-secondary: #d4926a;
+  --sky-accent-ink: #1a1209;
+  --sky-gold: #f0c988;
+  --sky-danger: #e27874;
+  --sky-success: #8ac494;
+  --sky-radius: 0.875rem;
+  --sky-font-display: 'Segoe UI Variable Display', 'Inter', 'Segoe UI', sans-serif;
+  --sky-font-data: 'Cascadia Code', 'Consolas', monospace;
+  --sky-shadow: 0 20px 48px -12px rgb(6 4 3 / 68%), 0 4px 14px rgb(0 0 0 / 36%), inset 0 1px 0 rgb(255 245 232 / 6%);
+}
+
+[data-sky-theme="sagehaven"] {
+  --sky-bg: #0e1311;
+  --sky-surface: #151e1a;
+  --sky-raised: #1e2a24;
+  --sky-border: #2c3e35;
+  --sky-text: #e3ece7;
+  --sky-muted: #98b0a3;
+  --sky-accent: #7ec8a7;
+  --sky-accent-secondary: #8db4e0;
+  --sky-accent-ink: #071610;
+  --sky-gold: #dec084;
+  --sky-danger: #e57c82;
+  --sky-success: #7ec8a7;
+  --sky-radius: 0.875rem;
+  --sky-font-display: 'Segoe UI Variable Display', 'Inter', 'Segoe UI', sans-serif;
+  --sky-font-data: 'Cascadia Code', 'Consolas', monospace;
+  --sky-shadow: 0 20px 48px -12px rgb(3 9 6 / 68%), 0 4px 14px rgb(0 0 0 / 36%), inset 0 1px 0 rgb(230 255 242 / 6%);
+}
+
+[data-sky-theme="twilightplum"] {
+  --sky-bg: #110f17;
+  --sky-surface: #191624;
+  --sky-raised: #241f33;
+  --sky-border: #36304c;
+  --sky-text: #ebe7f3;
+  --sky-muted: #a69ec0;
+  --sky-accent: #a5a0e8;
+  --sky-accent-secondary: #d99ec2;
+  --sky-accent-ink: #110e1d;
+  --sky-gold: #e4c589;
+  --sky-danger: #ea7d92;
+  --sky-success: #7dd1af;
+  --sky-radius: 0.875rem;
+  --sky-font-display: 'Segoe UI Variable Display', 'Inter', 'Segoe UI', sans-serif;
+  --sky-font-data: 'Cascadia Code', 'Consolas', monospace;
+  --sky-shadow: 0 20px 48px -12px rgb(6 4 12 / 68%), 0 4px 14px rgb(0 0 0 / 36%), inset 0 1px 0 rgb(244 238 255 / 6%);
+}
+
+[data-sky-theme="nordiclinen"] {
+  --sky-bg: #15130f;
+  --sky-surface: #201c16;
+  --sky-raised: #2b251d;
+  --sky-border: #42392d;
+  --sky-text: #efe7d8;
+  --sky-muted: #b7aa96;
+  --sky-accent: #d4a373;
+  --sky-accent-secondary: #a8bfa0;
+  --sky-accent-ink: #1b140b;
+  --sky-gold: #e6c280;
+  --sky-danger: #dc7e73;
+  --sky-success: #92c494;
+  --sky-radius: 0.875rem;
+  --sky-font-display: 'Palatino Linotype', 'Segoe UI Variable Display', Georgia, serif;
+  --sky-font-data: 'Cascadia Code', 'Consolas', monospace;
+  --sky-shadow: 0 20px 48px -12px rgb(8 6 3 / 68%), 0 4px 14px rgb(0 0 0 / 36%), inset 0 1px 0 rgb(255 246 226 / 6%);
+}
+
+/* Variable-Driven Eye-Comfort Velvet-Slate SDK Overrides */
+[data-sky-ui-style="velvet-dark"] .sky-panel,
+[data-sky-ui-style="velvet-dark"] .sky-card {
   border-radius: 16px;
-  border-color: rgb(148 163 184 / 14%);
+  border-color: color-mix(in srgb, var(--sky-muted) 22%, transparent);
   background:
-    radial-gradient(120% 100% at 50% 0%, rgb(104 181 255 / 6%), transparent 62%),
-    linear-gradient(180deg, #171d28 0%, #11161f 100%);
+    radial-gradient(120% 100% at 50% 0%, color-mix(in srgb, var(--sky-accent) 7%, transparent), transparent 62%),
+    linear-gradient(180deg, color-mix(in srgb, var(--sky-surface) 95%, #fff) 0%, var(--sky-bg) 100%);
   box-shadow:
     0 18px 42px -10px rgb(2 5 11 / 65%),
     inset 0 1px 0 rgb(255 255 255 / 7%);
 }
 
-[data-sky-theme="darkmode"] .sky-button {
+[data-sky-ui-style="velvet-dark"] .sky-button {
   border-radius: 999px;
   letter-spacing: 0.01em;
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%);
 }
 
-[data-sky-theme="darkmode"] .sky-button--primary {
-  background: linear-gradient(135deg, #68b5ff 0%, #839df9 55%, #a38bf8 100%);
-  color: #07101c;
+[data-sky-ui-style="velvet-dark"] .sky-button--primary {
+  background: linear-gradient(135deg, var(--sky-accent) 0%, color-mix(in srgb, var(--sky-accent) 55%, var(--sky-accent-secondary, var(--sky-accent))) 55%, var(--sky-accent-secondary, var(--sky-accent)) 100%);
+  color: var(--sky-accent-ink);
   box-shadow:
-    0 6px 20px rgb(104 181 255 / 24%),
+    0 6px 20px color-mix(in srgb, var(--sky-accent) 26%, transparent),
     inset 0 1px 0 rgb(255 255 255 / 32%);
 }
 
-[data-sky-theme="darkmode"] .sky-button--secondary {
-  background: linear-gradient(180deg, #1e2634 0%, #171d28 100%);
-  border-color: rgb(148 163 184 / 18%);
-  color: #e4e9f2;
+[data-sky-ui-style="velvet-dark"] .sky-button--secondary {
+  background: linear-gradient(180deg, var(--sky-raised) 0%, var(--sky-surface) 100%);
+  border-color: color-mix(in srgb, var(--sky-muted) 24%, transparent);
+  color: var(--sky-text);
 }
 
-[data-sky-theme="darkmode"] .sky-segments {
+[data-sky-ui-style="velvet-dark"] .sky-segments {
   padding: 4px;
   border-radius: 999px;
-  border-color: rgb(148 163 184 / 14%);
-  background: #0b0e13;
+  border-color: color-mix(in srgb, var(--sky-muted) 20%, transparent);
+  background: color-mix(in srgb, var(--sky-bg) 92%, #000);
   box-shadow: inset 0 1px 3px rgb(0 0 0 / 45%);
 }
 
-[data-sky-theme="darkmode"] .sky-segments button {
+[data-sky-ui-style="velvet-dark"] .sky-segments button {
   border-radius: 999px;
   padding: 0 14px;
   font-weight: 500;
 }
 
-[data-sky-theme="darkmode"] .sky-segments button[aria-pressed="true"] {
-  background: linear-gradient(135deg, rgb(104 181 255 / 20%), rgb(163 139 248 / 18%));
-  color: #f1f5fb;
+[data-sky-ui-style="velvet-dark"] .sky-segments button[aria-pressed="true"] {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--sky-accent) 22%, transparent), color-mix(in srgb, var(--sky-accent-secondary, var(--sky-accent)) 18%, transparent));
+  color: var(--sky-text);
   box-shadow:
     0 2px 10px rgb(0 0 0 / 32%),
-    inset 0 0 0 1px rgb(104 181 255 / 38%);
+    inset 0 0 0 1px color-mix(in srgb, var(--sky-accent) 42%, transparent);
 }
 
-[data-sky-theme="darkmode"] .sky-stat-tile {
+[data-sky-ui-style="velvet-dark"] .sky-stat-tile {
   border-radius: 14px;
-  border-color: rgb(148 163 184 / 13%);
+  border-color: color-mix(in srgb, var(--sky-muted) 18%, transparent);
   background:
-    radial-gradient(90% 90% at 0% 0%, rgb(104 181 255 / 7%), transparent 70%),
-    linear-gradient(180deg, #171d27 0%, #121720 100%);
+    radial-gradient(90% 90% at 0% 0%, color-mix(in srgb, var(--sky-accent) 8%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--sky-surface) 0%, var(--sky-bg) 100%);
   box-shadow:
     0 10px 26px -8px rgb(0 0 0 / 50%),
     inset 0 1px 0 rgb(255 255 255 / 5%);
 }
 
-[data-sky-theme="darkmode"] .sky-choice__trigger {
+[data-sky-ui-style="velvet-dark"] .sky-choice__trigger {
   border-radius: 10px;
-  border-color: rgb(148 163 184 / 16%);
-  background: linear-gradient(180deg, #171d27 0%, #121720 100%);
+  border-color: color-mix(in srgb, var(--sky-muted) 22%, transparent);
+  background: linear-gradient(180deg, var(--sky-surface) 0%, var(--sky-bg) 100%);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
 }
 
-[data-sky-theme="darkmode"] .sky-choice__menu {
+[data-sky-ui-style="velvet-dark"] .sky-choice__menu {
   border-radius: 12px;
-  border-color: rgb(148 163 184 / 18%);
-  background: #151b25;
+  border-color: color-mix(in srgb, var(--sky-muted) 24%, transparent);
+  background: var(--sky-surface);
   box-shadow: 0 20px 44px rgb(0 0 0 / 62%);
 }
 
@@ -458,11 +534,23 @@
 @layer components {
   .sky-button {
     @apply inline-flex select-none items-center justify-center gap-2 rounded-lg font-semibold;
-    border: 1px solid transparent;
+    border: 1px solid color-mix(in srgb, var(--sky-border) 78%, transparent);
     cursor: pointer;
     line-height: 1.2;
-    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease,
-      transform 120ms ease;
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 12%),
+      0 4px 12px rgb(0 0 0 / 28%);
+    transition:
+      background-color 140ms ease,
+      border-color 140ms ease,
+      color 140ms ease,
+      box-shadow 140ms ease,
+      transform 140ms cubic-bezier(0.22, 1, 0.36, 1),
+      filter 140ms ease;
+  }
+
+  .sky-button:hover:not(:disabled) {
+    transform: translateY(-1px);
   }
 
   .sky-button:focus-visible,
@@ -473,18 +561,51 @@
     outline-offset: 2px;
   }
 
-  .sky-button:active { transform: translateY(1px); }
+  .sky-button:active:not(:disabled) { transform: translateY(1px); }
   .sky-button:disabled { cursor: not-allowed; opacity: 0.48; }
   .sky-button--sm { @apply min-h-8 px-3 text-xs; }
   .sky-button--md { @apply min-h-10 px-4 text-sm; }
   .sky-button--lg { @apply min-h-12 px-5 text-base; }
-  .sky-button--primary { background: var(--sky-accent); color: var(--sky-accent-ink); }
-  .sky-button--primary:hover { filter: brightness(1.08); }
-  .sky-button--secondary { background: var(--sky-raised); border-color: var(--sky-border); color: var(--sky-text); }
-  .sky-button--secondary:hover { border-color: var(--sky-accent); }
-  .sky-button--ghost { background: transparent; color: var(--sky-text); }
-  .sky-button--ghost:hover { background: var(--sky-raised); }
-  .sky-button--danger { background: var(--sky-danger); color: #230909; }
+  .sky-button--primary {
+    border-color: color-mix(in srgb, var(--sky-accent) 72%, #fff);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--sky-accent) 92%, #fff) 0%, var(--sky-accent) 100%);
+    color: var(--sky-accent-ink);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 32%),
+      0 6px 18px color-mix(in srgb, var(--sky-accent) 28%, transparent);
+  }
+  .sky-button--primary:hover:not(:disabled) {
+    filter: brightness(1.07);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 38%),
+      0 8px 22px color-mix(in srgb, var(--sky-accent) 38%, transparent);
+  }
+  .sky-button--secondary {
+    background: linear-gradient(180deg, color-mix(in srgb, var(--sky-raised) 86%, #fff 4%) 0%, var(--sky-surface) 100%);
+    border-color: color-mix(in srgb, var(--sky-border) 92%, transparent);
+    color: var(--sky-text);
+  }
+  .sky-button--secondary:hover:not(:disabled) {
+    border-color: var(--sky-accent);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 14%),
+      0 6px 16px rgb(0 0 0 / 34%);
+  }
+  .sky-button--ghost {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    color: var(--sky-text);
+  }
+  .sky-button--ghost:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--sky-border) 68%, transparent);
+    background: color-mix(in srgb, var(--sky-raised) 82%, transparent);
+  }
+  .sky-button--danger {
+    border-color: color-mix(in srgb, var(--sky-danger) 70%, #fff);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--sky-danger) 90%, #fff) 0%, var(--sky-danger) 100%);
+    color: #230909;
+  }
 
   .sky-badge {
     @apply inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold;
@@ -572,28 +693,73 @@
   .sky-sidebar[data-collapsed] .sky-sidebar__item { @apply justify-center px-0; }
   .sky-sidebar[data-collapsed] .sky-sidebar__label { @apply sr-only; }
 
-  .sky-inventory-grid { display: grid; grid-template-columns: repeat(var(--sky-inventory-columns, 4), minmax(0, 1fr)); gap: 0.65rem; }
-  .sky-inventory-grid__item { @apply relative flex min-w-0 flex-col items-start gap-1 rounded-xl border p-2 text-left; background: var(--sky-surface); border-color: var(--sky-border); color: var(--sky-text); cursor: pointer; }
-  .sky-inventory-grid__item:hover, .sky-inventory-grid__item[data-selected] { border-color: var(--sky-accent); background: var(--sky-raised); }
-  .sky-inventory-grid__item[data-selected] { box-shadow: inset 0 0 0 1px var(--sky-accent); }
+  .sky-inventory-grid { display: grid; grid-template-columns: repeat(var(--sky-inventory-columns, 4), minmax(0, 1fr)); gap: 0.72rem; }
+  .sky-inventory-grid__item { @apply relative flex min-w-0 flex-col items-start gap-1.5 rounded-xl border p-2.5 text-left; background: linear-gradient(180deg, color-mix(in srgb, var(--sky-raised) 52%, var(--sky-surface)), var(--sky-surface)); border-color: color-mix(in srgb, var(--sky-border) 82%, transparent); color: var(--sky-text); cursor: pointer; box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%), 0 6px 16px rgb(0 0 0 / 26%); transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease, box-shadow 140ms ease; }
+  .sky-inventory-grid__item:hover { border-color: color-mix(in srgb, var(--sky-accent) 70%, var(--sky-border)); background: linear-gradient(180deg, color-mix(in srgb, var(--sky-accent) 8%, var(--sky-raised)), var(--sky-surface)); transform: translateY(-2px); box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%), 0 10px 22px rgb(0 0 0 / 34%); }
+  .sky-inventory-grid__item[data-selected] { border-color: var(--sky-accent); background: linear-gradient(180deg, color-mix(in srgb, var(--sky-accent) 14%, var(--sky-raised)), var(--sky-surface)); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--sky-accent) 32%, rgb(255 255 255 / 12%)), inset 0 -2px 0 var(--sky-accent), 0 0 0 1px color-mix(in srgb, var(--sky-accent) 40%, transparent), 0 10px 24px rgb(0 0 0 / 38%); }
   .sky-inventory-grid__item:focus-visible, .sky-equipment-slot:focus-visible, .sky-sidebar__item:focus-visible, .sky-input:focus-visible, .sky-textarea:focus-visible, .sky-select:focus-visible, .sky-slider:focus-visible, .sky-checkbox:focus-visible, .sky-switch:focus-visible { outline: 2px solid var(--sky-accent); outline-offset: 2px; }
   .sky-inventory-grid__item:disabled { cursor: not-allowed; opacity: 0.5; }
-  .sky-inventory-grid__art { @apply flex aspect-square w-full items-center justify-center overflow-hidden rounded-lg text-3xl; background: radial-gradient(circle at 50% 36%, color-mix(in srgb, var(--sky-accent) 20%, var(--sky-raised)), var(--sky-bg)); color: var(--sky-accent); }
-  .sky-inventory-grid__art > svg { @apply h-8 w-8; }
+  .sky-inventory-grid__art { @apply relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-lg text-3xl; border: 1px solid color-mix(in srgb, var(--sky-border) 55%, transparent); background: radial-gradient(ellipse 68% 54% at 50% 42%, color-mix(in srgb, var(--sky-accent) 16%, var(--sky-raised)), color-mix(in srgb, var(--sky-bg) 92%, #000)); color: var(--sky-accent); box-shadow: inset 0 2px 10px rgb(0 0 0 / 45%); }
+  .sky-inventory-grid__art > svg { @apply h-8 w-8; transition: transform 140ms ease; }
+  .sky-inventory-grid__item:hover .sky-inventory-grid__art > svg { transform: scale(1.06); }
   .sky-inventory-grid__name { @apply w-full truncate text-xs font-bold; }
   .sky-inventory-grid__detail { @apply w-full truncate text-[0.65rem]; color: var(--sky-muted); }
-  .sky-inventory-grid__badge { @apply absolute right-2 top-2 rounded-full px-2 py-0.5 text-[0.6rem] font-bold; background: var(--sky-bg); color: var(--sky-gold); }
+  .sky-inventory-grid__badge { @apply absolute right-2 top-2 rounded-full px-2 py-0.5 text-[0.6rem] font-bold; border: 1px solid color-mix(in srgb, var(--sky-gold) 45%, var(--sky-border)); background: color-mix(in srgb, var(--sky-bg) 88%, #000); color: var(--sky-gold); }
   .sky-inventory-grid__empty { @apply col-span-full rounded-lg border border-dashed p-6 text-center text-sm; border-color: var(--sky-border); color: var(--sky-muted); }
 
-  .sky-equipment-panel { @apply grid gap-2 rounded-xl border p-3; background: var(--sky-surface); border-color: var(--sky-border); }
-  .sky-equipment-slot { @apply flex min-w-0 items-center gap-3 rounded-lg border px-3 py-2 text-left; background: var(--sky-bg); border-color: var(--sky-border); color: var(--sky-text); cursor: pointer; }
-  .sky-equipment-slot:hover { border-color: var(--sky-accent); background: var(--sky-raised); }
-  .sky-equipment-slot[data-empty] .sky-equipment-slot__icon { color: var(--sky-muted); }
-  .sky-equipment-slot__icon { @apply flex h-9 w-9 shrink-0 items-center justify-center rounded-lg; background: var(--sky-raised); color: var(--sky-accent); }
+  .sky-equipment-panel { @apply grid gap-2.5 rounded-xl border p-3; background: linear-gradient(160deg, color-mix(in srgb, var(--sky-surface) 88%, var(--sky-bg)), var(--sky-bg)); border-color: color-mix(in srgb, var(--sky-border) 80%, transparent); box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%), 0 10px 26px rgb(0 0 0 / 32%); }
+  .sky-equipment-slot { @apply relative flex min-w-0 items-center gap-3 overflow-hidden rounded-xl border px-3 py-2 text-left; background: linear-gradient(180deg, color-mix(in srgb, var(--sky-raised) 56%, var(--sky-bg)), color-mix(in srgb, var(--sky-bg) 94%, #000)); border-color: color-mix(in srgb, var(--sky-border) 78%, transparent); color: var(--sky-text); cursor: pointer; box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%), 0 4px 12px rgb(0 0 0 / 26%); transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease, box-shadow 140ms ease; }
+  .sky-equipment-slot:hover { border-color: var(--sky-accent); background: linear-gradient(180deg, color-mix(in srgb, var(--sky-accent) 11%, var(--sky-raised)), var(--sky-bg)); transform: translateY(-1px); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--sky-accent) 26%, rgb(255 255 255 / 10%)), 0 8px 18px rgb(0 0 0 / 34%); }
+  .sky-equipment-slot[data-empty] .sky-equipment-slot__icon { color: var(--sky-muted); opacity: 0.72; }
+  .sky-equipment-slot:not([data-empty]) { border-color: color-mix(in srgb, var(--sky-accent) 46%, var(--sky-border)); }
+  .sky-equipment-slot[data-enchanted="true"] { border-color: color-mix(in srgb, var(--sky-gold) 45%, var(--sky-accent)); box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%), 0 0 18px color-mix(in srgb, var(--sky-accent) 14%, transparent), 0 6px 16px rgb(0 0 0 / 32%); }
+  .sky-equipment-slot__icon { @apply relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border; border-color: color-mix(in srgb, var(--sky-border) 62%, transparent); background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--sky-accent) 16%, var(--sky-raised)), color-mix(in srgb, var(--sky-bg) 94%, #000)); color: var(--sky-accent); box-shadow: inset 0 2px 8px rgb(0 0 0 / 48%); }
   .sky-equipment-slot__copy { @apply flex min-w-0 flex-1 flex-col gap-0.5; }
-  .sky-equipment-slot__copy small { @apply text-[0.6rem] font-bold uppercase tracking-wider; color: var(--sky-muted); }
-  .sky-equipment-slot__copy strong { @apply truncate text-xs; }
+  .sky-equipment-slot__copy small { @apply flex items-center gap-1.5 text-[0.6rem] font-bold uppercase tracking-wider; color: var(--sky-accent); }
+  .sky-equipment-slot__copy small em { @apply rounded border px-1 py-px not-italic text-[0.55rem]; border-color: color-mix(in srgb, var(--sky-border) 80%, transparent); background: rgb(0 0 0 / 32%); color: var(--sky-muted); }
+  .sky-equipment-slot__copy strong { @apply truncate text-xs font-semibold; }
+  .sky-equipment-slot__copy span { @apply truncate text-[0.65rem]; color: var(--sky-muted); }
+  .sky-equipment-slot__enchant { @apply absolute right-1 top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full border; border-color: color-mix(in srgb, var(--sky-gold) 55%, var(--sky-accent)); background: color-mix(in srgb, var(--sky-bg) 88%, #000); color: var(--sky-gold); }
   .sky-equipment-slot__arrow { @apply text-lg; color: var(--sky-muted); }
+  .sky-equipment-slot--plate { @apply flex-col items-stretch gap-2 p-2.5; min-height: 112px; }
+  .sky-equipment-slot--plate .sky-equipment-slot__head { @apply flex w-full items-center justify-between gap-1 text-[0.6rem] font-bold uppercase tracking-wider; color: var(--sky-muted); }
+  .sky-equipment-slot--plate:not([data-empty]) .sky-equipment-slot__head { color: var(--sky-accent); }
+  .sky-equipment-slot--plate .sky-equipment-slot__head em { @apply rounded border px-1.5 py-px not-italic text-[0.55rem]; border-color: color-mix(in srgb, var(--sky-border) 80%, transparent); background: rgb(0 0 0 / 36%); color: var(--sky-text); }
+  .sky-equipment-slot--plate .sky-equipment-slot__bezel { @apply relative flex h-12 w-full items-center justify-center overflow-hidden rounded-lg border; border-color: color-mix(in srgb, var(--sky-border) 62%, transparent); background: radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--sky-accent) 14%, transparent), color-mix(in srgb, var(--sky-bg) 92%, #000) 78%); color: var(--sky-accent); box-shadow: inset 0 2px 10px rgb(0 0 0 / 52%); }
+  .sky-equipment-slot--plate[data-empty] .sky-equipment-slot__bezel { color: var(--sky-muted); }
+  .sky-equipment-slot--plate:not([data-empty]) .sky-equipment-slot__bezel { border-color: color-mix(in srgb, var(--sky-accent) 52%, var(--sky-border)); background: radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--sky-accent) 24%, transparent), color-mix(in srgb, var(--sky-bg) 90%, #000) 78%); }
+  .sky-equipment-slot--plate .sky-equipment-slot__bezel svg.equipment-glyph { @apply h-7 w-7 transition-transform duration-150; }
+  .sky-equipment-slot--plate:hover .sky-equipment-slot__bezel svg.equipment-glyph { transform: scale(1.08); }
+  .sky-equipment-slot--plate .sky-equipment-slot__name { @apply w-full truncate text-xs font-semibold; color: var(--sky-text); }
+  .sky-equipment-slot--plate[data-empty] .sky-equipment-slot__name { color: var(--sky-muted); font-weight: 500; }
+  .sky-equipment-slot--plate .sky-equipment-slot__bar { height: 2px; width: 100%; border-radius: 999px; background: color-mix(in srgb, var(--sky-border) 42%, transparent); }
+  .sky-equipment-slot--plate:not([data-empty]) .sky-equipment-slot__bar { background: linear-gradient(90deg, color-mix(in srgb, var(--sky-accent) 40%, transparent), var(--sky-accent), color-mix(in srgb, var(--sky-accent) 40%, transparent)); }
+  .sky-equipment-slot--plate[data-enchanted="true"] .sky-equipment-slot__bar { background: linear-gradient(90deg, color-mix(in srgb, var(--sky-accent) 55%, transparent), var(--sky-gold), var(--sky-accent)); }
+
+  .sky-tactical-health { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 10px; min-height: 30px; padding: 4px 10px; border: 1px solid color-mix(in srgb, #e04858 34%, var(--sky-border)); border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, #b82936 16%, var(--sky-surface)), color-mix(in srgb, var(--sky-bg) 92%, #000)); box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%), 0 2px 8px rgb(0 0 0 / 26%); }
+  .sky-tactical-health.is-low { border-color: color-mix(in srgb, #f59e0b 48%, var(--sky-border)); }
+  .sky-tactical-health.is-critical, .sky-tactical-health.is-dead { border-color: color-mix(in srgb, #ff4d5e 65%, var(--sky-border)); }
+  .sky-tactical-health__badge { display: inline-flex; align-items: center; gap: 5px; color: #ff7684; font-size: 9px; font-weight: 700; letter-spacing: 0.12em; }
+  .sky-tactical-health.is-low .sky-tactical-health__badge { color: #fbbf24; }
+  .sky-tactical-health.is-dead .sky-tactical-health__badge { color: var(--sky-muted); }
+  .sky-tactical-health__rail { position: relative; height: 6px; border-radius: 999px; overflow: hidden; background: repeating-linear-gradient(90deg, rgb(255 255 255 / 6%) 0 14px, rgb(0 0 0 / 35%) 14px 16px), rgb(0 0 0 / 50%); box-shadow: inset 0 1px 2px rgb(0 0 0 / 60%); }
+  .sky-tactical-health__fill { position: relative; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #9e1b29, #e63946 65%, #ff6b78); box-shadow: 0 0 10px rgb(255 92 108 / 55%); transition: width 220ms cubic-bezier(.22,1,.36,1); }
+  .sky-tactical-health.is-low .sky-tactical-health__fill { background: linear-gradient(90deg, #b45309, #f59e0b 65%, #fcd34d); }
+  .sky-tactical-health__value { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--sky-text); white-space: nowrap; }
+  .sky-tactical-health__pct { padding: 1px 7px; border-radius: 999px; border: 1px solid color-mix(in srgb, #ff6b78 40%, var(--sky-border)); background: color-mix(in srgb, #b82936 22%, var(--sky-bg)); color: #ffb3bb; font-size: 9px; font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .sky-tactical-health.is-low .sky-tactical-health__pct { border-color: color-mix(in srgb, #f59e0b 45%, var(--sky-border)); background: color-mix(in srgb, #f59e0b 14%, var(--sky-bg)); color: #fde68a; }
+
+  .sky-studio-scrubber { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 32px; padding: 4px 10px; border: 1px solid color-mix(in srgb, var(--sky-accent) 26%, var(--sky-border)); border-radius: 999px; background: linear-gradient(180deg, color-mix(in srgb, var(--sky-raised) 62%, var(--sky-bg)), color-mix(in srgb, var(--sky-bg) 94%, #000)); box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%), 0 2px 8px rgb(0 0 0 / 28%); }
+  .sky-studio-scrubber.is-disabled { opacity: 0.62; }
+  .sky-studio-scrubber__frames { font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--sky-text); white-space: nowrap; }
+  .sky-studio-scrubber__frames > em { font-style: normal; color: var(--sky-muted); font-weight: 500; }
+  .sky-studio-scrubber__track { position: relative; display: flex; align-items: center; height: 18px; min-width: 0; }
+  .sky-studio-scrubber__track::before { content: ''; position: absolute; left: 0; right: 0; height: 4px; border-radius: 999px; background: repeating-linear-gradient(90deg, rgb(255 255 255 / 12%) 0 1px, transparent 1px 10px), rgb(0 0 0 / 55%); pointer-events: none; }
+  .sky-studio-scrubber__fill { position: absolute; left: 0; height: 4px; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--sky-accent) 60%, #fff0), var(--sky-accent)); box-shadow: 0 0 8px color-mix(in srgb, var(--sky-accent) 55%, transparent); pointer-events: none; transition: width 65ms cubic-bezier(.22,1,.36,1); }
+  .sky-studio-scrubber__thumb { position: absolute; top: 50%; width: 12px; height: 12px; border-radius: 999px; border: 2px solid #fff; background: var(--sky-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--sky-accent) 32%, transparent), 0 0 10px color-mix(in srgb, var(--sky-accent) 65%, transparent); transform: translate(-50%, -50%); pointer-events: none; transition: left 65ms cubic-bezier(.22,1,.36,1), transform 120ms ease; }
+  .sky-studio-scrubber.is-scrubbing .sky-studio-scrubber__fill, .sky-studio-scrubber.is-scrubbing .sky-studio-scrubber__thumb { transition: none; }
+  .sky-studio-scrubber__input { position: relative; z-index: 2; width: 100%; height: 18px; margin: 0; opacity: 0; cursor: ew-resize; }
+  .sky-studio-scrubber__meta { font-size: 9.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--sky-accent); white-space: nowrap; }
 
   .sky-game-tooltip { @apply rounded-lg border p-4; min-width: min(18rem, 88vw); background: linear-gradient(145deg, var(--sky-surface), var(--sky-bg)); border-color: var(--sky-gold); box-shadow: 0 0 0 1px color-mix(in srgb, var(--sky-gold) 18%, transparent), var(--sky-shadow); color: var(--sky-text); }
   .sky-game-tooltip__heading { @apply flex items-start justify-between gap-3 border-b pb-2; border-color: var(--sky-border); }
@@ -620,9 +786,10 @@
   .sky-switch:disabled { cursor: not-allowed; opacity: 0.5; }
   .sky-switch__thumb { @apply block h-4 w-4 rounded-full; background: var(--sky-text); transition: transform 120ms ease; }
   .sky-switch[data-checked] .sky-switch__thumb { transform: translateX(1.25rem); background: var(--sky-accent-ink); }
-  .sky-slider { @apply h-2 w-full cursor-pointer appearance-none rounded-full; background: var(--sky-raised); accent-color: var(--sky-accent); }
-  .sky-slider::-webkit-slider-thumb { @apply h-4 w-4 appearance-none rounded-full border-2; background: var(--sky-accent); border-color: var(--sky-surface); }
-  .sky-slider::-moz-range-thumb { @apply h-4 w-4 rounded-full border-2; background: var(--sky-accent); border-color: var(--sky-surface); }
+  .sky-slider { @apply w-full cursor-pointer appearance-none rounded-full; height: 6px; border: 1px solid color-mix(in srgb, var(--sky-border) 82%, transparent); background: linear-gradient(90deg, var(--sky-accent) 0%, var(--sky-accent) var(--sky-slider-pct, 50%), color-mix(in srgb, var(--sky-bg) 88%, #000) var(--sky-slider-pct, 50%), color-mix(in srgb, var(--sky-bg) 88%, #000) 100%); accent-color: var(--sky-accent); box-shadow: inset 0 1px 2px rgb(0 0 0 / 65%); }
+  .sky-slider::-webkit-slider-thumb { width: 16px; height: 16px; appearance: none; border-radius: 5px; border: 1.5px solid color-mix(in srgb, var(--sky-accent) 85%, #fff); background: linear-gradient(180deg, #fff, #cbd5e1); box-shadow: 0 2px 6px rgb(0 0 0 / 60%), 0 0 0 3px color-mix(in srgb, var(--sky-accent) 20%, transparent); transition: transform 120ms ease, box-shadow 120ms ease; }
+  .sky-slider:hover::-webkit-slider-thumb { transform: scale(1.08); box-shadow: 0 2px 8px rgb(0 0 0 / 68%), 0 0 0 4px color-mix(in srgb, var(--sky-accent) 28%, transparent); }
+  .sky-slider::-moz-range-thumb { width: 16px; height: 16px; border-radius: 5px; border: 1.5px solid color-mix(in srgb, var(--sky-accent) 85%, #fff); background: linear-gradient(180deg, #fff, #cbd5e1); }
 
   .sky-dialog__overlay { @apply fixed inset-0; background: rgb(0 0 0 / 68%); }
   .sky-dialog__content {
@@ -1812,13 +1979,21 @@
   gap: 6px;
   white-space: nowrap;
 }
-.outfit-model.can-drop {
-  outline: 1px dashed rgb(232 176 89 / 45%);
-  outline-offset: -4px;
+.outfit-model.can-drop .actor-stage,
+.outfit-model.can-drop .outfit-placeholder {
+  outline: 1px dashed color-mix(in srgb, var(--sky-accent) 55%, transparent);
+  outline-offset: -3px;
 }
-.outfit-model.is-over {
-  outline: 2px solid rgb(232 176 89 / 90%);
-  box-shadow: inset 0 0 28px rgb(232 176 89 / 18%);
+.outfit-model.is-over .actor-stage,
+.outfit-model.is-over .outfit-placeholder {
+  outline: 2px solid color-mix(in srgb, var(--sky-accent) 92%, transparent);
+  outline-offset: -2px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sky-accent) 36%, transparent);
+}
+.outfit-model.is-invalid .actor-stage,
+.outfit-model.is-invalid .outfit-placeholder {
+  outline: 1.5px solid color-mix(in srgb, var(--sky-danger, #d7796c) 82%, transparent);
+  outline-offset: -2px;
 }
 
 /* ============================================================================
@@ -1827,16 +2002,16 @@
  * Crystalline Amethyst Waypoint Beacons, Radial Hostile Portrait Medallions
  * ============================================================================ */
 .hud-sovereign-compass {
-  --compass-gold-bright: #fff7d6;
-  --compass-gold: #f0c265;
-  --compass-gold-deep: #9e6b1e;
-  --compass-gold-shadow: #4a2e08;
+  --compass-gold-bright: color-mix(in srgb, var(--hud-accent, var(--sky-accent, #f0c265)) 28%, #ffffff);
+  --compass-gold: var(--hud-accent, var(--sky-accent, #f0c265));
+  --compass-gold-deep: color-mix(in srgb, var(--hud-accent, var(--sky-accent, #f0c265)) 66%, var(--sky-bg, #07090e));
+  --compass-gold-shadow: color-mix(in srgb, var(--hud-accent, var(--sky-accent, #f0c265)) 32%, #07090e);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  width: min(900px, 75vw);
-  min-width: 560px;
+  width: min(880px, 46vw);
+  min-width: 480px;
   padding-top: 24px;
   user-select: none;
   pointer-events: none;
@@ -1870,21 +2045,21 @@
   height: 54px;
   width: 100%;
   background:
-    radial-gradient(ellipse 68% 120% at 50% 50%, rgb(68 48 18 / 36%), transparent 80%),
+    radial-gradient(ellipse 68% 120% at 50% 50%, color-mix(in srgb, var(--compass-gold) 18%, transparent), transparent 80%),
     linear-gradient(
       180deg,
-      rgb(20 24 35 / 96%) 0%,
-      rgb(10 12 19 / 98%) 50%,
-      rgb(5 6 11 / 99%) 100%
+      color-mix(in srgb, var(--sky-raised, #141823) 94%, rgb(20 24 35 / 96%)) 0%,
+      color-mix(in srgb, var(--sky-surface, #0a0c13) 96%, rgb(10 12 19 / 98%)) 50%,
+      color-mix(in srgb, var(--sky-bg, #05060b) 98%, rgb(5 6 11 / 99%)) 100%
     );
-  border-top: 2px solid #e7b95c;
-  border-bottom: 2px solid #9c6a1e;
+  border-top: 2px solid var(--compass-gold);
+  border-bottom: 2px solid var(--compass-gold-deep);
   box-shadow:
-    inset 0 1px 0 rgb(255 248 220 / 48%),
-    inset 0 -1px 0 rgb(255 218 130 / 26%),
-    inset 0 0 36px rgb(0 0 0 / 88%),
-    0 4px 24px rgb(0 0 0 / 85%);
+    inset 0 1px 0 color-mix(in srgb, var(--compass-gold-bright) 52%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--compass-gold) 28%, transparent),
+    0 2px 6px rgb(0 0 0 / 78%);
   overflow: visible;
+  contain: layout style;
 }
 
 .hud-sovereign-compass__vignette {
@@ -1898,21 +2073,21 @@
     rgb(6 8 13 / 82%) 100%
   );
   pointer-events: none;
-  z-index: 2;
+  z-index: 4;
 }
 
 .hud-sovereign-compass__inner-grid {
   position: absolute;
   inset: 5px 1.5% 5px 1.5%;
-  border-top: 1px solid rgb(242 196 100 / 22%);
-  border-bottom: 1px solid rgb(242 196 100 / 16%);
+  border-top: 1px solid color-mix(in srgb, var(--compass-gold) 24%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--compass-gold) 18%, transparent);
   background:
     linear-gradient(
       90deg,
       transparent 0%,
-      rgb(245 204 112 / 4%) 20%,
-      rgb(255 234 175 / 11%) 50%,
-      rgb(245 204 112 / 4%) 80%,
+      color-mix(in srgb, var(--compass-gold) 5%, transparent) 20%,
+      color-mix(in srgb, var(--compass-gold-bright) 11%, transparent) 50%,
+      color-mix(in srgb, var(--compass-gold) 5%, transparent) 80%,
       transparent 100%
     );
   pointer-events: none;
@@ -1927,11 +2102,11 @@
   pointer-events: none;
   background: linear-gradient(
     90deg,
-    rgb(184 130 40 / 45%),
-    rgb(242 196 100 / 85%) 22%,
-    #fff8dc 50%,
-    rgb(242 196 100 / 85%) 78%,
-    rgb(184 130 40 / 45%)
+    color-mix(in srgb, var(--compass-gold-deep) 55%, transparent),
+    color-mix(in srgb, var(--compass-gold) 85%, transparent) 22%,
+    var(--compass-gold-bright) 50%,
+    color-mix(in srgb, var(--compass-gold) 85%, transparent) 78%,
+    color-mix(in srgb, var(--compass-gold-deep) 55%, transparent)
   );
   z-index: 3;
 }
@@ -1958,13 +2133,12 @@
   inset: 2px 0;
   background: linear-gradient(
     180deg,
-    #fff8dc,
-    #f2c464 28%,
+    var(--compass-gold-bright),
+    var(--compass-gold) 28%,
     rgb(255 245 210 / 14%) 50%,
-    #f2c464 72%,
-    #fff8dc
+    var(--compass-gold) 72%,
+    var(--compass-gold-bright)
   );
-  box-shadow: 0 0 10px rgb(242 196 100 / 75%);
 }
 
 .hud-sovereign-compass__crown-svg {
@@ -1974,7 +2148,6 @@
   width: 38px;
   height: 18px;
   transform: translateX(-50%);
-  filter: drop-shadow(0 2px 8px rgb(0 0 0 / 95%)) drop-shadow(0 0 10px rgb(247 210 125 / 80%));
 }
 
 .hud-sovereign-compass__center-notch::after {
@@ -1985,9 +2158,8 @@
   width: 9px;
   height: 9px;
   transform: translateX(-50%) rotate(45deg);
-  background: #fff7d6;
-  border: 1.5px solid #9e6b1e;
-  box-shadow: 0 0 10px #f2c464;
+  background: var(--compass-gold-bright);
+  border: 1.5px solid var(--compass-gold-deep);
 }
 
 .hud-sovereign-compass__bearings {
@@ -1996,6 +2168,14 @@
   overflow: hidden;
   pointer-events: none;
   z-index: 3;
+  contain: layout style paint;
+}
+
+.hud-sovereign-compass__tape {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  will-change: transform;
 }
 
 .hud-sovereign-compass__tick {
@@ -2004,8 +2184,7 @@
   bottom: 5px;
   width: 1px;
   height: 5px;
-  visibility: hidden;
-  will-change: transform;
+  transform: translateX(-50%);
   background: rgb(255 242 205 / 22%);
 }
 
@@ -2024,8 +2203,7 @@
   position: absolute;
   left: 0;
   top: 50%;
-  visibility: hidden;
-  will-change: transform;
+  transform: translate(-50%, -50%);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2037,9 +2215,7 @@
   font: 700 14px var(--sky-font-display, 'Cinzel', 'Palatino Linotype', serif);
   letter-spacing: 0.12em;
   color: rgb(250 243 228 / 92%);
-  text-shadow:
-    0 2px 6px rgb(0 0 0 / 98%),
-    0 0 12px rgb(0 0 0 / 92%);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 95%);
 }
 
 .hud-sovereign-compass__cardinal.is-major b {
@@ -2048,15 +2224,13 @@
 }
 
 .hud-sovereign-compass__cardinal.is-north b {
-  color: #ffdc85;
-  text-shadow:
-    0 0 14px rgb(255 208 98 / 92%),
-    0 2px 6px #000;
+  color: var(--compass-gold-bright);
+  text-shadow: 0 1px 2px #000;
 }
 
 .hud-sovereign-compass__cardinal.is-inter b {
   font-size: 11px;
-  color: rgb(232 214 178 / 72%);
+  color: color-mix(in srgb, var(--compass-gold-bright) 68%, var(--sky-muted, #9aa6be));
 }
 
 .hud-sovereign-compass__cardinal i {
@@ -2072,6 +2246,7 @@
   inset: 0;
   pointer-events: none;
   z-index: 6;
+  contain: layout style;
 }
 
 .hud-sovereign-compass__marker {
@@ -2083,7 +2258,7 @@
   gap: 2px;
   opacity: 0;
   visibility: hidden;
-  will-change: transform;
+  contain: layout style;
 }
 
 /* Edge state is driven by the animator via data-edge (left/right) */
@@ -2109,12 +2284,10 @@
   transform: translateX(-50%);
   padding: 2px 9px;
   border-radius: 4px;
-  background: linear-gradient(180deg, rgb(18 22 34 / 96%), rgb(8 10 16 / 98%));
-  border: 1px solid color-mix(in srgb, currentColor 68%, #f2c464);
-  box-shadow:
-    0 4px 12px rgb(0 0 0 / 95%),
-    0 0 10px color-mix(in srgb, currentColor 32%, transparent);
-  color: #fff9ec;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--sky-raised, #121622) 96%, transparent), color-mix(in srgb, var(--sky-bg, #080a10) 98%, transparent));
+  border: 1px solid color-mix(in srgb, currentColor 68%, var(--compass-gold));
+  box-shadow: 0 2px 4px rgb(0 0 0 / 88%);
+  color: var(--sky-text, #f5f7fc);
   font: 700 10px var(--sky-font-display, 'Cinzel', 'Segoe UI', serif);
   letter-spacing: 0.06em;
   white-space: nowrap;
@@ -2140,18 +2313,14 @@
   background: linear-gradient(180deg, rgb(8 42 58 / 96%), rgb(4 18 28 / 98%));
   border: 1px solid #63f2ff;
   color: #e8fdff;
-  box-shadow:
-    0 3px 10px rgb(0 0 0 / 94%),
-    0 0 12px rgb(0 242 254 / 50%);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 88%);
 }
 
 .hud-sovereign-compass__special-crown--waypoint {
   background: linear-gradient(180deg, rgb(52 12 68 / 96%), rgb(24 6 36 / 98%));
   border: 1px solid #f075ff;
   color: #fce8ff;
-  box-shadow:
-    0 3px 10px rgb(0 0 0 / 94%),
-    0 0 12px rgb(224 86 253 / 52%);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 88%);
 }
 
 .hud-sovereign-compass__special-crown--follower {
@@ -2161,9 +2330,7 @@
   text-transform: none;
   letter-spacing: 0.04em;
   font-size: 9px;
-  box-shadow:
-    0 3px 10px rgb(0 0 0 / 94%),
-    0 0 12px rgb(52 211 153 / 42%);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 88%);
 }
 
 /* Base Local POI Medallion — Sculpted Octagonal/Shield Emblem */
@@ -2178,10 +2345,8 @@
     radial-gradient(circle at 50% 25%, color-mix(in srgb, currentColor 30%, rgb(28 34 48 / 96%)), rgb(8 10 16 / 98%));
   border: 1.5px solid color-mix(in srgb, currentColor 76%, #f5d380);
   box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 30%),
-    0 4px 12px rgb(0 0 0 / 94%),
-    0 0 14px color-mix(in srgb, currentColor 36%, transparent);
-  transition: transform 140ms ease, filter 160ms ease, box-shadow 160ms ease;
+    inset 0 1px 0 rgb(255 255 255 / 26%),
+    0 2px 4px rgb(0 0 0 / 88%);
 }
 
 .hud-sovereign-compass__marker-halo {
@@ -2202,10 +2367,7 @@
     radial-gradient(circle at 50% 24%, rgb(0 242 254 / 42%), rgb(6 24 38 / 98%) 76%),
     linear-gradient(180deg, #103b54 0%, #05111c 100%);
   border: 1.8px solid #7ef4ff;
-  box-shadow:
-    inset 0 0 10px rgb(0 242 254 / 45%),
-    0 5px 15px rgb(0 0 0 / 95%),
-    0 0 20px rgb(0 242 254 / 62%);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 90%);
 }
 
 .hud-sovereign-compass__marker.is-quest-banner .hud-sovereign-compass__marker-halo {
@@ -2224,10 +2386,7 @@
     radial-gradient(circle at 50% 28%, rgb(232 92 255 / 44%), rgb(30 8 44 / 98%) 76%),
     linear-gradient(180deg, #3c1054 0%, #12041c 100%);
   border: 1.8px solid #f48cff;
-  box-shadow:
-    inset 0 0 10px rgb(232 92 255 / 48%),
-    0 5px 15px rgb(0 0 0 / 95%),
-    0 0 20px rgb(224 86 253 / 64%);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 90%);
 }
 
 .hud-sovereign-compass__marker.is-waypoint-beacon .hud-sovereign-compass__marker-halo {
@@ -2245,17 +2404,13 @@
   padding: 2px;
   background: radial-gradient(circle at 50% 30%, rgb(90 14 28 / 94%), rgb(14 5 9 / 98%));
   border: 1.8px solid #ff5c74;
-  box-shadow:
-    0 5px 14px rgb(0 0 0 / 96%),
-    0 0 18px rgb(255 56 88 / 60%);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 90%);
 }
 
 .hud-sovereign-compass__marker--follower.is-actor-portrait .hud-sovereign-compass__marker-glyph {
   background: radial-gradient(circle at 50% 30%, rgb(14 72 58 / 94%), rgb(6 18 15 / 98%));
   border-color: #4be8a5;
-  box-shadow:
-    0 5px 14px rgb(0 0 0 / 96%),
-    0 0 18px rgb(75 232 165 / 50%);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 90%);
 }
 
 .hud-sovereign-compass__marker.is-actor-portrait .hud-sovereign-compass__marker-halo {
@@ -2302,10 +2457,7 @@
 .hud-sovereign-compass__marker.is-focused .hud-sovereign-compass__marker-glyph {
   transform: translateY(-1.5px) scale(1.1);
   border-color: #fff7d8;
-  box-shadow:
-    inset 0 1px 2px rgb(255 255 255 / 48%),
-    0 7px 18px rgb(0 0 0 / 96%),
-    0 0 24px color-mix(in srgb, currentColor 80%, transparent);
+  box-shadow: 0 2px 5px rgb(0 0 0 / 92%), 0 0 0 1px color-mix(in srgb, currentColor 65%, transparent);
 }
 
 /* 4. UNDISCOVERED LOCATIONS: Significantly Darker Obsidian-Iron Silhouette Until Discovered */
@@ -2316,16 +2468,14 @@
 .hud-sovereign-compass__marker.is-undiscovered .hud-sovereign-compass__marker-glyph {
   background: linear-gradient(180deg, rgb(14 16 22 / 96%), rgb(6 7 10 / 98%));
   border: 1.5px dashed rgb(95 104 122 / 55%);
-  box-shadow:
-    inset 0 0 8px rgb(0 0 0 / 92%),
-    0 3px 10px rgb(0 0 0 / 90%);
-  filter: brightness(0.45) saturate(0.14) contrast(1.08);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 85%);
+  opacity: 0.58;
 }
 
 .hud-sovereign-compass__marker.is-undiscovered.is-focused .hud-sovereign-compass__marker-glyph {
-  filter: brightness(0.58) saturate(0.22);
+  opacity: 0.78;
   border-color: rgb(148 163 184 / 72%);
-  box-shadow: 0 5px 14px rgb(0 0 0 / 94%);
+  box-shadow: 0 2px 5px rgb(0 0 0 / 90%);
 }
 
 .hud-sovereign-compass__marker.is-undiscovered .hud-sovereign-compass__marker-halo {
@@ -2336,7 +2486,7 @@
   background: rgb(10 12 16 / 96%);
   border-color: rgb(100 116 139 / 55%);
   color: #94a3b8;
-  box-shadow: 0 3px 8px rgb(0 0 0 / 90%);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 85%);
 }
 
 .hud-sovereign-compass__marker.is-undiscovered .hud-sovereign-compass__marker-dist {
@@ -2398,6 +2548,26 @@
 .hud-sovereign-compass__callout--dragon {
   color: #ff9f43;
 }
+.hud-sovereign-compass__marker--cave,
+.hud-sovereign-compass__callout--cave {
+  color: #e0b984;
+}
+.hud-sovereign-compass__marker--ruin,
+.hud-sovereign-compass__callout--ruin {
+  color: #e8d39c;
+}
+.hud-sovereign-compass__marker--camp,
+.hud-sovereign-compass__callout--camp {
+  color: #f5a663;
+}
+.hud-sovereign-compass__marker--dungeon,
+.hud-sovereign-compass__callout--dungeon {
+  color: #c7d9f2;
+}
+.hud-sovereign-compass__marker--door,
+.hud-sovereign-compass__callout--door {
+  color: #e2e8f0;
+}
 
 .hud-sovereign-compass__elev {
   position: absolute;
@@ -2412,7 +2582,7 @@
 .hud-sovereign-compass__edge-arrow {
   font: 900 18px sans-serif;
   color: currentColor;
-  text-shadow: 0 0 10px currentColor;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 95%);
 }
 
 .hud-sovereign-compass__marker-dist {
@@ -2422,9 +2592,9 @@
   transform: translateX(-50%);
   padding: 1px 5.5px;
   border-radius: 3px;
-  background: rgb(7 9 14 / 95%);
-  border: 1px solid rgb(242 196 100 / 22%);
-  color: #f8f3e8;
+  background: color-mix(in srgb, var(--sky-bg, #07090e) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--compass-gold) 28%, transparent);
+  color: var(--sky-text, #f5f7fc);
   font: 700 9px var(--sky-font-data, 'Bahnschrift', sans-serif);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
@@ -2452,11 +2622,11 @@
   padding: 5px 20px;
   border-radius: 6px 6px 14px 14px;
   background:
-    radial-gradient(ellipse 80% 100% at 50% 0%, rgb(68 48 18 / 32%), transparent 75%),
-    linear-gradient(180deg, rgb(18 22 33 / 96%), rgb(7 9 15 / 98%));
-  border: 1.4px solid rgb(231 185 92 / 68%);
+    radial-gradient(ellipse 80% 100% at 50% 0%, color-mix(in srgb, var(--compass-gold) 18%, transparent), transparent 75%),
+    linear-gradient(180deg, color-mix(in srgb, var(--sky-raised, #121621) 95%, transparent), color-mix(in srgb, var(--sky-bg, #07090f) 98%, transparent));
+  border: 1.4px solid color-mix(in srgb, var(--compass-gold) 68%, var(--sky-border, transparent));
   box-shadow:
-    inset 0 1px 0 rgb(255 248 220 / 32%),
+    inset 0 1px 0 color-mix(in srgb, var(--compass-gold-bright) 34%, transparent),
     0 8px 22px rgb(0 0 0 / 90%);
   font-size: 12px;
 }
@@ -2465,10 +2635,13 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: #f0dfb8;
+  color: var(--compass-gold-bright);
   font: 700 10.5px var(--sky-font-display, 'Cinzel', 'Bahnschrift', serif);
   letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+.hud-sovereign-compass__hold svg {
+  color: var(--compass-gold);
 }
 
 .hud-sovereign-compass__callout {
@@ -2476,8 +2649,8 @@
   align-items: center;
   gap: 8px;
   padding: 1.5px 12px;
-  border-left: 1px solid rgb(242 196 100 / 26%);
-  border-right: 1px solid rgb(242 196 100 / 26%);
+  border-left: 1px solid color-mix(in srgb, var(--compass-gold) 30%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--compass-gold) 30%, transparent);
 }
 
 .hud-sovereign-compass__callout.is-undiscovered {
@@ -2493,7 +2666,7 @@
 }
 
 .hud-sovereign-compass__callout-name {
-  color: #fffaf0;
+  color: var(--sky-text, #f5f7fc);
   font: 700 13.5px var(--sky-font-display, 'Cinzel', 'Segoe UI', serif);
   letter-spacing: 0.03em;
   white-space: nowrap;
@@ -2501,7 +2674,7 @@
 }
 
 .hud-sovereign-compass__callout-sub {
-  color: rgb(235 228 213 / 82%);
+  color: var(--sky-muted, rgb(215 224 238 / 82%));
   font: 600 11.5px var(--sky-font-body, 'Segoe UI', sans-serif);
   white-space: nowrap;
 }
@@ -2511,7 +2684,7 @@
   border-radius: 4px;
   background: color-mix(in srgb, currentColor 24%, rgb(0 0 0 / 72%));
   border: 1px solid color-mix(in srgb, currentColor 54%, transparent);
-  color: #fff9eb;
+  color: var(--sky-text, #f5f7fc);
   font: 700 10.5px var(--sky-font-data, 'Bahnschrift', sans-serif);
   font-variant-numeric: tabular-nums;
 }
@@ -2539,10 +2712,498 @@
   font: 700 11.5px var(--sky-font-data, 'Bahnschrift', sans-serif);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.08em;
-  color: #f8f2e6;
+  color: var(--sky-text, #f5f7fc);
 }
 
 .hud-sovereign-compass__hdg em {
   font-style: normal;
-  color: #f2c464;
+  color: var(--compass-gold);
+}
+
+/* ============================================================================
+   SKY COLOR WHEEL (Outer Hue Ring + Concentric Inner Brightness Wheel)
+   ============================================================================ */
+.sky-color-wheel {
+  position: relative;
+  display: inline-grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sky-color-wheel--inline {
+  width: min(100%, 236px);
+}
+
+.sky-color-wheel--popover {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sky-color-wheel__panel {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--sky-border) 88%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--sky-raised) 66%, var(--sky-surface)), color-mix(in srgb, var(--sky-bg) 90%, #000));
+  box-shadow:
+    0 12px 26px rgb(0 0 0 / 34%),
+    inset 0 1px 0 rgb(255 255 255 / 8%);
+}
+
+.sky-color-wheel__panel.is-compact {
+  gap: 8px;
+  padding: 9px 10px;
+}
+
+.sky-color-wheel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.sky-color-wheel__label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sky-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sky-color-wheel__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 3px 10px 3px 5px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--sky-border) 88%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--sky-raised) 82%, var(--sky-surface)), var(--sky-surface));
+  color: var(--sky-text);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%), 0 2px 8px rgb(0 0 0 / 28%);
+  transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.sky-color-wheel__trigger:hover:not(:disabled),
+.sky-color-wheel__trigger.is-open {
+  border-color: var(--sky-accent);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 16%), 0 4px 14px color-mix(in srgb, var(--sky-accent) 26%, transparent);
+}
+
+.sky-color-wheel__trigger-chip {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--sky-border) 80%, #fff 12%), color-mix(in srgb, var(--sky-bg) 94%, #000));
+  padding: 2.5px;
+  border: 1px solid color-mix(in srgb, var(--sky-accent) 45%, var(--sky-border));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 12%);
+}
+
+.sky-color-wheel__trigger-chip > i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
+  border: 1px solid rgb(0 0 0 / 48%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%);
+}
+
+.sky-color-wheel__trigger-hex {
+  font-family: var(--sky-font-data, 'Bahnschrift', monospace);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--sky-text);
+}
+
+.sky-color-wheel__popover-card {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 80;
+  min-width: 208px;
+  border-radius: 14px;
+  box-shadow: 0 22px 48px rgb(0 0 0 / 72%);
+}
+
+.sky-color-wheel__popover-card .sky-color-wheel__panel {
+  border-color: color-mix(in srgb, var(--sky-accent) 44%, var(--sky-border));
+}
+
+.sky-color-wheel__dial {
+  position: relative;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  user-select: none;
+  touch-action: none;
+  box-shadow:
+    0 10px 26px rgb(0 0 0 / 48%),
+    inset 0 1px 0 rgb(255 255 255 / 12%);
+}
+
+.sky-color-wheel__hue-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 90deg,
+    #ff0000 0deg,
+    #ffff00 60deg,
+    #00ff00 120deg,
+    #00ffff 180deg,
+    #0000ff 240deg,
+    #ff00ff 300deg,
+    #ff0000 360deg
+  );
+  cursor: crosshair;
+  box-shadow:
+    inset 0 0 0 1.5px rgb(255 255 255 / 22%),
+    inset 0 0 12px rgb(0 0 0 / 38%);
+}
+
+.sky-color-wheel__hue-thumb,
+.sky-color-wheel__inner-thumb {
+  position: absolute;
+  z-index: 3;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  box-shadow:
+    0 0 0 1.5px rgb(8 12 18 / 88%),
+    0 3px 8px rgb(0 0 0 / 62%);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.sky-color-wheel__inner {
+  position: absolute;
+  inset: 15.5%;
+  z-index: 2;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 2.5px solid color-mix(in srgb, var(--sky-surface) 92%, #000);
+  box-shadow:
+    0 0 0 1.5px rgb(255 255 255 / 22%),
+    inset 0 2px 10px rgb(0 0 0 / 52%);
+  cursor: crosshair;
+}
+
+.sky-color-wheel__inner-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+.sky-color-wheel__footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.sky-color-wheel__swatch {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  border: 1.5px solid rgb(255 255 255 / 32%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 20%), 0 2px 6px rgb(0 0 0 / 40%);
+}
+
+.sky-color-wheel__hex {
+  width: 76px;
+  min-height: 26px;
+  padding: 2px 7px;
+  border-radius: 7px;
+  border: 1px solid var(--sky-border);
+  background: color-mix(in srgb, var(--sky-bg) 90%, #000);
+  color: var(--sky-text);
+  font-family: var(--sky-font-data, 'Bahnschrift', monospace);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  outline: none;
+}
+
+.sky-color-wheel__hex:focus {
+  border-color: var(--sky-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sky-accent) 22%, transparent);
+}
+
+.sky-color-wheel__readout {
+  margin-left: auto;
+  font-family: var(--sky-font-data, 'Bahnschrift', monospace);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--sky-muted);
+  white-space: nowrap;
+}
+
+.sky-color-wheel__theme-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--sky-border) 82%, transparent);
+  background: linear-gradient(180deg, var(--sky-raised), var(--sky-surface));
+  color: var(--sky-text);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.sky-color-wheel__theme-btn:hover {
+  border-color: var(--sky-accent);
+}
+
+.sky-color-wheel__theme-btn.is-active {
+  border-color: var(--sky-accent);
+  background: color-mix(in srgb, var(--sky-accent) 22%, var(--sky-raised));
+  color: var(--sky-text);
+}
+
+/* ============================================================================
+   DRAGONBLADE PORTRAIT CREST HUD WIDGET (5 BLADE STYLES + 3 GLOSSY BARS)
+   ============================================================================ */
+.hud-dragonblade-crest {
+  --crest-metal-hi: #eef0e6;
+  --crest-metal-mid: #8f9384;
+  --crest-metal-lo: #31342c;
+  --crest-trim: var(--hud-accent, #e8b059);
+  --crest-rim: color-mix(in srgb, var(--crest-trim) 68%, #fff);
+  --crest-eye: #ff9c2a;
+  --crest-channel: #07090d;
+  --crest-hp: var(--crest-hp-custom, #28d14c);
+  --crest-mp: var(--crest-mp-custom, #27a7ff);
+  --crest-sp: var(--crest-sp-custom, #f3c825);
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 446px;
+  height: 112px;
+  filter: drop-shadow(0 8px 18px rgb(0 0 0 / 76%));
+  user-select: none;
+}
+
+.hud-dragonblade-crest[data-crest-style="daedric"] {
+  --crest-metal-hi: #b8bfc9;
+  --crest-metal-mid: #4a4e5b;
+  --crest-metal-lo: #181a22;
+  --crest-eye: #ff3852;
+  --crest-hp: var(--crest-hp-custom, #ef4444);
+  --crest-mp: var(--crest-mp-custom, #a855f7);
+  --crest-sp: var(--crest-sp-custom, #f59e0b);
+}
+
+.hud-dragonblade-crest[data-crest-style="dwemer"] {
+  --crest-metal-hi: #ffe6a8;
+  --crest-metal-mid: #b8843b;
+  --crest-metal-lo: #3e280d;
+  --crest-eye: #42e8ff;
+  --crest-hp: var(--crest-hp-custom, #e8792f);
+  --crest-mp: var(--crest-mp-custom, #38bdf8);
+  --crest-sp: var(--crest-sp-custom, #facc15);
+}
+
+.hud-dragonblade-crest[data-crest-style="aetherial"] {
+  --crest-metal-hi: #f2f8ff;
+  --crest-metal-mid: #89a5c7;
+  --crest-metal-lo: #23334b;
+  --crest-eye: #68e6ff;
+  --crest-hp: var(--crest-hp-custom, #34d399);
+  --crest-mp: var(--crest-mp-custom, #60a5fa);
+  --crest-sp: var(--crest-sp-custom, #fbbf24);
+}
+
+.hud-dragonblade-crest[data-crest-style="nordic"] {
+  --crest-metal-hi: #dce3ea;
+  --crest-metal-mid: #6b7683;
+  --crest-metal-lo: #1e232a;
+  --crest-eye: #74d4ff;
+  --crest-hp: var(--crest-hp-custom, #e11d48);
+  --crest-mp: var(--crest-mp-custom, #2563eb);
+  --crest-sp: var(--crest-sp-custom, #22c55e);
+}
+
+.hud-dragonblade-crest__svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.hud-dragonblade-crest__portrait-socket {
+  position: relative;
+  z-index: 2;
+  margin-left: 63px;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  padding: 2px;
+  background: radial-gradient(circle at 35% 30%, var(--crest-metal-hi), var(--crest-metal-lo));
+  box-shadow:
+    inset 0 2px 8px rgb(0 0 0 / 88%),
+    0 0 12px color-mix(in srgb, var(--crest-trim) 42%, transparent);
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.hud-dragonblade-crest__portrait-mask {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 35%, rgb(34 40 52 / 96%), rgb(8 10 14 / 99%));
+  border: 1.5px solid color-mix(in srgb, var(--crest-rim) 70%, #000);
+  display: grid;
+  place-items: center;
+}
+
+.hud-dragonblade-crest__portrait-mask .actor-portrait-chip,
+.hud-dragonblade-crest__portrait-mask .actor-portrait-chip--sm {
+  width: 62px;
+  height: 62px;
+  border: 0;
+  border-radius: 50%;
+}
+
+.hud-dragonblade-crest__level {
+  position: absolute;
+  bottom: -7px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1.5px 7px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #1b212d 0%, #090c12 100%);
+  border: 1px solid var(--crest-rim);
+  color: #fff6dc;
+  font: 800 9.5px var(--sky-font-data, 'Bahnschrift', sans-serif);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  box-shadow: 0 3px 8px rgb(0 0 0 / 82%);
+}
+
+.hud-dragonblade-crest__blade-body {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  min-width: 0;
+  margin-left: 14px;
+  margin-right: 54px;
+  display: grid;
+  gap: 3px;
+}
+
+.hud-dragonblade-crest__identity {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 6px 1px 2px;
+  transform: translateY(-2px);
+}
+
+.hud-dragonblade-crest__identity strong {
+  font: 700 12px var(--sky-font-display, 'Cinzel', 'Constantia', serif);
+  color: #fffaf0;
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 6px rgb(0 0 0 / 95%), 0 0 10px color-mix(in srgb, var(--crest-trim) 32%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-dragonblade-crest__identity small {
+  font: 700 8.5px var(--sky-font-data, 'Bahnschrift', sans-serif);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--crest-rim) 88%, #fff);
+  text-shadow: 0 1px 4px rgb(0 0 0 / 92%);
+  white-space: nowrap;
+}
+
+.hud-dragonblade-crest__bars {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+}
+
+.hud-dragonblade-crest__bar-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 11px;
+  padding: 1.5px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, rgb(6 8 12 / 96%), rgb(14 17 24 / 95%));
+  border: 1px solid color-mix(in srgb, var(--crest-metal-hi) 38%, rgb(255 255 255 / 14%));
+  box-shadow:
+    inset 0 2px 5px rgb(0 0 0 / 88%),
+    0 1px 0 rgb(255 255 255 / 16%);
+  overflow: hidden;
+}
+
+.hud-dragonblade-crest__bar-row--mp {
+  width: 94%;
+}
+
+.hud-dragonblade-crest__bar-row--sp {
+  width: 82%;
+}
+
+.hud-dragonblade-crest__bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bar-color) 65%, #fff) 0%,
+    var(--bar-color) 48%,
+    color-mix(in srgb, var(--bar-color) 62%, #000) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 48%),
+    0 0 10px color-mix(in srgb, var(--bar-color) 55%, transparent);
+}
+
+.hud-dragonblade-crest__bar-label {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: calc(100% - 10px);
+  font: 700 8px var(--sky-font-data, 'Bahnschrift', sans-serif);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: rgb(255 255 255 / 92%);
+  text-shadow: 0 1px 3px #000;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
 }

@@ -7,7 +7,10 @@ The former test-menu screens now live in this package. Use `/game` for
 `SkyHudEditor`, `SkyHudComposer`, and `SkyGameWidget`. `/chrome` provides
 `SkyCursorScope`, `SkyMenuHeader`, `SkyMenuFooter`, and `SkySettingsSection`.
 `/menu` exports the optional complete `SkyUltraMenu`. `/gameplay` exports the
-small standalone `SkyGameplayHud` entry; prefer that direct import for HUD pages.
+small standalone `SkyGameplayHud` entry; prefer that direct import for HUD pages
+and pass optional `compassRadius` (`50`–`1000` meters, default `50`) in
+`SkyUltraWidgetPlacement` (for `compass`) to control local POI and enemy scan
+distance while keeping quests, custom waypoints, and followers pinned at any range.
 Galleries, popup patterns and the synthetic benchmark remain optional SDK examples.
 All styles and themes are opt-in. See [SDK onboarding and renderer examples](../README.md).
 
@@ -23,10 +26,10 @@ Confirm the target item's model/materials in game; source checks do not establis
 visual correctness for every modded item.
 
 `@skyultra/ui` is the reusable React component set for SkyUltra web mods. It
-ships **17 built-in themes** across four families (**Dark Mode**, **Classic**, **Celestial**, and **Neon** — with Frost, Dragonstone, and Arcane remaining
-default classics), buttons and icon buttons, cards and panels, HUD stats, sidebar
+ships **21 built-in themes** across four families (**Eye-Comfort Velvet Slate**, **Classic**, **Celestial**, and **Neon** — with Frost, Dragonstone, and Arcane remaining
+default classics), `SkyColorWheel` (a 360° Hue ring + concentric Brightness/Saturation color wheel in `inline` and `popover` modes), buttons and icon buttons, cards and panels, HUD stats, sidebar
 navigation, inventory grids, equipment slots, game-style item tooltips, a theme-reactive 7-design Book Reader (`Auto`, `Codex`, `Scroll`, `Grimoire`, `Dwemer`, `Scholar`, `Datapad`), a motion logo `TabSplash` indicator,
-notices and dismissible toasts, form controls, controller prompts, and
+notices and dismissible toasts, form controls, controller prompts, an expanded sculpted `SkyIcon` set, and
 accessible Radix dialogs, tabs, dropdowns, context menus, and tooltips. It also
 exports Lucide React icons and an entrance-animation component. `SkyProgress`
 clamps its value, exposes a labeled ARIA progress bar, supports accent, gold,
@@ -73,15 +76,16 @@ Import the stylesheet once, then scope components with a theme root:
 
 ```tsx
 import "@skyultra/ui/styles.css";
-import { SkyButton, SkyPanel, SkyPanelHeader, SkyPanelTitle, SkyThemeProvider } from "@skyultra/ui";
+import { SkyButton, SkyColorWheel, SkyPanel, SkyPanelHeader, SkyPanelTitle, SkyThemeProvider } from "@skyultra/ui";
 
 export function ModPage() {
   return (
-    <SkyThemeProvider theme="frost">
+    <SkyThemeProvider theme="warmdusk">
       <SkyPanel>
         <SkyPanelHeader>
           <SkyPanelTitle>Inventory</SkyPanelTitle>
         </SkyPanelHeader>
+        <SkyColorWheel mode="popover" label="Accent" value="#e09f67" onChange={(hex) => console.info(hex)} />
         <SkyButton onClick={() => console.info("Open inventory")}>Open</SkyButton>
       </SkyPanel>
     </SkyThemeProvider>
@@ -89,7 +93,7 @@ export function ModPage() {
 }
 ```
 
-Available themes across 4 families are `darkmode` (Dark Mode), `obsidian`, `dragonstone`, `dwemer`, `sunspire`, `ember`, `verdant` (Classic), `aurora`, `glacier`, `frost`, `aether`, `arcane` (Celestial), and `cyberneon`, `synthwave`, `venomneon`, `plasmaneon`, `crimsonneon` (Neon). Components expose
+Available themes across 4 families are `darkmode` (Velvet Slate), `warmdusk` (Warm Dusk), `sagehaven` (Sage Haven), `twilightplum` (Twilight Plum), `nordiclinen` (Nordic Linen — all 5 Eye-Comfort matte), `obsidian`, `dragonstone`, `dwemer`, `sunspire`, `ember`, `verdant` (Classic), `aurora`, `glacier`, `frost`, `aether`, `arcane` (Celestial), and `cyberneon`, `synthwave`, `venomneon`, `plasmaneon`, `crimsonneon` (Neon). Components expose
 normal React props and `className` for customization. Icon-only buttons require
 an accessible `label`; Radix dialogs should include `SkyDialogTitle` and, when
 useful, `SkyDialogDescription` for accessible naming and context.

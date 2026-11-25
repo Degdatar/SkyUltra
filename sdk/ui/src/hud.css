@@ -9,7 +9,7 @@ body { font-family:var(--sky-font-body,"Segoe UI",sans-serif); -webkit-user-sele
 .hud-root[data-side="left"][data-align="bottom"] .hud-stack { transform-origin:bottom left; }
 .hud-stack > * { flex:0 0 auto;background:transparent!important;border:0!important;box-shadow:none!important;padding:0; }
 
-/* 6-Zone Full-Screen Gameplay HUD Overlay */
+/* 9-Zone Full-Screen Gameplay HUD Overlay */
 .sky-hud-screen-grid {
   position: relative;
   width: 100%;
@@ -22,7 +22,7 @@ body { font-family:var(--sky-font-body,"Segoe UI",sans-serif); -webkit-user-sele
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-width: min(420px, 32vw);
+  max-width: min(520px, 34vw);
   background: transparent !important;
   pointer-events: none;
 }
@@ -39,12 +39,31 @@ body { font-family:var(--sky-font-body,"Segoe UI",sans-serif); -webkit-user-sele
   left: 50%;
   transform: translateX(-50%);
   align-items: center;
-  max-width: min(860px, 78vw);
-  width: min(820px, 76vw);
+  max-width: min(920px, 78vw);
+  width: min(880px, 76vw);
 }
 .sky-hud-zone--top-right {
   top: 24px;
   right: 28px;
+  align-items: flex-end;
+}
+.sky-hud-zone--middle-left {
+  top: 50%;
+  left: 28px;
+  transform: translateY(-50%);
+  align-items: flex-start;
+}
+.sky-hud-zone--middle-center {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  align-items: center;
+  max-width: min(920px, 78vw);
+}
+.sky-hud-zone--middle-right {
+  top: 50%;
+  right: 28px;
+  transform: translateY(-50%);
   align-items: flex-end;
 }
 .sky-hud-zone--bottom-left {
@@ -73,6 +92,9 @@ body { font-family:var(--sky-font-body,"Segoe UI",sans-serif); -webkit-user-sele
 .sky-hud-zone--top-left .sky-hud-zone__item { transform-origin: top left; }
 .sky-hud-zone--top-center .sky-hud-zone__item { transform-origin: top center; }
 .sky-hud-zone--top-right .sky-hud-zone__item { transform-origin: top right; }
+.sky-hud-zone--middle-left .sky-hud-zone__item { transform-origin: center left; }
+.sky-hud-zone--middle-center .sky-hud-zone__item { transform-origin: center center; }
+.sky-hud-zone--middle-right .sky-hud-zone__item { transform-origin: center right; }
 .sky-hud-zone--bottom-left .sky-hud-zone__item { transform-origin: bottom left; }
 .sky-hud-zone--bottom-center .sky-hud-zone__item { transform-origin: bottom center; }
 .sky-hud-zone--bottom-right .sky-hud-zone__item { transform-origin: bottom right; }

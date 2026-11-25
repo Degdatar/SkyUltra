@@ -62,7 +62,7 @@ export function connectSkyUltraDeclarativeSounds(
     return () => {};
   }
 
-  const cooldownMs = Math.max(20, options.hoverCooldownMs ?? 55);
+  const cooldownMs = Math.max(20, options.hoverCooldownMs ?? 120);
   let lastHoverAt = 0;
   let lastHoverEl: Element | null = null;
 
@@ -72,16 +72,16 @@ export function connectSkyUltraDeclarativeSounds(
   const onPointerOver = (ev: Event): void => {
     const target = ev.target as Element | null;
     if (!target || typeof target.closest !== 'function') return;
-    const el = target.closest(interactiveSelector);
+    const el = target.closest('[data-sky-hover-sound]');
     if (!el || el === lastHoverEl) return;
     if ((el as HTMLButtonElement).disabled) return;
     lastHoverEl = el;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     if (now - lastHoverAt < cooldownMs) return;
+    const customHover = el.getAttribute('data-sky-hover-sound')?.trim();
+    if (!customHover || customHover === 'none') return;
     lastHoverAt = now;
-    const customHover = el.getAttribute('data-sky-hover-sound');
-    if (customHover === 'none') return;
-    void playSkyUltraSound(customHover || 'focus', options.bridge);
+    void playSkyUltraSound(customHover, options.bridge);
   };
 
   const onClick = (ev: Event): void => {

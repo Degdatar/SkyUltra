@@ -65,11 +65,12 @@ private:
         // Only complete host state is replaceable. Never coalesce custom
         // commands, deltas, input tokens, or pieces of a chunked transfer.
         return name == "skyultra.visibility" || name == "skyultra.menuSession" ||
+            name == "skyultra.compassHeading" ||
             name == "skyultra.inventoryMode" ||
             name == "skyultra.barterMode" || name == "skyultra.containerMode" ||
             name == "skyultra.magicMode" || name == "skyultra.favoritesMode" ||
             name == "skyultra.mannequinMode" || name == "skyultra.lootMode" ||
-            name == "skyultra.pickpocketMode";
+            name == "skyultra.pickpocketMode" || name == "skyultra.compassMode";
     }
 public:
     explicit BridgeEventQueue(bool controls = true) { state_->controls_enabled = controls; }

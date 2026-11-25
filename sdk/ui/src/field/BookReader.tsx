@@ -27,6 +27,24 @@ export interface BookReaderProps {
   onToggleThemeSync?: (next: boolean) => void;
   onOpenNative?: (book: ReadingBookState) => void;
   onClose: () => void;
+  standalone?: boolean;
+  canTake?: boolean;
+  isStealing?: boolean;
+  taken?: boolean;
+  busyTaking?: boolean;
+  onTakeBook?: () => void;
+  pauseWorld?: boolean;
+  onTogglePauseWorld?: () => void;
+  bookValue?: number;
+  bookWeight?: number;
+  teachesSkill?: boolean;
+  skillName?: string;
+  teachesSpell?: boolean;
+  spellName?: string;
+  notice?: string | null;
+  activateKeyLabel?: string;
+  activateKeyCode?: string;
+  activateKey?: string;
 }
 
 const BOOKMARK_STORAGE_KEY = 'skyultra.bookBookmarks.v1';
@@ -263,6 +281,22 @@ export function BookReader({
   theme = 'dragonstone',
   design = 'auto',
   themeSync = true,
+  standalone = false,
+  canTake = false,
+  isStealing = false,
+  taken = false,
+  busyTaking = false,
+  onTakeBook,
+  bookValue = 0,
+  bookWeight = 0,
+  teachesSkill = false,
+  skillName = '',
+  teachesSpell = false,
+  spellName = '',
+  notice = null,
+  activateKeyLabel = 'E',
+  activateKeyCode = 'KeyE',
+  activateKey = 'e',
   onChangeDesign,
   onToggleThemeSync,
   onOpenNative,
@@ -272,7 +306,7 @@ export function BookReader({
   const [localThemeSync, setLocalThemeSync] = useState<boolean>(themeSync);
   const [fontScale, setFontScale] = useState<BookReaderFontScale>('md');
   const [viewMode, setViewMode] = useState<'spread' | 'scroll'>(() =>
-    book.style === 'book' && (book.pages.length > 1 || book.images.length > 0) ? 'spread' : 'scroll',
+    book.style === 'book' && (book.pages.length >= 1 || book.images.length > 0) ? 'spread' : 'scroll',
   );
   const [spreadIndex, setSpreadIndex] = useState<number>(() => {
     const marks = readBookmarks();
@@ -284,12 +318,19 @@ export function BookReader({
   const [zoomScale, setZoomScale] = useState<number>(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const panDragRef = useRef<{ id: number; startX: number; startY: number; origX: number; origY: number } | null>(null);
+  const panRafRef = useRef<number>(0);
+  const pendingPanRef = useRef<{ x: number; y: number } | null>(null);
+  useEffect(() => () => {
+    if (panRafRef.current) cancelAnimationFrame(panRafRef.current);
+  }, []);
   const [bookmarks, setBookmarks] = useState<Record<string, number>>(() => readBookmarks());
   const spreadMaxRef = useRef(0);
+  const mountedAtRef = useRef<number>(typeof performance !== 'undefined' ? performance.now() : 0);
 
   useEffect(() => { setLocalDesign(design); }, [design]);
   useEffect(() => { setLocalThemeSync(themeSync); }, [themeSync]);
   useEffect(() => {
+    mountedAtRef.current = typeof performance !== 'undefined' ? performance.now() : 0;
     const marks = readBookmarks();
     setBookmarks(marks);
     setSpreadIndex(marks[book.id] ?? 0);
@@ -297,7 +338,7 @@ export function BookReader({
     setZoomScale(1);
     setPan({ x: 0, y: 0 });
     setSearchQuery('');
-    setViewMode(book.style === 'book' && (book.pages.length > 1 || book.images.length > 0) ? 'spread' : 'scroll');
+    setViewMode(book.style === 'book' && (book.pages.length >= 1 || book.images.length > 0) ? 'spread' : 'scroll');
   }, [book.id, book.style, book.pages.length, book.images.length]);
 
   const resolvedDesign: BookReaderResolvedDesign =
@@ -311,7 +352,7 @@ export function BookReader({
     viewMode === 'spread' &&
     resolvedDesign !== 'scroll' &&
     book.style === 'book' &&
-    (book.pages.length > 1 || book.images.length > 0);
+    (book.pages.length >= 1 || book.images.length > 0);
   const leaves = useMemo(() => buildBookLeaves(book, hasRealText), [book, hasRealText]);
   const totalSpreads = Math.max(1, Math.ceil(leaves.length / 2));
   const clampedSpread = Math.max(0, Math.min(totalSpreads - 1, spreadIndex));
@@ -319,6 +360,26 @@ export function BookReader({
   const leftLeaf = leaves[clampedSpread * 2];
   const rightLeaf = leaves[clampedSpread * 2 + 1];
   const ownerDisplay = playerName && playerName.trim() ? playerName.trim() : 'Dragonborn';
+  const leftFolio = useMemo(
+    () => renderBookLeaf(leftLeaf, 'left', book.title, ownerDisplay, searchQuery),
+    [leftLeaf, book.title, ownerDisplay, searchQuery],
+  );
+  const rightFolio = useMemo(
+    () => renderBookLeaf(rightLeaf, 'right', book.title, ownerDisplay, searchQuery),
+    [rightLeaf, book.title, ownerDisplay, searchQuery],
+  );
+  const scrolledPages = useMemo(
+    () =>
+      book.pages.map((pageText, pIdx) => (
+        <div key={pIdx} className="inventory-book-parchment__section">
+          {book.pages.length > 1 && (
+            <div className="inventory-book-parchment__folio-tag">Folio {pIdx + 1} of {book.pages.length}</div>
+          )}
+          {renderFormattedPageContent(pageText, pIdx === 0, searchQuery)}
+        </div>
+      )),
+    [book.pages, searchQuery],
+  );
 
   const matchingPages = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -338,29 +399,49 @@ export function BookReader({
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onKey = (ev: KeyboardEvent): void => {
+      const target = ev.target as HTMLElement | null;
+      const inInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
       if (ev.key === 'Escape') {
         ev.preventDefault();
         ev.stopPropagation();
         onClose();
         return;
       }
-      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'f') {
+      if (!standalone && (ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'f') {
         ev.preventDefault();
         ev.stopPropagation();
         setSearchOpen(true);
         return;
       }
-      if (ev.key === 'ArrowRight' || ev.key === 'PageDown') {
+      if (inInput) return;
+      const elapsedSinceOpen =
+        typeof performance !== 'undefined' ? performance.now() - mountedAtRef.current : 1000;
+      const matchesActivateKey =
+        !ev.repeat &&
+        elapsedSinceOpen >= 250 &&
+        ((Boolean(activateKeyCode) && ev.code === activateKeyCode) ||
+          (Boolean(activateKey) && ev.key.toLowerCase() === activateKey.toLowerCase()));
+      if (matchesActivateKey && canTake && !taken && !busyTaking && onTakeBook) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        onTakeBook();
+        return;
+      }
+      if (ev.key === 'ArrowRight' || ev.code === 'ArrowRight' || ev.key === 'PageDown') {
+        ev.preventDefault();
+        ev.stopPropagation();
         setTurnDir('next');
         setSpreadIndex((i) => Math.min(spreadMaxRef.current, i + 1));
-      } else if (ev.key === 'ArrowLeft' || ev.key === 'PageUp') {
+      } else if (ev.key === 'ArrowLeft' || ev.code === 'ArrowLeft' || ev.key === 'PageUp') {
+        ev.preventDefault();
+        ev.stopPropagation();
         setTurnDir('prev');
         setSpreadIndex((i) => Math.max(0, i - 1));
       }
     };
     window.addEventListener?.('keydown', onKey, true);
     return () => window.removeEventListener?.('keydown', onKey, true);
-  }, [onClose]);
+  }, [onClose, standalone, activateKeyCode, activateKey, canTake, taken, busyTaking, onTakeBook]);
 
   const turn = (dir: 'prev' | 'next'): void => {
     setTurnDir(dir);
@@ -437,18 +518,38 @@ export function BookReader({
               <span>{isMap ? 'Field Survey Plate' : book.style === 'note' ? 'Manuscript' : 'Bound Tome'}</span>
               {textPageCount > 0 && <span>{textPageCount} {textPageCount === 1 ? 'folio' : 'folios'}</span>}
               {!isMap && shownImages.length > 0 && <span>{shownImages.length} {shownImages.length === 1 ? 'engraving' : 'engravings'}</span>}
-              <span className="book-design-badge">{resolvedDesign.toUpperCase()} · {localThemeSync ? 'THEME' : 'PARCHMENT'}</span>
+              {typeof bookValue === 'number' && bookValue > 0 && <span>{bookValue.toLocaleString()}g</span>}
+              {typeof bookWeight === 'number' && bookWeight > 0 && <span>{bookWeight} wt</span>}
+              {teachesSkill && skillName && <span>Skill Book · {skillName}</span>}
+              {teachesSpell && spellName && <span>Spell Tome · {spellName}</span>}
+              {!standalone && (
+                <span className="book-design-badge">{resolvedDesign.toUpperCase()} · {localThemeSync ? 'THEME' : 'PARCHMENT'}</span>
+              )}
             </div>
+            {notice ? <div className="book-reader-world-banner">{notice}</div> : null}
           </div>
 
           <div className="inventory-book-reader__actions">
-            {isMap && shownImages.length > 0 && (
+            {standalone && canTake && !taken && onTakeBook && (
+              <button
+                type="button"
+                className={'book-action-btn ' + (isStealing ? 'is-steal' : 'is-take')}
+                disabled={busyTaking}
+                onClick={onTakeBook}
+                title={isStealing ? `Steal this book [${activateKeyLabel}]` : `Take this book into your inventory [${activateKeyLabel}]`}
+              >
+                <Icon name={isStealing ? 'stolen' : 'inventory'} size={12} />
+                <span>{busyTaking ? 'Taking...' : isStealing ? 'Steal Book' : 'Take Book'}</span>
+                <kbd>{activateKeyLabel}</kbd>
+              </button>
+            )}
+            {!standalone && isMap && shownImages.length > 0 && (
               <button type="button" className={'book-action-btn' + (zoomScale > 1 ? ' is-active' : '')} onClick={cycleZoom}>
                 <Icon name="search" size={12} />
                 <span>{zoomScale > 1 ? `Zoom ${zoomScale.toFixed(1)}x` : 'Magnify'}</span>
               </button>
             )}
-            {book.style === 'book' && (book.pages.length > 1 || book.images.length > 0) && (
+            {!standalone && book.style === 'book' && (book.pages.length >= 1 || book.images.length > 0) && (
               <button
                 type="button"
                 className="book-action-btn"
@@ -462,46 +563,50 @@ export function BookReader({
                 <span>{canUseCodex ? 'Scroll View' : 'Open Codex'}</span>
               </button>
             )}
-            <button type="button" className="book-action-btn" onClick={cycleFontScale} title="Cycle reader typography scale">
-              <span>Text {fontScale.toUpperCase()}</span>
-            </button>
-            <button
-              type="button"
-              className={'book-action-btn' + (localThemeSync ? ' is-active' : '')}
-              onClick={handleThemeSyncToggle}
-              title="Toggle active SkyUltra theme colors vs classic warm parchment"
-            >
-              <span>{localThemeSync ? 'Theme Sync' : 'Parchment'}</span>
-            </button>
-            <button
-              type="button"
-              className={'book-action-btn' + (isCurrentBookmarked ? ' is-active' : '')}
-              onClick={toggleBookmark}
-              title={isCurrentBookmarked ? 'Remove bookmark for this folio' : 'Bookmark this folio'}
-            >
-              <Icon name="pin" size={12} />
-              <span>{isCurrentBookmarked ? 'Bookmarked' : 'Bookmark'}</span>
-            </button>
-            <button
-              type="button"
-              className={'book-action-btn' + (searchOpen ? ' is-active' : '')}
-              onClick={() => setSearchOpen((v) => !v)}
-              title="Search text inside book (Ctrl+F)"
-            >
-              <Icon name="search" size={12} />
-              <span>Find</span>
-            </button>
-            {onOpenNative && (
-              <button
-                type="button"
-                className="book-action-btn"
-                onClick={() => {
-                  onClose();
-                  onOpenNative(book);
-                }}
-              >
-                <span>Open in Skyrim</span>
-              </button>
+            {!standalone && (
+              <>
+                <button type="button" className="book-action-btn" onClick={cycleFontScale} title="Cycle reader typography scale">
+                  <span>Text {fontScale.toUpperCase()}</span>
+                </button>
+                <button
+                  type="button"
+                  className={'book-action-btn' + (localThemeSync ? ' is-active' : '')}
+                  onClick={handleThemeSyncToggle}
+                  title="Toggle active SkyUltra theme colors vs classic warm parchment"
+                >
+                  <span>{localThemeSync ? 'Theme Sync' : 'Parchment'}</span>
+                </button>
+                <button
+                  type="button"
+                  className={'book-action-btn' + (isCurrentBookmarked ? ' is-active' : '')}
+                  onClick={toggleBookmark}
+                  title={isCurrentBookmarked ? 'Remove bookmark for this folio' : 'Bookmark this folio'}
+                >
+                  <Icon name="pin" size={12} />
+                  <span>{isCurrentBookmarked ? 'Bookmarked' : 'Bookmark'}</span>
+                </button>
+                <button
+                  type="button"
+                  className={'book-action-btn' + (searchOpen ? ' is-active' : '')}
+                  onClick={() => setSearchOpen((v) => !v)}
+                  title="Search text inside book (Ctrl+F)"
+                >
+                  <Icon name="search" size={12} />
+                  <span>Find</span>
+                </button>
+                {onOpenNative && (
+                  <button
+                    type="button"
+                    className="book-action-btn"
+                    onClick={() => {
+                      onClose();
+                      onOpenNative(book);
+                    }}
+                  >
+                    <span>Open Native Book</span>
+                  </button>
+                )}
+              </>
             )}
             <button type="button" className="book-action-btn is-close" onClick={onClose} aria-label="Close reader">
               <span>Close</span><kbd>ESC</kbd>
@@ -509,7 +614,8 @@ export function BookReader({
           </div>
         </header>
 
-        <div className="inventory-book-reader__toolbar" aria-label="Reader design selector">
+        {!standalone && (
+          <div className="inventory-book-reader__toolbar" aria-label="Reader design selector">
           <div className="inventory-book-design-pills" role="group" aria-label="Book reader designs">
             {bookReaderDesignOptions.map((opt) => (
               <button
@@ -553,7 +659,8 @@ export function BookReader({
               )}
             </div>
           )}
-        </div>
+          </div>
+        )}
 
         <div className="inventory-book-reader__body" tabIndex={0}>
           {canUseCodex ? (
@@ -561,9 +668,9 @@ export function BookReader({
               <div className="inventory-book-reader__binding">
                 <button type="button" className="inventory-book-reader__turn is-prev" disabled={clampedSpread === 0} onClick={() => turn('prev')} aria-label="Previous pages">‹</button>
                 <div key={clampedSpread} className={'inventory-book-reader__codex' + (turnDir ? ` is-turn-${turnDir}` : '')}>
-                  {renderBookLeaf(leftLeaf, 'left', book.title, ownerDisplay, searchQuery)}
+                  {leftFolio}
                   <div className="inventory-book-reader__spine" aria-hidden="true" />
-                  {renderBookLeaf(rightLeaf, 'right', book.title, ownerDisplay, searchQuery)}
+                  {rightFolio}
                 </div>
                 <button type="button" className="inventory-book-reader__turn is-next" disabled={clampedSpread >= totalSpreads - 1} onClick={() => turn('next')} aria-label="Next pages">›</button>
               </div>
@@ -601,7 +708,11 @@ export function BookReader({
                     />
                   ))}
                 </div>
-                <span className="inventory-book-reader__pager-hint">← → turn pages · Ctrl+F find</span>
+                <span className="inventory-book-reader__pager-hint">
+                  {standalone
+                    ? `← → turn pages${canTake && !taken ? ` · ${activateKeyLabel} ${isStealing ? 'steal' : 'take'}` : ''} · Esc close`
+                    : '← → turn pages · Ctrl+F find'}
+                </span>
               </div>
             </div>
           ) : (
@@ -632,14 +743,30 @@ export function BookReader({
                         onPointerMove={(ev) => {
                           const drag = panDragRef.current;
                           if (!drag || drag.id !== ev.pointerId) return;
-                          setPan({
+                          pendingPanRef.current = {
                             x: drag.origX + (ev.clientX - drag.startX),
                             y: drag.origY + (ev.clientY - drag.startY),
-                          });
+                          };
+                          if (!panRafRef.current) {
+                            panRafRef.current = requestAnimationFrame(() => {
+                              panRafRef.current = 0;
+                              if (pendingPanRef.current) {
+                                setPan(pendingPanRef.current);
+                              }
+                            });
+                          }
                         }}
                         onPointerUp={(ev) => {
                           if (panDragRef.current?.id === ev.pointerId) {
                             panDragRef.current = null;
+                            if (panRafRef.current) {
+                              cancelAnimationFrame(panRafRef.current);
+                              panRafRef.current = 0;
+                            }
+                            if (pendingPanRef.current) {
+                              setPan(pendingPanRef.current);
+                              pendingPanRef.current = null;
+                            }
                             ev.currentTarget.releasePointerCapture?.(ev.pointerId);
                           }
                         }}
@@ -663,14 +790,7 @@ export function BookReader({
                   <div className="inventory-book-parchment__crest" aria-hidden="true">
                     <span />
                   </div>
-                  {book.pages.map((pageText, pIdx) => (
-                    <div key={pIdx} className="inventory-book-parchment__section">
-                      {book.pages.length > 1 && (
-                        <div className="inventory-book-parchment__folio-tag">Folio {pIdx + 1} of {book.pages.length}</div>
-                      )}
-                      {renderFormattedPageContent(pageText, pIdx === 0, searchQuery)}
-                    </div>
-                  ))}
+                  {scrolledPages}
                   <div className="inventory-book-parchment__seal" aria-hidden="true">
                     <span>SKYULTRA ARCHIVES · {ownerDisplay.toUpperCase()}</span>
                   </div>

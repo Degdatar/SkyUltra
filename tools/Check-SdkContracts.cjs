@@ -123,6 +123,12 @@ async function main(){
  const settingsBridge={request:async(method,params)=>{settingsCalls.push([method,params]);if(method==='ui.updateSettings')storedSettings=JSON.parse(JSON.stringify(params));return JSON.parse(JSON.stringify(storedSettings));}};
  const migrated=await readSkyUltraSettings(settingsBridge);
  assert.equal(migrated.actorExport.fullView,4096);assert.equal(migrated.actorExport.portrait,4096);assert.equal(migrated.splash.volume,.35);assert.equal(migrated.splash.audio,false);assert.equal(migrated.replaceSkyrimInventory,true);checks+=5;
+ assert.equal(defaultSkyUltraSettings.menuPauseWorld,false);assert.equal(migrated.menuPauseWorld,false);checks+=2;
+ for(const key of ['inventoryPauseWorld','barterPauseWorld','magicPauseWorld','favoritesPauseWorld','containerPauseWorld','mannequinPauseWorld','lootPauseWorld','pickpocketPauseWorld']){
+  assert.equal(defaultSkyUltraSettings[key],true,key+' default should be true');
+  assert.equal(migrated[key],true,key+' migrated default should be true');
+  checks+=2;
+ }
  migrated.actorExport.fullView=720;migrated.actorExport.portrait=1080;migrated.replaceSkyrimInventory=false;
  const updated=await updateSkyUltraSettings(migrated,settingsBridge);
  assert.equal(updated.actorExport.fullView,720);assert.equal(updated.actorExport.portrait,1080);assert.equal(updated.splash.volume,.35);assert.equal(updated.replaceSkyrimInventory,false);assert.equal(defaultSkyUltraSettings.actorExport.fullView,4096);assert.equal(defaultSkyUltraSettings.replaceSkyrimInventory,true);checks+=6;
@@ -327,23 +333,29 @@ async function main(){
   snapGrid:16,
   theme:'dragonstone',
   placements:{
+   compass:{anchor:'top-center',compassRadius:275},
    vitals:{anchor:'bottom-center',scale:1.1,opacity:0.98,glow:120,color:'#ff6b81',fontStyle:'display',offsetX:32,offsetY:-16,width:320,customLabel:'Dragonborn Vitals',bindingPath:'health.current',visibilityRule:'combat-low-hp'},
    radar:{anchor:'top-right',offsetX:-24,offsetY:16,visibilityRule:'always'},
   },
  });
  assert.equal(builderLayout.snapGrid,16);
+ assert.equal(builderLayout.placements.compass.compassRadius,275);
  assert.equal(builderLayout.placements.vitals.offsetX,32);
  assert.equal(builderLayout.placements.vitals.offsetY,-16);
  assert.equal(builderLayout.placements.vitals.customLabel,'Dragonborn Vitals');
  assert.equal(builderLayout.placements.vitals.bindingPath,'health.current');
  assert.equal(builderLayout.placements.vitals.visibilityRule,'combat-low-hp');
- checks+=6;
- const sanitizedLayout=parseSkyUltraHudLayout({...builderLayout,snapGrid:7,placements:{vitals:{visibilityRule:'invalid-rule',offsetX:NaN,offsetY:12}}});
+ checks+=7;
+ const sanitizedLayout=parseSkyUltraHudLayout({...builderLayout,snapGrid:7,placements:{vitals:{visibilityRule:'invalid-rule',offsetX:NaN,offsetY:12,compassRadius:NaN},compass:{compassRadius:10},radar:{compassRadius:2500},clock:{compassRadius:NaN}}});
  assert.equal('snapGrid' in sanitizedLayout,false);
  assert.equal('visibilityRule' in sanitizedLayout.placements.vitals,false);
  assert.equal('offsetX' in sanitizedLayout.placements.vitals,false);
+ assert.equal('compassRadius' in sanitizedLayout.placements.vitals,false);
  assert.equal(sanitizedLayout.placements.vitals.offsetY,12);
- checks+=4;
+ assert.equal(sanitizedLayout.placements.compass.compassRadius,50);
+ assert.equal(sanitizedLayout.placements.radar.compassRadius,1000);
+ assert.equal('clock' in sanitizedLayout.placements,false);
+ checks+=8;
 
  const {sanitizeSkyUltraModId,generateSkyUltraHudModFiles,exportSkyUltraHudMod,buildCustomHudDocument,SKYULTRA_HUD_CODE_TEMPLATES}=source(
   'sdk/typescript/src/hudModExport.ts',

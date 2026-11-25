@@ -25,40 +25,42 @@ export const routeHelp: Record<Route, { title: string; body: string; tips: strin
     ],
   },
   inventory: {
-    title: "Inventory, Containers, Pickpocketing & Theme-Synced Book Reader",
-    body: "Manage all 11 equipment slots with stat comparison deltas and 4 Quick Outfit Loadouts, sort by Value/Weight (V/W), rename items inline, smart-loot valuables, read books/maps in 7 Book Reader designs (Auto, Codex, Scroll, Grimoire, Dwemer, Scholar, Datapad), and replace Corpse Loot, Pickpocket, Barter, Container, Mannequin, and Compass HUD.",
+    title: "Inventory, Containers, Crafting, Pickpocketing & Book Reader",
+    body: "Manage all 11 equipment slots with stat comparison deltas and 4 Quick Outfit Loadouts, smith and temper at Blacksmithing stations, bind or extract magic at the Arcane Enchanter (with skill-100 Super Enchanting batching), filter by Favorites/Enchanted/Tempered/Books/Unread/Stolen/Poisoned, inspect live pack telemetry, and read inventory or world books in 7 theme-synced styles.",
     tips: [
-      "In Player Inventory, filter with smart chips (Enchanted, Tempered, Poisoned, Books, Unread, Stolen), rename carried gear inline (game.renameItem), save/apply 4 Quick Loadouts, and see Armor/Damage comparisons vs equipped gear.",
-      "Corpse & Monster Looting (skyultra_loot.swf) and Storage Containers (skyultra_container.swf) support Smart Loot Valuables (>=10 V/W or weightless + Gold), carry-weight forecasts, and 1-click Take & Equip / Take & Consume / Take & Read.",
-      "NPC Pickpocketing (skyultra_pickpocket.swf) displays live native Pickpocket % badges, Stolen/Owned protection, EQUIPPED tags on worn NPC gear, and Plant / Plant All.",
-      "Click Read on any book, note, or map to open the theme-reactive Book Reader with 7 selectable styles, Theme Sync vs Parchment paper toggle, S/M/L/XL text scale, in-book search, bookmarks, and interactive map pan/zoom.",
+      "Press Space immediately upon opening Player Inventory (skyultra_inventory.swf), Storage Containers (skyultra_container.swf), Corpse Looting (skyultra_loot.swf), Pickpocketing (skyultra_pickpocket.swf), Barter (skyultra_barter.swf), Mannequins (skyultra_mannequin.swf), Spellbook (skyultra_magic.swf), Favorites (skyultra_favorites.swf), Blacksmithing (skyultra_blacksmith.swf), or Arcane Enchanter (skyultra_enchanting.swf) to focus search right away.",
+      "Blacksmithing (skyultra_blacksmith.swf) handles Forge, Anvil, Tanning Rack, Smelter, Grindstone, and Workbench actions with native Skyrim crafting events and full material/perk requirements.",
+      "Arcane Enchanter (skyultra_enchanting.swf) supports List & Grid views, calibrated Disenchant XP, enchantment renaming, and at Enchanting 100 unlocks Super Enchanting in Settings: disenchant unique non-quest artifacts, bind unlimited effects, bypass armor part restrictions, rename/slide quantities per batched piece, and auto-fill exact 1:1 Soul Gems.",
+      "World Book Reader (skyultra_book.swf) replaces Skyrim's Book Menu cleanly: inherits your Settings design/theme, pauses world simulation by default, turns folios with Left/Right Arrow keys, and uses your bound Skyrim Interact key to Take or Steal and close.",
+      "Click Read on any pack book, note, or map inside Inventory for full reader controls including design switcher, Theme Sync vs Parchment paper, S/M/L/XL text scale, in-book search, bookmarks, and interactive map pan/zoom.",
     ],
   },
   character: {
-    title: "Character Sheet, Constellations & Loadouts",
-    body: "Inspect your live 3D player portrait, derived combat archetype, physical & elemental mitigation caps, 18 unique skill constellations, stacked active enchantments, and 11-slot outfit loadouts.",
+    title: "Character Sheet, Constellations, Dossier Export & Loadouts",
+    body: "Inspect your live 3D player portrait, derived combat archetype, physical & elemental mitigation caps, carry/mastery strip, 18 unique skill constellations, stacked active enchantments, 11-slot outfit loadouts, and 1-click Markdown / JSON build dossier exports.",
     tips: [
-      "Overview & Build features your live 3D FaceGen character portrait, physical damage reduction toward Skyrim's 80% (667 armor) cap, and Effective Health Pool (EHP).",
+      "Overview & Build features your live 3D FaceGen character portrait, Copy Build Dossier (MD) and Copy JSON export buttons, physical damage reduction toward Skyrim's 80% (667 armor) cap, and Effective Health Pool (EHP).",
       "Skill Constellations render custom crests for all 18 disciplines across Combat, Magic, and Stealth; Active Magic & Buffs stacks duplicate enchantments with school-specific icons.",
       "Loadouts & Staging lets you snapshot, rename, diff, apply, undo, and JSON-sync 11-slot outfits with 3D item thumbnails persisted per character.",
     ],
   },
   components: {
-    title: "Interface Workshop",
-    body: "Explore reusable controls with single-step focus traversal, input scopes, and adaptive motion.",
+    title: "Interface Workshop & SkyColorWheel",
+    body: "Explore reusable controls with single-step focus traversal, input scopes, expanded sculpted UI icons, adaptive motion, and the interactive SkyColorWheel component exported for community modders.",
     tips: [
-      "Tab and Shift+Tab step one control at a time; Enter activates the focused control.",
-      "Escape dismisses an open dropdown, modal, or recording scope before closing the menu.",
-      "All components adapt automatically across all 17 built-in Dark Mode, Classic, Celestial, and Neon themes (Dragonstone default), including motion tab transitions and Book Reader styling.",
+      "Tab and Shift+Tab step one control at a time; Enter activates the focused control, and Escape dismisses open color wheels, dropdowns, modals, or recording scopes first.",
+      "Use <SkyColorWheel mode=\"inline\" /> or <SkyColorWheel mode=\"popover\" /> from @skyultra/ui to give mods a 360° Hue ring and concentric Brightness/Saturation disc with Match Theme support.",
+      "All components adapt automatically across all 21 built-in themes (5 Eye-Comfort Velvet-Slate matte palettes + Classic, Celestial, and Neon), including motion tab transitions and Book Reader styling.",
     ],
   },
   widgets: {
-    title: "Visual HUD Builder, Live Code Editor & Mod Exporter",
-    body: "Drag, snap, resize, write or paste custom HTML/CSS/JS with real-time HUD streaming, pin containerless HUD overlays over gameplay, or export a standalone zero-DLL SkyUltra mod.",
+    title: "Visual HUD Builder, Sovereign Compass Radius, Dragonblade Crest & Mod Exporter",
+    body: "Customize individual HUD widgets with 360° SkyColorWheel accent pickers, a configurable Sovereign Compass Marker Radius (50m–1000m, default 50m), the 5-style Dragonblade Portrait Crest (with custom HP/MP/SP bar colors), 90% Safe-Area Guides, Layout JSON Import/Export, Live Code Editor, and zero-DLL SkyUltra mod export.",
     tips: [
-      "Drag any HUD widget directly on the 6-zone stage canvas with 0/8/16/24px grid snapping, corner resize handles, custom labels, live data-binding paths, and conditional visibility rules.",
-      "Switch to Live Code Editor to write or paste custom HTML, CSS, and JavaScript (or a complete single-file HTML document) using SkyUltraHud.onUpdate(), data-sky-bind, and data-sky-bar with real-time Skyrim HUD updates.",
-      "Open Export Working Mod to write a ready-to-run mod folder (manifest.json + index.html + hud.html + README.md) straight into Data/SkyUltra/<id>/ (e.g. Data/SkyUltra/test/) and inspect it directly in Developer Studio.",
+      "Select Sovereign Compass & POI Bar under HUD Builder to tune Compass Marker Radius anywhere from 50m (default) up to 1000m via the slider, presets, or custom numeric input — quests, custom waypoints, and followers stay pinned at any distance.",
+      "Select Sovereign Portrait Crest and open its Style tab to switch between Dragonblade Relic, Daedric Ebony, Dwemer Automaton, Aetherial Silver, and Nordic Carved blades and tune individual HP, Magicka, and Stamina bar colors.",
+      "Use Safe Guides on the 9-zone stage to align overlays to a 90% action-safe boundary and center crosshair, or click Layout JSON to import/export sharable layout configs.",
+      "Switch to Live Code Editor or Export Working Mod to author custom HTML/CSS/JS HUDs and emit ready-to-run Data/SkyUltra/<id>/ packages.",
     ],
   },
   performance: {
@@ -71,21 +73,21 @@ export const routeHelp: Record<Route, { title: string; body: string; tips: strin
     ],
   },
   devtools: {
-    title: "Developer Studio, Live Controls & Modder Workbench",
-    body: "Inspect live Ultralight/CEF surfaces with Show/Hide/Focus/Probe controls, filter/clear/export bridge traffic, hot-reload mod packages, repair broken manifests, and build mods faster in Tab 5 Modder Workbench.",
+    title: "Developer Studio, Bridge Profiler, Sandbox & Modder Workbench",
+    body: "Inspect live Ultralight/CEF surfaces, track mean/P95/peak bridge latency, copy 1-click Diagnostic Support Bundles, experiment with the SkyColorWheel --sky-accent sandbox, hot-reload mod packages, and repair manifests.",
     tips: [
-      "Views & Layers lets you Show/Hide, Focus, Probe, Inspect DOM, Suspend/Resume/Unload, and Reload individual browser surfaces while viewing VRAM budgets and recovery telemetry.",
-      "Modder Workbench includes an interactive Bridge Playground with live latency measurement and TypeScript SDK / Vanilla JS / Papyrus snippet generators, a Visual manifest.json Builder & Validator, and an active --sky-* CSS Token Inspector.",
-      "Broken Mod Doctor and the Legacy Migration Scanner diagnose manifest/permission faults and scan PrismaUI / MageLight sources for fast porting.",
+      "Bridge & Errors displays a real-time Bridge Latency & Error Profiler (mean, P95 tail latency, peak method, error rate) alongside filterable IPC logs.",
+      "Click Export Diagnostic Bundle in the header to capture active views, host GPU/CPU telemetry, mod findings, and recent bridge denials into clipboard JSON.",
+      "Modder Workbench includes an interactive Bridge Playground, SkyColorWheel --sky-accent live sandbox, Visual manifest.json Builder, Token Inspector, and expanded @skyultra/ui icon gallery.",
     ],
   },
   settings: {
-    title: "Profiles, Multi-Engine Runtime, All 9 SWF Carriers & UX Customization",
-    body: "Switch SkyUltra between Chromium CEF (Default) and Ultralight cleanly, configure all 9 Skyrim SWF menu & HUD carriers (Inventory, Barter, Containers, Loot, Pickpocket, Mannequins, Spellbook, Favorites, Compass), and customize 17 themes, Motion Tab Splash styles, Glass Intensity, UI Scale, and Book Reader designs.",
+    title: "Cleanly Separated Inventory, Crafting, Book Reader, Themes & Engine Runtime",
+    body: "Configure all 12 Skyrim SWF menu & HUD carriers inside Inventory & Barter (including Blacksmithing, Arcane Enchanter, Enchanting-100 Super Enchanting, and World Book Reader), customize 21 themes & window display inside Themes & Visuals, pick cursor accent colors via SkyColorWheel, and isolate pure CEF/Ultralight runtime toggles inside Engine & Runtime.",
     tips: [
-      "Configure Tab Transition Splash (Full Motion, Subtle, or Off with 1-click Preview), Default Book Reader Design (Auto / Codex / Scroll / Grimoire / Dwemer / Scholar / Datapad), Theme Sync vs Parchment toggle, Glass Intensity, UI Scale (90%–115%), Show V/W, and Stolen Drop Protection.",
-      "Configure independent toggles, layout modes (Half Container / Windowed / Full Screen), and world state (Live World / Pause World) for all replaced Skyrim menus and HUD carriers.",
-      "The Virtual Keyboard Hotkey (Shift + K default on Keyboard, LT + LeftThumb on Gamepad, LeftGrip + LeftStickClick in VR) toggles the full ESC / F1–F12 / Shift / Ctrl / Alt / Tab / Caps keyboard whether the SkyUltra menu is open or closed.",
+      "Inventory & Barter houses all SWF replacement settings (including Blacksmithing, Arcane Enchanter, skill-100 Super Enchanting, and World Book Reader), display/pause modes, Show V/W Badges, and Stolen & Pickpocket Protection Guard.",
+      "Themes & Visuals configures all 21 palettes (including 5 Eye-Comfort Velvet-Slate themes), SkyUltra Menu Display Mode & World Pause, Tab Transition Splash, Book Reader designs, and Glass Intensity.",
+      "Engine & Runtime cleanly isolates Chromium CEF vs Ultralight GPU/CPU pipelines, multi-threaded CEF loop, per-mod engine overrides, and Hot-Reload Watcher.",
     ],
   },
   guide: {
@@ -93,7 +95,7 @@ export const routeHelp: Record<Route, { title: string; body: string; tips: strin
     body: "Complete starter guide and technical reference for SkyUltra's native D3D11 compositor, 3D studios, visual HUD builder, persistent character profiles, Developer Studio, and mod migration.",
     tips: [
       "Press Tab / Shift+Tab to step through interactive items one by one without skipping.",
-      "Use 1–9 to jump between all 9 command modules, Space to search the current page or open the command palette, and the ? button in the header (or Ctrl+F3) for contextual help.",
+      "Use 1–9 to jump between all 9 command modules, Space to focus search immediately (including across SWF Inventory, Containers, Loot, Pickpocket, Barter, Mannequin, Magic & Favorites) or open the command palette, and the ? button in the header (or Ctrl+F3) for contextual help.",
       "See the Mod Authoring, Persistent Profiles & Coexistence blueprints below for schemaVersion 1 manifests and legacy web-mod porting.",
     ],
   },
@@ -134,17 +136,17 @@ const guideSteps: Array<{ id: string; title: string; description: string; route:
   },
   {
     id: "settings",
-    title: "Per-Character Profiles, 17 Themes & UX Preferences",
+    title: "Per-Character Profiles, 21 Themes & Separated Runtime Settings",
     description:
-      "Save per-character themes, tab splash styles, Book Reader presets, glass intensity, UI scale, and 1–3 input hotkeys inside SkyUltra.settings.json.",
+      "Save per-character themes (including 5 Eye-Comfort Velvet-Slate matte themes), SkyColorWheel cursor accents, Book Reader presets, separated CEF/Ultralight engine settings, and input hotkeys.",
     route: "settings",
     badge: "MODULE 05 · SETTINGS",
   },
   {
     id: "widgets",
-    title: "Visual HUD Builder, Live Code Editor & Mod Export",
+    title: "Visual HUD Builder, Compass Radius, Dragonblade Crest & Mod Export",
     description:
-      "Drag and resize floating HUDs on a 6-zone grid, code or paste custom HTML/CSS/JS live, export standalone zero-DLL HUD mods, and benchmark Ultralight vs CEF.",
+      "Customize floating HUDs on a 9-zone grid with Sovereign Compass marker radius (50m–1000m), Safe Guides, Layout JSON import/export, 5-style Dragonblade Portrait Crest, SkyColorWheel color pickers, live HTML/CSS/JS coding, and zero-DLL mod export.",
     route: "widgets",
     badge: "MODULES 06–07 · HUDS & LAB",
   },
@@ -309,8 +311,8 @@ export default function GuidePage({
       </SkyFrame>
 
       <SkyFrame
-        title="In-Game Menu & HUD Replacements (9 SWF Carriers) & Book Reader"
-        eyebrow="LOOTING · PICKPOCKETING · CONTAINERS · MANNEQUINS · BARTER · SPELLBOOK · FAVORITES · COMPASS"
+        title="In-Game Menu & HUD Replacements (12 SWF Carriers) & Book Reader"
+        eyebrow="LOOTING · PICKPOCKETING · CONTAINERS · MANNEQUINS · BARTER · SPELLBOOK · BLACKSMITH · ENCHANTING · BOOKS · COMPASS"
         className="guide-starter-overview"
       >
         <div className="guide-pillars-grid">
@@ -357,6 +359,46 @@ export default function GuidePage({
               in <code>Data/SKSE/Plugins/SkyUltra/Cache/Items/</code> and <code>Portraits/</code> (MO2 Overwrite) so you
               never wait for icons to re-render on launch, and clicking <strong>Update portrait</strong> refreshes the
               cached file immediately.
+            </p>
+          </article>
+
+          <article className="guide-pillar-card">
+            <span className="guide-pillar-card__tag">SKYULTRA_BLACKSMITH.SWF · CRAFT &amp; TEMPER</span>
+            <h3>Blacksmithing, Tanning &amp; Smelting</h3>
+            <p>
+              Covers the Forge, Anvil, Tanning Rack, Smelter, Grindstone, and Workbench with native Skyrim crafting
+              events, material &amp; perk checks, Grid/List toggle, and a single layout switcher in the header.
+            </p>
+          </article>
+
+          <article className="guide-pillar-card">
+            <span className="guide-pillar-card__tag">SKYULTRA_ENCHANTING.SWF · SUPER ENCHANTING</span>
+            <h3>Arcane Enchanter &amp; Skill-100 Super Batching</h3>
+            <p>
+              Features List &amp; Grid views, persistent enchantment renaming, calibrated disenchant XP, active-quest
+              protection, and Settings-unlocked <strong>Super Enchanting</strong> at Enchanting 100 (unique disenchants,
+              unlimited effects, unrestricted armor slots, per-item batch renaming, stack quantity sliders, and strict 1:1
+              auto-filled Soul Gems).
+            </p>
+          </article>
+
+          <article className="guide-pillar-card">
+            <span className="guide-pillar-card__tag">SKYULTRA_ALCHEMY.SWF · DISTILLATION LAB</span>
+            <h3>Alchemy Lab, Trait Tasting &amp; Recipe Synthesis</h3>
+            <p>
+              Replaces the Alchemy Station with 4-column Grid &amp; List views, <strong>Taste</strong> trait discovery,
+              <strong>By Effect</strong> &amp; <strong>Known Recipes</strong> pickers, Purity perk cleansing, custom
+              potion/poison naming, Distillation Altar batch controls, and full Skyrim &amp; SkyRewrite action hooks.
+            </p>
+          </article>
+
+          <article className="guide-pillar-card">
+            <span className="guide-pillar-card__tag">SKYULTRA_BOOK.SWF · WORLD BOOKS</span>
+            <h3>Distraction-Free World Book Reader</h3>
+            <p>
+              Replaces Skyrim&apos;s in-world <code>BookMenu</code>, automatically inherits your Settings design and active
+              theme, pauses the world by default, turns folios with <code>← / →</code> arrow keys, and uses your bound
+              Skyrim Interact button to <strong>Take / Steal</strong> and close cleanly.
             </p>
           </article>
         </div>
@@ -484,8 +526,11 @@ export default function GuidePage({
               <SkyKeybind keys={["Enter"]}>Activate focused button, slot, or tile</SkyKeybind>
               <SkyKeybind keys={["1–9"]}>Switch across all 9 command modules</SkyKeybind>
               <SkyKeybind keys={["Shift", "K"]}>Toggle full Virtual Keyboard (ESC, F1–F12, Shift, Ctrl, Alt, Tab, Caps) on/off anytime</SkyKeybind>
-              <SkyKeybind keys={["Space"]}>Search this page, or open the command palette</SkyKeybind>
+              <SkyKeybind keys={["Space"]}>
+                Search immediately (SWF Inventory, Containers, Loot, Barter, Magic, Favorites &amp; modules), or open Command Palette
+              </SkyKeybind>
               <SkyKeybind keys={["Ctrl", "F3"]}>Open contextual help (? button in header)</SkyKeybind>
+              <SkyKeybind keys={["←", "→"]}>Flip pages in Book Reader (bound Interact key takes/steals &amp; closes)</SkyKeybind>
               <SkyKeybind keys={["Esc"]}>Dismiss popup / scope, then close panel</SkyKeybind>
               <SkyKeybind keys={["Shift", "F6"]}>Default SkyUltra toggle (customizable up to 3 keys)</SkyKeybind>
             </div>
@@ -619,7 +664,7 @@ export default function GuidePage({
             <span className="guide-pillar-card__tag">PERSISTENT PROFILES (SCHEMAVERSION 2)</span>
             <h3>Per-Character Layouts &amp; Global Defaults</h3>
             <p>
-              SkyUltra stores themes, UI density/glow, 6-zone HUD placements, and 11-slot outfit loadouts natively inside{" "}
+              SkyUltra stores themes, UI density/glow, 9-zone HUD placements, and 11-slot outfit loadouts natively inside{" "}
               <code>SkyUltra.settings.json</code> (<code>profileState</code> v2). Switching Skyrim saves automatically
               activates that character&apos;s profile while new characters inherit your Global Defaults.
             </p>
@@ -743,11 +788,11 @@ export default function GuidePage({
               Xbyak, vcpkg and CMake, and the Microsoft Windows, Direct3D, Media Foundation and WIC platform teams.</p>
           </article>
           <article className="guide-pillar-card">
-            <span className="guide-pillar-card__tag">FRONTEND &amp; MODDING COMMUNITY</span>
+            <span className="guide-pillar-card__tag">FRONTEND &amp; WEB TOOLING</span>
             <h3>React, Radix, Motion &amp; more</h3>
             <p>Thanks to React/React DOM, Radix UI, Motion, Lucide, Zustand, Tailwind CSS, class-variance-authority,
               clsx, tailwind-merge, TypeScript, Vite, PostCSS, Autoprefixer, DefinitelyTyped, Node.js and npm
-              contributors. Thank you to PrismaUI and Magelight UI authors for their frameworks and public APIs.</p>
+              contributors.</p>
           </article>
         </div>
         <p>The project documentation includes upstream links, retained notices and the complete dependency inventory:

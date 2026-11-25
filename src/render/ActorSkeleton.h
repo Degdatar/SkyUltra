@@ -24,16 +24,29 @@ inline bool FiniteTransform(const RE::NiTransform& t)
 
 // Distant creatures can retain stale world matrices after animation LOD skips
 // their update. Local transforms still describe the skeleton hierarchy.
-inline bool RootLocalFromLocals(RE::NiAVObject* object, RE::NiAVObject* root, RE::NiTransform& out)
+inline bool RootLocalFromLocals(RE::NiAVObject* object, RE::NiAVObject* root, RE::NiTransform& out, bool* out_any_hidden = nullptr)
 {
+    if (out_any_hidden != nullptr) *out_any_hidden = false;
     if (!object || !root) return false;
-    if (object == root) { out = RE::NiTransform{}; return true; }
+    if (object == root) {
+        if (out_any_hidden != nullptr) *out_any_hidden = object->GetFlags().all(RE::NiAVObject::Flag::kHidden);
+        out = RE::NiTransform{};
+        return true;
+    }
+    bool hidden = object->GetFlags().all(RE::NiAVObject::Flag::kHidden) ||
+        root->GetFlags().all(RE::NiAVObject::Flag::kHidden);
     auto accum = object->local;
     unsigned depth{};
     for (auto* parent = object->parent; parent && depth < 256; parent = parent->parent, ++depth) {
-        if (parent == root) { out = accum; return FiniteTransform(out); }
+        if (parent == root) {
+            if (out_any_hidden != nullptr) *out_any_hidden = hidden;
+            out = accum;
+            return FiniteTransform(out);
+        }
+        if (parent->GetFlags().all(RE::NiAVObject::Flag::kHidden)) hidden = true;
         accum = parent->local * accum;
     }
+    if (out_any_hidden != nullptr) *out_any_hidden = hidden;
     return false;
 }
 

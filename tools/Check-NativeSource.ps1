@@ -42,8 +42,10 @@ try {
         if ($syntaxSource -match 'VideoSplash\.cpp$') {
             $fileArgs = $syntaxArguments | Where-Object { $_ -notlike '/FI*cmake_pch*' -and $_ -notlike '/DWINVER=*' -and $_ -notlike '/D_WIN32_WINNT=*' }
             $fileArgs += @('/DWINVER=0x0602', '/D_WIN32_WINNT=0x0602')
-        } elseif ($syntaxSource -match '(CefBackend|CefSubprocess|BridgeScript|ModManifest|ViewManager|UltralightBackend|Tests)\.cpp$') {
+        } elseif ($syntaxSource -match '(CefBackend|CefSubprocess|BridgeScript|FrameTrace|ModManifest|ViewManager|UltralightBackend|Tests|Test-PixelConvert)\.cpp$') {
             $fileArgs = $syntaxArguments | Where-Object { $_ -notlike '/FI*cmake_pch*' }
+        } elseif ($syntaxSource -match 'PixelConvertAvx2\.cpp$') {
+            $fileArgs = ($syntaxArguments | Where-Object { $_ -notlike '/FI*cmake_pch*' }) + @('/arch:AVX2')
         }
         & $syntaxCompiler @fileArgs $syntaxFile
         if ($LASTEXITCODE -ne 0) { $syntaxFailures++ }

@@ -65,19 +65,56 @@ const elementColors: Record<string, { hue: string; glow: string }> = {
   voice: { hue: '#6fe0ff', glow: '#d4f6ff' },
 };
 
+const spellColorStyleCache = new Map<string, React.CSSProperties>();
+const categoryColorStyleCache = new Map<string, React.CSSProperties>();
+const sigilStyleCache = new Map<string, React.CSSProperties>();
+
+function resolveSpellColors(spell: SkyUltraSpell | null | undefined, fallback: SpellRailCategory = 'all'): { hue: string; glow: string } {
+  return (spell?.element && elementColors[spell.element]) || spellCategoryColors[spell ? spellCategoryOf(spell) : fallback] || spellCategoryColors.all;
+}
+
 export function spellCategoryOf(spell: SkyUltraSpell): SpellRailCategory {
   return (spell.category as SpellRailCategory) ?? 'other';
 }
 
 /** CSS custom properties that colour a spell sigil/tile. */
 export function spellColorStyle(spell: SkyUltraSpell | null | undefined, fallback: SpellRailCategory = 'all'): React.CSSProperties {
-  const colors = (spell?.element && elementColors[spell.element]) || spellCategoryColors[spell ? spellCategoryOf(spell) : fallback] || spellCategoryColors.all;
-  return { '--spell-hue': colors.hue, '--spell-glow': colors.glow } as React.CSSProperties;
+  const colors = resolveSpellColors(spell, fallback);
+  const key = `${colors.hue}|${colors.glow}`;
+  let cached = spellColorStyleCache.get(key);
+  if (!cached) {
+    cached = { '--spell-hue': colors.hue, '--spell-glow': colors.glow } as React.CSSProperties;
+    spellColorStyleCache.set(key, cached);
+  }
+  return cached;
 }
 
 export function categoryColorStyle(category: SpellRailCategory): React.CSSProperties {
   const colors = spellCategoryColors[category] ?? spellCategoryColors.all;
-  return { '--spell-hue': colors.hue, '--spell-glow': colors.glow } as React.CSSProperties;
+  const key = `${colors.hue}|${colors.glow}`;
+  let cached = categoryColorStyleCache.get(key);
+  if (!cached) {
+    cached = { '--spell-hue': colors.hue, '--spell-glow': colors.glow } as React.CSSProperties;
+    categoryColorStyleCache.set(key, cached);
+  }
+  return cached;
+}
+
+function sigilInlineStyle(spell: SkyUltraSpell, size: number): React.CSSProperties {
+  const colors = resolveSpellColors(spell);
+  const key = `${colors.hue}|${colors.glow}|${size}`;
+  let cached = sigilStyleCache.get(key);
+  if (!cached) {
+    cached = {
+      '--spell-hue': colors.hue,
+      '--spell-glow': colors.glow,
+      width: size,
+      height: size,
+      '--sigil-size': `${size}px`,
+    } as React.CSSProperties;
+    sigilStyleCache.set(key, cached);
+  }
+  return cached;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -154,7 +191,7 @@ const categoryGlyphs: Record<SpellRailCategory, React.ReactNode> = {
   ),
 };
 
-export function SpellCategoryGlyph({ category, size = 20 }: { category: SpellRailCategory; size?: number }): React.JSX.Element {
+export const SpellCategoryGlyph = React.memo(function SpellCategoryGlyph({ category, size = 20 }: { category: SpellRailCategory; size?: number }): React.JSX.Element {
   return (
     <svg
       className={'spellbook-glyph spellbook-glyph--' + category}
@@ -171,9 +208,9 @@ export function SpellCategoryGlyph({ category, size = 20 }: { category: SpellRai
       {categoryGlyphs[category] ?? categoryGlyphs.other}
     </svg>
   );
-}
+});
 
-export function HeartIcon({ filled, size = 16 }: { filled?: boolean; size?: number }): React.JSX.Element {
+export const HeartIcon = React.memo(function HeartIcon({ filled, size = 16 }: { filled?: boolean; size?: number }): React.JSX.Element {
   return (
     <svg
       className={'favorites-heart' + (filled ? ' is-filled' : '')}
@@ -189,10 +226,10 @@ export function HeartIcon({ filled, size = 16 }: { filled?: boolean; size?: numb
       <path d="M12 20.5C6 15.6 2.5 12.4 2.5 8.6 2.5 5.8 4.7 3.6 7.4 3.6c1.8 0 3.5 1 4.6 2.6 1.1-1.6 2.8-2.6 4.6-2.6 2.7 0 4.9 2.2 4.9 5 0 3.8-3.5 7-9.5 11.9Z" />
     </svg>
   );
-}
+});
 
 /** Ornate arcane rune-quill icon for renaming spells, shouts, and powers. */
-export function SpellRenameIcon({ size = 15 }: { size?: number }): React.JSX.Element {
+export const SpellRenameIcon = React.memo(function SpellRenameIcon({ size = 15 }: { size?: number }): React.JSX.Element {
   return (
     <svg
       className="spellbook-action-icon spellbook-action-icon--rename"
@@ -213,10 +250,10 @@ export function SpellRenameIcon({ size = 15 }: { size?: number }): React.JSX.Ele
       <circle cx="19" cy="18.5" r="1.2" fill="currentColor" stroke="none" />
     </svg>
   );
-}
+});
 
 /** Arcane banish / shatter sigil icon for deleting spells, shouts, powers, and active effects. */
-export function SpellDeleteIcon({ size = 15 }: { size?: number }): React.JSX.Element {
+export const SpellDeleteIcon = React.memo(function SpellDeleteIcon({ size = 15 }: { size?: number }): React.JSX.Element {
   return (
     <svg
       className="spellbook-action-icon spellbook-action-icon--delete"
@@ -235,7 +272,7 @@ export function SpellDeleteIcon({ size = 15 }: { size?: number }): React.JSX.Ele
       <path d="M12 2.4v2.4M12 19.2v2.4M4.4 12h2.2M17.4 12h2.2" strokeWidth="1.4" />
     </svg>
   );
-}
+});
 
 /* ------------------------------------------------------------------------ */
 /* Element emblems drawn in the centre of a sigil                            */
@@ -297,14 +334,34 @@ function emblemFor(spell: SkyUltraSpell): React.ReactNode {
   return categoryGlyphs[spellCategoryOf(spell)] ?? categoryGlyphs.other;
 }
 
+const HERO_RUNE_PATHS: React.JSX.Element[] = Array.from({ length: 12 }, (_, i) => {
+  const angle = (i / 12) * Math.PI * 2;
+  const x = 50 + Math.cos(angle) * 46;
+  const y = 50 + Math.sin(angle) * 46;
+  return <path key={i} d={`M${x - 2} ${y - 3}l2 6 2-6`} transform={`rotate(${(i / 12) * 360 + 90} ${x} ${y})`} />;
+});
+
+const HERO_MOTE_CIRCLES: React.JSX.Element[] = Array.from({ length: 7 }, (_, i) => {
+  const angle = (i / 7) * Math.PI * 2;
+  const orbitR = i % 2 === 0 ? 45 : 34;
+  return (
+    <circle
+      key={i}
+      cx={Number((50 + Math.cos(angle) * orbitR).toFixed(2))}
+      cy={Number((50 + Math.sin(angle) * orbitR).toFixed(2))}
+      r={i % 2 === 0 ? 1.8 : 1.3}
+    />
+  );
+});
+
 /**
  * Animated spell sigil, inspired by the slowly rotating effect art in Skyrim's Magic menu.
- * - idle: gentle breathing glow
- * - active (hovered / selected tile): rings rotate, motes orbit
- * - hero: the large selection preview with extra rune ring and floating motes
- * All animation is transform/opacity based so it stays cheap inside the game overlay.
+ * - idle: static radial aura + outer/inner rings
+ * - active (hovered via CSS :hover or selected tile): outer & inner SVG rings rotate smoothly
+ * - hero: the large selection preview with sweep arcs, rune ring, and orbiting motes
+ * Consolidated into 2 lightweight SVG ring layers so transform animation stays fast in-game.
  */
-export function SpellSigil({
+export const SpellSigil = React.memo(function SpellSigil({
   spell,
   size = 64,
   active = false,
@@ -315,7 +372,6 @@ export function SpellSigil({
   active?: boolean;
   hero?: boolean;
 }): React.JSX.Element {
-  const motes = hero ? 7 : 3;
   return (
     <span
       className={
@@ -325,33 +381,33 @@ export function SpellSigil({
         ` spellbook-sigil--${spell.element ?? spellCategoryOf(spell)}` +
         ` spellbook-sigil--${spell.castingType}`
       }
-      style={{ ...spellColorStyle(spell), width: size, height: size, '--sigil-size': `${size}px` } as React.CSSProperties}
+      style={sigilInlineStyle(spell, size)}
       aria-hidden="true"
     >
       <span className="spellbook-sigil__aura" />
-      <svg className="spellbook-sigil__ring spellbook-sigil__ring--outer" viewBox="0 0 100 100">
-        <circle cx="50" cy="50" r="45" />
-        <circle className="spellbook-sigil__dash" cx="50" cy="50" r="40" />
-      </svg>
-      {hero && (
-        <svg className="spellbook-sigil__ring spellbook-sigil__ring--runes" viewBox="0 0 100 100">
-          {Array.from({ length: 12 }, (_, i) => {
-            const angle = (i / 12) * Math.PI * 2;
-            const x = 50 + Math.cos(angle) * 46;
-            const y = 50 + Math.sin(angle) * 46;
-            return <path key={i} d={`M${x - 2} ${y - 3}l2 6 2-6`} transform={`rotate(${(i / 12) * 360 + 90} ${x} ${y})`} />;
-          })}
-        </svg>
+      {hero ? (
+        <>
+          <svg className="spellbook-sigil__ring spellbook-sigil__ring--outer" viewBox="0 0 100 100">
+            <circle className="spellbook-sigil__sweep-primary" cx="50" cy="50" r="47" />
+            <circle className="spellbook-sigil__sweep-glow" cx="50" cy="50" r="47" />
+            <circle cx="50" cy="50" r="45" />
+            <circle className="spellbook-sigil__dash" cx="50" cy="50" r="40" />
+            <g className="spellbook-sigil__motes">{HERO_MOTE_CIRCLES}</g>
+          </svg>
+          <svg className="spellbook-sigil__ring spellbook-sigil__ring--inner" viewBox="0 0 100 100">
+            <g className="spellbook-sigil__hexagram">
+              <path d="M50 26 70.8 62H29.2Z" />
+              <path d="M50 74 29.2 38h41.6Z" />
+            </g>
+            <g className="spellbook-sigil__runes">{HERO_RUNE_PATHS}</g>
+          </svg>
+        </>
+      ) : (
+        <>
+          <span className="spellbook-sigil__ring spellbook-sigil__ring--outer spellbook-sigil__ring--css" />
+          <span className="spellbook-sigil__ring spellbook-sigil__ring--inner spellbook-sigil__ring--css" />
+        </>
       )}
-      <svg className="spellbook-sigil__ring spellbook-sigil__ring--inner" viewBox="0 0 100 100">
-        <path d="M50 18 77.7 66H22.3Z" />
-        <path d="M50 82 22.3 34h55.4Z" />
-      </svg>
-      <span className="spellbook-sigil__orbit">
-        {Array.from({ length: motes }, (_, i) => (
-          <i key={i} style={{ '--mote-index': i, '--mote-count': motes } as React.CSSProperties} />
-        ))}
-      </span>
       <svg
         className="spellbook-sigil__emblem"
         viewBox="0 0 24 24"
@@ -365,7 +421,15 @@ export function SpellSigil({
       </svg>
     </span>
   );
-}
+}, (prev, next) =>
+  prev.size === next.size &&
+  prev.active === next.active &&
+  prev.hero === next.hero &&
+  prev.spell.id === next.spell.id &&
+  prev.spell.element === next.spell.element &&
+  prev.spell.category === next.spell.category &&
+  prev.spell.kind === next.spell.kind &&
+  prev.spell.castingType === next.spell.castingType);
 
 export function spellCostLabel(spell: SkyUltraSpell): string {
   if (spell.kind === 'shout') return spell.cooldown ? `${Math.round(spell.cooldown)}s recovery` : 'Shout';

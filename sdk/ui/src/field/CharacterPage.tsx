@@ -58,8 +58,6 @@ export interface SavedCharacterLoadout {
   slots: Partial<Record<ConcreteEquipmentSlot, SavedLoadoutSlot | null>>;
 }
 
-const LOADOUT_STORAGE_KEY = "skyultra.character.loadouts.v1";
-
 function formatCompactMetric(value: number): string {
   if (!Number.isFinite(value)) return "0";
   if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
@@ -67,17 +65,12 @@ function formatCompactMetric(value: number): string {
   return Math.round(value).toLocaleString();
 }
 
-function loadSavedLoadouts(characterName?: string | null): SavedCharacterLoadout[] {
+function loadSavedLoadouts(characterScopeKey?: string | null): SavedCharacterLoadout[] {
+  if (!characterScopeKey) return [];
   try {
     const store = readLocalSkyUltraProfileStore();
-    const resolved = resolveEffectiveSkyUltraProfile(store, characterName);
-    if (resolved.loadouts.length > 0) {
-      return resolved.loadouts as unknown as SavedCharacterLoadout[];
-    }
-    const raw = window.localStorage.getItem(LOADOUT_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const resolved = resolveEffectiveSkyUltraProfile(store, characterScopeKey);
+    return resolved.loadouts as unknown as SavedCharacterLoadout[];
   } catch {
     return [];
   }
@@ -86,19 +79,14 @@ function loadSavedLoadouts(characterName?: string | null): SavedCharacterLoadout
 function persistSavedLoadouts(
   list: SavedCharacterLoadout[],
   bridge?: SkyWebViewAPI,
-  characterName?: string | null,
+  characterScopeKey?: string | null,
 ): void {
   const capped = list.slice(0, 24);
-  try {
-    window.localStorage.setItem(LOADOUT_STORAGE_KEY, JSON.stringify(capped));
-  } catch {
-    // Ignore storage quota errors
-  }
-  const nextStore = updateProfileForContext(readLocalSkyUltraProfileStore(), characterName, {
+  const nextStore = updateProfileForContext(readLocalSkyUltraProfileStore(), characterScopeKey, {
     loadouts: capped as unknown as SkyUltraSavedLoadoutRecord[],
   });
   if (bridge) {
-    void persistSkyUltraProfileStore(nextStore, bridge, characterName);
+    void persistSkyUltraProfileStore(nextStore, bridge, characterScopeKey);
   }
 }
 
@@ -138,7 +126,7 @@ function deriveArchetype(player: Player | null): { title: string; subtitle: stri
   return { title: "Dragonscale Vanguard", subtitle: "Master of Arms & Armor", dominant: "Combat" };
 }
 
-export default function CharacterPage({ player, bridge }: { player: Player | null; bridge?: SkyWebViewAPI }): React.JSX.Element {
+function CharacterPageInner({ player, bridge }: { player: Player | null; bridge?: SkyWebViewAPI }): React.JSX.Element {
   const [tab, setTab] = useState<CharacterTab>("overview");
   const [effectFilter, setEffectFilter] = useState<EffectCategoryFilter>("all");
   const [effectViewMode, setEffectViewMode] = useState<"stacked" | "all">("stacked");
@@ -146,18 +134,22 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
   const [skillDiscipline, setSkillDiscipline] = useState<"All" | "Combat" | "Magic" | "Stealth">("All");
   const [skillQuery, setSkillQuery] = useState("");
   const [skillSort, setSkillSort] = useState<"value" | "name">("value");
-  const [loadouts, setLoadouts] = useState<SavedCharacterLoadout[]>(() => loadSavedLoadouts(player?.playerName));
+  const characterScopeKey = player?.characterKey || player?.playerName || null;
+  const [loadouts, setLoadouts] = useState<SavedCharacterLoadout[]>(() => loadSavedLoadouts(characterScopeKey));
 
   useEffect(() => {
+    setLoadouts(loadSavedLoadouts(characterScopeKey));
+    setStagedLoadoutId(null);
+    setUndoSnapshot(null);
     const onProfileStore = (event: Event): void => {
       const detail = (event as CustomEvent<SkyUltraProfileStoreV2>).detail;
-      if (!detail) return;
-      const resolved = resolveEffectiveSkyUltraProfile(detail, player?.playerName);
+      if (!detail || !characterScopeKey) return;
+      const resolved = resolveEffectiveSkyUltraProfile(detail, characterScopeKey);
       setLoadouts(resolved.loadouts as unknown as SavedCharacterLoadout[]);
     };
     window.addEventListener("skyultra:profile-store", onProfileStore);
     return () => window.removeEventListener("skyultra:profile-store", onProfileStore);
-  }, [player?.playerName]);
+  }, [characterScopeKey]);
   const [loadoutName, setLoadoutName] = useState("");
   const [stagedLoadoutId, setStagedLoadoutId] = useState<string | null>(null);
   const [undoSnapshot, setUndoSnapshot] = useState<Partial<Record<ConcreteEquipmentSlot, SavedLoadoutSlot | null>> | null>(null);
@@ -166,6 +158,7 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
   const [loadoutJsonText, setLoadoutJsonText] = useState("");
   const [renamingLoadoutId, setRenamingLoadoutId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [dossierCopied, setDossierCopied] = useState<"md" | "json" | null>(null);
 
   const defenseMax = skyStatMaximum((player?.resistances ?? []).map((item) => item.value));
   const skillMax = skyStatMaximum((player?.skills ?? []).map((item) => item.value));
@@ -286,21 +279,6 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
     return map;
   }, [player?.inventory, liveEquipment]);
 
-  const resolveSavedSlotItem = (slot: SavedLoadoutSlot | null | undefined): Item | null => {
-    if (!slot) return null;
-    const found = itemLookup.get(slot.id);
-    if (found) return found;
-    return {
-      id: slot.id,
-      name: slot.name,
-      category: slot.category || "armor",
-      count: 1,
-      value: 0,
-      weight: 0,
-      equipped: false,
-    };
-  };
-
   const currentEquipmentSlots = useMemo(() => {
     const out: Partial<Record<ConcreteEquipmentSlot, SavedLoadoutSlot | null>> = {};
     for (const slot of LOADOUT_SLOTS) {
@@ -309,6 +287,34 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
     }
     return out;
   }, [liveEquipment]);
+
+  const savedSlotItemLookup = useMemo(() => {
+    const map = new Map<string, Item>(itemLookup);
+    const ensureSlot = (slot: SavedLoadoutSlot | null | undefined): void => {
+      if (!slot || map.has(slot.id)) return;
+      map.set(slot.id, {
+        id: slot.id,
+        name: slot.name,
+        category: slot.category || "armor",
+        count: 1,
+        value: 0,
+        weight: 0,
+        equipped: false,
+      });
+    };
+    for (const entry of loadouts) {
+      for (const slot of LOADOUT_SLOTS) {
+        ensureSlot(entry.slots[slot]);
+      }
+    }
+    for (const slot of LOADOUT_SLOTS) {
+      ensureSlot(currentEquipmentSlots[slot]);
+    }
+    return map;
+  }, [itemLookup, loadouts, currentEquipmentSlots]);
+
+  const resolveSavedSlotItem = (slot: SavedLoadoutSlot | null | undefined): Item | null =>
+    slot ? savedSlotItemLookup.get(slot.id) ?? null : null;
 
   const stagedLoadout = useMemo(
     () => loadouts.find((entry) => entry.id === stagedLoadoutId) ?? loadouts[0] ?? null,
@@ -344,7 +350,7 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
     };
     const next = [entry, ...loadouts].slice(0, 24);
     setLoadouts(next);
-    persistSavedLoadouts(next, bridge, player?.playerName);
+    persistSavedLoadouts(next, bridge, characterScopeKey);
     setStagedLoadoutId(entry.id);
     setLoadoutName("");
     setLoadoutStatus(`Saved loadout "${entry.name}" (${equippedCount}/11 slots).`);
@@ -353,7 +359,7 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
   const deleteLoadout = (id: string): void => {
     const next = loadouts.filter((entry) => entry.id !== id);
     setLoadouts(next);
-    persistSavedLoadouts(next, bridge, player?.playerName);
+    persistSavedLoadouts(next, bridge, characterScopeKey);
     if (stagedLoadoutId === id) {
       setStagedLoadoutId(next[0]?.id ?? null);
     }
@@ -378,7 +384,7 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
     }
     const next = loadouts.map((entry) => (entry.id === id ? { ...entry, name: trimmed } : entry));
     setLoadouts(next);
-    persistSavedLoadouts(next, bridge, player?.playerName);
+    persistSavedLoadouts(next, bridge, characterScopeKey);
     setRenamingLoadoutId(null);
     setRenameDraft("");
     setLoadoutStatus(`Renamed loadout to "${trimmed}".`);
@@ -478,12 +484,66 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
       if (!Array.isArray(parsed)) throw new Error("Expected JSON array");
       const valid = parsed.filter((item) => item && typeof item.name === "string" && item.slots && typeof item.slots === "object");
       setLoadouts(valid);
-      persistSavedLoadouts(valid, bridge, player?.playerName);
+      persistSavedLoadouts(valid, bridge, characterScopeKey);
       setStagedLoadoutId(valid[0]?.id ?? null);
       setLoadoutStatus(`Imported ${valid.length} loadout preset(s).`);
     } catch {
       setLoadoutStatus("Invalid loadout JSON format.");
     }
+  };
+
+  const carryCur = Math.round(player?.carryWeight?.current ?? 0);
+  const carryMax = Math.max(1, Math.round(player?.carryWeight?.max ?? 300));
+  const bestDiscipline = useMemo(
+    () => [...disciplineTotals].sort((a, b) => b.sum - a.sum)[0] ?? null,
+    [disciplineTotals],
+  );
+
+  const copyBuildDossierMarkdown = (): void => {
+    const equippedLines = LOADOUT_SLOTS.map((slot) => {
+      const eq = liveEquipment?.[slot];
+      return eq ? `- **${slot}**: ${eq.name}` : null;
+    })
+      .filter(Boolean)
+      .join("\n");
+    const topSkillLines = topSkills.map((s) => `- ${s.label}: ${Math.round(s.value)}`).join("\n");
+    const md = [
+      `# ${player?.playerName ?? "Dragonborn"} — ${archetype.title} (LVL ${player?.level ?? 1})`,
+      `**Location:** ${player?.location || "Skyrim"}  |  **Septims:** ${(player?.gold ?? 0).toLocaleString()}`,
+      `**Vitals:** HP ${Math.round(player?.health.current ?? 0)}/${Math.round(player?.health.max ?? 0)} · MP ${Math.round(player?.magicka.current ?? 0)}/${Math.round(player?.magicka.max ?? 0)} · SP ${Math.round(player?.stamina.current ?? 0)}/${Math.round(player?.stamina.max ?? 0)}`,
+      `**Combat Mitigation:** ${physicalMitigation.toFixed(1)}% (${armorRating} AR) · **EHP:** ${effectiveHp.toLocaleString()} · **Carry:** ${carryCur}/${carryMax} wt`,
+      "",
+      "## Equipped Loadout",
+      equippedLines || "- None equipped",
+      "",
+      "## Top Disciplines",
+      topSkillLines || "- None recorded",
+    ].join("\n");
+    if (navigator.clipboard) {
+      void navigator.clipboard.writeText(md);
+    }
+    setDossierCopied("md");
+    window.setTimeout(() => setDossierCopied((prev) => (prev === "md" ? null : prev)), 2200);
+  };
+
+  const copyBuildDossierJson = (): void => {
+    const payload = {
+      name: player?.playerName ?? "Dragonborn",
+      level: player?.level ?? 1,
+      archetype: archetype.title,
+      location: player?.location || "Skyrim",
+      gold: player?.gold ?? 0,
+      vitals: { health: player?.health, magicka: player?.magicka, stamina: player?.stamina },
+      defense: { armorRating, physicalMitigationPct: physicalMitigation, effectiveHp, carryWeight: player?.carryWeight },
+      topSkills: topSkills.map((s) => ({ name: s.label, group: s.group, value: s.value })),
+      equipment: currentEquipmentSlots,
+      activeEffectCount: player?.activeEffectCount ?? allEffects.length,
+    };
+    if (navigator.clipboard) {
+      void navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    }
+    setDossierCopied("json");
+    window.setTimeout(() => setDossierCopied((prev) => (prev === "json" ? null : prev)), 2200);
   };
 
   return (
@@ -508,6 +568,29 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
               <span className="title-period">.</span>
             </h1>
             <p>{archetype.subtitle} · Real-time combat mitigation, skill constellations, and active arcane influences.</p>
+            <div className="char-hero-microstrip">
+              <span><strong>{carryCur}/{carryMax}</strong> wt Carry</span>
+              <span><strong>{(player?.gold ?? 0).toLocaleString()}</strong> Septims</span>
+              <span><strong>{bestDiscipline ? `${bestDiscipline.group} (${bestDiscipline.avg} avg)` : "Balanced"}</strong> Mastery</span>
+            </div>
+            <div className="char-dossier-actions">
+              <button
+                type="button"
+                className={"char-stage-btn char-stage-btn--sm" + (dossierCopied === "md" ? " char-stage-btn--active" : "")}
+                onClick={copyBuildDossierMarkdown}
+              >
+                <Icon name="copy" size={13} />
+                <span>{dossierCopied === "md" ? "Copied Markdown!" : "Copy Build Dossier (MD)"}</span>
+              </button>
+              <button
+                type="button"
+                className={"char-stage-btn char-stage-btn--sm" + (dossierCopied === "json" ? " char-stage-btn--active" : "")}
+                onClick={copyBuildDossierJson}
+              >
+                <Icon name="code" size={13} />
+                <span>{dossierCopied === "json" ? "Copied JSON!" : "Copy JSON"}</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1383,3 +1466,40 @@ export default function CharacterPage({ player, bridge }: { player: Player | nul
     </div>
   );
 }
+
+function areCharacterPagePropsEqual(
+  prev: { player: Player | null; bridge?: SkyWebViewAPI },
+  next: { player: Player | null; bridge?: SkyWebViewAPI },
+): boolean {
+  if (prev.bridge !== next.bridge) return false;
+  const a = prev.player;
+  const b = next.player;
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.available === b.available &&
+    a.playerName === b.playerName &&
+    a.characterKey === b.characterKey &&
+    a.portraitRevision === b.portraitRevision &&
+    a.level === b.level &&
+    a.location === b.location &&
+    a.gold === b.gold &&
+    a.armorRating === b.armorRating &&
+    a.activeEffectCount === b.activeEffectCount &&
+    a.health.current === b.health.current &&
+    a.health.max === b.health.max &&
+    a.magicka.current === b.magicka.current &&
+    a.magicka.max === b.magicka.max &&
+    a.stamina.current === b.stamina.current &&
+    a.stamina.max === b.stamina.max &&
+    a.carryWeight === b.carryWeight &&
+    a.resistances === b.resistances &&
+    a.skills === b.skills &&
+    a.activeEffects === b.activeEffects &&
+    a.equipment === b.equipment &&
+    a.inventory === b.inventory
+  );
+}
+
+const CharacterPage = React.memo(CharacterPageInner, areCharacterPagePropsEqual);
+export default CharacterPage;

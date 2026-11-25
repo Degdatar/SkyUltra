@@ -1,11 +1,26 @@
 /** Serializable HUD layout. Suitable for any frontend, local presets and visual editors. */
 export const skyUltraWidgetKinds = ['vitals','character','equipment','resources','effects','compass','clock','radar','loot','stealth','wards','telemetry','target','skills','armory'] as const;
 export type SkyUltraWidgetKind = typeof skyUltraWidgetKinds[number];
-export const skyUltraWidgetAnchors = ['top-left','top-center','top-right','bottom-left','bottom-center','bottom-right'] as const;
+export const skyUltraWidgetAnchors = [
+  'top-left',
+  'top-center',
+  'top-right',
+  'middle-left',
+  'middle-center',
+  'middle-right',
+  'bottom-left',
+  'bottom-center',
+  'bottom-right',
+] as const;
 export type SkyUltraWidgetAnchor = typeof skyUltraWidgetAnchors[number];
 export type SkyUltraWidgetFontStyle = 'theme'|'serif'|'display'|'data'|'mono';
+export const skyUltraPortraitCrestStyles = ['dragonblade','daedric','dwemer','aetherial','nordic'] as const;
+export type SkyUltraPortraitCrestStyle = typeof skyUltraPortraitCrestStyles[number];
 export const skyUltraVisibilityRules = ['always','combat-low-hp','encumbered','has-effects','has-followers'] as const;
 export type SkyUltraVisibilityRule = typeof skyUltraVisibilityRules[number];
+export const SKYULTRA_COMPASS_RADIUS_MIN = 50;
+export const SKYULTRA_COMPASS_RADIUS_MAX = 1000;
+export const SKYULTRA_COMPASS_RADIUS_DEFAULT = 50;
 export const skyUltraHudBindingPaths = [
   'health.current',
   'magicka.current',
@@ -27,6 +42,11 @@ export type SkyUltraWidgetPlacement = {
   opacity?: number;
   glow?: number;
   color?: string;
+  theme?: string;
+  crestStyle?: SkyUltraPortraitCrestStyle;
+  hpColor?: string;
+  magickaColor?: string;
+  staminaColor?: string;
   fontStyle?: SkyUltraWidgetFontStyle;
   offsetX?: number;
   offsetY?: number;
@@ -34,6 +54,7 @@ export type SkyUltraWidgetPlacement = {
   customLabel?: string;
   bindingPath?: SkyUltraHudBindingPath;
   visibilityRule?: SkyUltraVisibilityRule;
+  compassRadius?: number;
 };
 export type SkyUltraWidgetPlacements = Partial<Record<SkyUltraWidgetKind, SkyUltraWidgetPlacement>>;
 export interface SkyUltraHudLayout {
@@ -78,13 +99,19 @@ export function parseSkyUltraHudLayout(input:string|unknown):SkyUltraHudLayout {
       if(typeof p.opacity==='number'&&Number.isFinite(p.opacity))entry.opacity=Math.max(0.35,Math.min(1,p.opacity));
       if(typeof p.glow==='number'&&Number.isFinite(p.glow))entry.glow=Math.max(0,Math.min(150,Math.round(p.glow)));
       if(typeof p.color==='string'&&/^#[0-9a-f]{6}$/i.test(p.color))entry.color=p.color.toLowerCase();
+      if(typeof p.theme==='string'&&/^[a-z][a-z0-9-]{0,31}$/.test(p.theme))entry.theme=p.theme;
+      if(typeof p.crestStyle==='string'&&(skyUltraPortraitCrestStyles as readonly string[]).includes(p.crestStyle))entry.crestStyle=p.crestStyle as SkyUltraPortraitCrestStyle;
+      if(typeof p.hpColor==='string'&&/^#[0-9a-f]{6}$/i.test(p.hpColor))entry.hpColor=p.hpColor.toLowerCase();
+      if(typeof p.magickaColor==='string'&&/^#[0-9a-f]{6}$/i.test(p.magickaColor))entry.magickaColor=p.magickaColor.toLowerCase();
+      if(typeof p.staminaColor==='string'&&/^#[0-9a-f]{6}$/i.test(p.staminaColor))entry.staminaColor=p.staminaColor.toLowerCase();
       if(typeof p.fontStyle==='string'&&['theme','serif','display','data','mono'].includes(p.fontStyle))entry.fontStyle=p.fontStyle as SkyUltraWidgetFontStyle;
-      if(typeof p.offsetX==='number'&&Number.isFinite(p.offsetX))entry.offsetX=Math.max(-600,Math.min(600,Math.round(p.offsetX)));
-      if(typeof p.offsetY==='number'&&Number.isFinite(p.offsetY))entry.offsetY=Math.max(-400,Math.min(400,Math.round(p.offsetY)));
+      if(typeof p.offsetX==='number'&&Number.isFinite(p.offsetX))entry.offsetX=Math.max(-1600,Math.min(1600,Math.round(p.offsetX)));
+      if(typeof p.offsetY==='number'&&Number.isFinite(p.offsetY))entry.offsetY=Math.max(-900,Math.min(900,Math.round(p.offsetY)));
       if(typeof p.width==='number'&&Number.isFinite(p.width)&&p.width>=120&&p.width<=640)entry.width=Math.round(p.width);
       if(typeof p.customLabel==='string'&&p.customLabel.trim().length>0)entry.customLabel=p.customLabel.trim().slice(0,48);
       if(typeof p.bindingPath==='string'&&skyUltraHudBindingPaths.includes(p.bindingPath as SkyUltraHudBindingPath))entry.bindingPath=p.bindingPath as SkyUltraHudBindingPath;
       if(typeof p.visibilityRule==='string'&&skyUltraVisibilityRules.includes(p.visibilityRule as SkyUltraVisibilityRule))entry.visibilityRule=p.visibilityRule as SkyUltraVisibilityRule;
+      if(typeof p.compassRadius==='number'&&Number.isFinite(p.compassRadius))entry.compassRadius=Math.max(SKYULTRA_COMPASS_RADIUS_MIN,Math.min(SKYULTRA_COMPASS_RADIUS_MAX,Math.round(p.compassRadius)));
       if(Object.keys(entry).length>0)placements[k as SkyUltraWidgetKind]=entry;
     }
     if(Object.keys(placements).length>0)out.placements=placements;

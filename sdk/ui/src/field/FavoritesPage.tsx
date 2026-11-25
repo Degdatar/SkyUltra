@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createSkyUltraGame,
   readSkyUltraUiPrefs,
@@ -7,19 +7,66 @@ import {
   type SkyUltraItemAction,
   type SkyUltraSpell,
   type SkyUltraSpellHand,
+  type SkyWebViewAPI,
 } from '@skyultra/sdk';
 import { SkySegmentedControl } from '../core.js';
 import { BookReader, parseBookActionResult, type ReadingBookState } from './BookReader.js';
 import { Icon, itemIcon } from './icons.js';
 import { ItemThumbnail } from './ItemThumbnail.js';
 import { Empty } from './pieces.js';
-import type { Item, Palette } from './model.js';
+import type { Item, Palette, Player } from './model.js';
 import { HeartIcon, SpellCategoryGlyph, SpellSigil, spellColorStyle, spellCostLabel } from './spellArt.js';
-import { SpellEquipActions, SpellHandBadges, containerModeLabels, nextContainerMode, type ContainerPageProps } from './MagicPage.js';
+import {
+  SpellEquipActions,
+  SpellHandBadges,
+  applySpellEquippedState,
+  computeOptimisticSpellEquipped,
+  containerModeLabels,
+  nextContainerMode,
+  resolveSpellClickHand,
+  type ContainerPageProps,
+} from './MagicPage.js';
+
+export function applyFavoriteItemEquipment<T extends Pick<Item, 'id' | 'equipped'>>(
+  items: T[],
+  equipment: Player['equipment'] | Record<string, { id?: string } | null | undefined> | undefined,
+): T[] {
+  const equippedIds = new Set<string>();
+  for (const entry of Object.values(equipment ?? {})) {
+    if (entry && typeof entry.id === 'string' && entry.id) {
+      equippedIds.add(entry.id);
+    }
+  }
+  let changed = false;
+  const next = items.map(item => {
+    const equipped = equippedIds.has(item.id);
+    if (item.equipped === equipped) return item;
+    changed = true;
+    return { ...item, equipped };
+  });
+  return changed ? next : items;
+}
 
 type FavoriteEntry =
   | { kind: 'item'; key: string; name: string; item: Item }
   | { kind: 'spell'; key: string; name: string; spell: SkyUltraSpell };
+
+export function resolveFavoriteItemClickAction(
+  item: Pick<Item, 'equipSlots' | 'equipped' | 'useAction'>,
+  button: 'left' | 'right',
+): { kind: 'equip'; slot: 'auto' | 'mainHand' | 'offHand' } | { kind: 'use' } | null {
+  const slots = item.equipSlots ?? [];
+  const dualWield = slots.includes('mainHand') && slots.includes('offHand');
+  if (dualWield) {
+    return { kind: 'equip', slot: button === 'right' ? 'mainHand' : 'offHand' };
+  }
+  if (button === 'right') {
+    return slots.includes('mainHand') ? { kind: 'equip', slot: 'mainHand' } : null;
+  }
+  if (slots.length > 0) return { kind: 'equip', slot: 'auto' };
+  if (item.useAction) return { kind: 'use' };
+  return null;
+}
 
 const useActionLabels: Record<SkyUltraItemAction, string> = {
   drink: 'Drink',
@@ -38,12 +85,161 @@ function itemSubtitle(item: Item): string {
   return parts.join(' · ');
 }
 
+const FavoriteEntryItem = React.memo(function FavoriteEntryItem({
+  entry,
+  index,
+  layout,
+  isSelected,
+  bridge,
+  paused,
+  actionDisabled,
+  onLeftClick,
+  onRightDown,
+  onRightUp,
+  onRemoveFavorite,
+}: {
+  entry: FavoriteEntry;
+  index: number;
+  layout: 'grid' | 'list';
+  isSelected: boolean;
+  bridge?: SkyWebViewAPI;
+  paused: boolean;
+  actionDisabled: boolean;
+  onLeftClick: (entry: FavoriteEntry) => void;
+  onRightDown: (key: string) => void;
+  onRightUp: (entry: FavoriteEntry) => void;
+  onRemoveFavorite: (entry: FavoriteEntry) => void;
+}): React.JSX.Element {
+  const equipped = entry.kind === 'item'
+    ? entry.item.equipped
+    : entry.spell.equippedLeft || entry.spell.equippedRight || entry.spell.equippedVoice;
+  const spellStyle = entry.kind === 'spell' ? spellColorStyle(entry.spell) : undefined;
+  const sub = entry.kind === 'spell'
+    ? `${entry.spell.kind === 'shout' ? 'Shout' : entry.spell.kind === 'spell' ? entry.spell.school : 'Power'} · ${spellCostLabel(entry.spell)}`
+    : itemSubtitle(entry.item);
+
+  const handleHeartMouseDown = (event: React.MouseEvent): void => {
+    event.stopPropagation();
+  };
+  const handleHeartMouseUp = (event: React.MouseEvent): void => {
+    event.stopPropagation();
+  };
+  const handleHeartClick = (event: React.MouseEvent): void => {
+    event.stopPropagation();
+    onRemoveFavorite(entry);
+  };
+  const handleHeartContextMenu = (event: React.MouseEvent): void => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  if (layout === 'grid') {
+    return (
+      <div
+        role="option"
+        aria-selected={isSelected}
+        tabIndex={0}
+        className={'favorites-tile favorites-tile--' + entry.kind + (isSelected ? ' is-active' : '') + (equipped ? ' is-equipped' : '')}
+        style={spellStyle}
+        onClick={() => onLeftClick(entry)}
+        onMouseDown={e => {
+          if (e.button === 2) onRightDown(entry.key);
+        }}
+        onMouseUp={e => {
+          if (e.button === 2) onRightUp(entry);
+        }}
+        onContextMenu={e => e.preventDefault()}
+      >
+        <div className="favorites-tile__top">
+          <span className="favorites-tile__index">{index < 9 ? `#${index + 1}` : entry.kind.toUpperCase()}</span>
+          <div className="favorites-tile__badges">
+            {entry.kind === 'spell' ? (
+              <SpellHandBadges spell={entry.spell} />
+            ) : entry.item.equipped ? (
+              <span className="spellbook-hands"><b title="Equipped">E</b></span>
+            ) : null}
+            <button
+              type="button"
+              className="favorites-row__heart favorites-tile__heart"
+              aria-label={`Remove ${entry.name} from favorites`}
+              title="Remove from favorites"
+              disabled={actionDisabled}
+              onMouseDown={handleHeartMouseDown}
+              onMouseUp={handleHeartMouseUp}
+              onClick={handleHeartClick}
+              onContextMenu={handleHeartContextMenu}
+            >
+              <HeartIcon filled size={13} />
+            </button>
+          </div>
+        </div>
+        <span className="favorites-tile__art">
+          {entry.kind === 'spell' ? (
+            <SpellSigil spell={entry.spell} size={64} active={isSelected} />
+          ) : (
+            <ItemThumbnail item={entry.item} bridge={bridge} paused={paused} />
+          )}
+        </span>
+        <span className="favorites-tile__copy">
+          <strong>{entry.name}</strong>
+          <small>{sub}</small>
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      role="option"
+      aria-selected={isSelected}
+      tabIndex={0}
+      className={'favorites-row favorites-row--' + entry.kind + (isSelected ? ' is-active' : '') + (equipped ? ' is-equipped' : '')}
+      style={spellStyle}
+      onClick={() => onLeftClick(entry)}
+      onMouseDown={e => {
+        if (e.button === 2) onRightDown(entry.key);
+      }}
+      onMouseUp={e => {
+        if (e.button === 2) onRightUp(entry);
+      }}
+      onContextMenu={e => e.preventDefault()}
+    >
+      <span className="favorites-row__index">{index < 9 ? index + 1 : ''}</span>
+      <span className="favorites-row__art">
+        {entry.kind === 'spell' ? (
+          <SpellSigil spell={entry.spell} size={44} active={isSelected} />
+        ) : (
+          <ItemThumbnail item={entry.item} bridge={bridge} paused={paused} />
+        )}
+      </span>
+      <span className="favorites-row__copy">
+        <strong>{entry.name}</strong>
+        <small>{sub}</small>
+      </span>
+      {entry.kind === 'spell' ? <SpellHandBadges spell={entry.spell} /> : entry.item.equipped ? <span className="spellbook-hands"><b title="Equipped">E</b></span> : null}
+      <button
+        type="button"
+        className="favorites-row__heart"
+        aria-label={`Remove ${entry.name} from favorites`}
+        title="Remove from favorites"
+        disabled={actionDisabled}
+        onMouseDown={handleHeartMouseDown}
+        onMouseUp={handleHeartMouseUp}
+        onClick={handleHeartClick}
+        onContextMenu={handleHeartContextMenu}
+      >
+        <HeartIcon filled size={15} />
+      </button>
+    </div>
+  );
+});
+
 export default function FavoritesPage({
   player,
   bridge,
   obscured = false,
   displayMode = 'half',
-  pauseWorld = false,
+  pauseWorld = true,
   onChangeDisplayMode,
   onTogglePauseWorld,
   onClose,
@@ -59,11 +255,25 @@ export default function FavoritesPage({
   const [statusMessage, setStatusMessage] = useState('');
   const [revision, setRevision] = useState(0);
   const [readingBook, setReadingBook] = useState<ReadingBookState | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
   const locked = useRef(false);
+  const mountedRef = useRef(true);
+  const hasLoadedRef = useRef(false);
+  const lastFavoritesJsonRef = useRef('');
+  const rightDownKeyRef = useRef('');
+  const equipChainRef = useRef<Promise<void>>(Promise.resolve());
+  const obscuredRef = useRef(obscured);
+  obscuredRef.current = obscured;
   const actionController = useRef<AbortController | null>(null);
-  const uiPrefs = useMemo(() => readSkyUltraUiPrefs(), [revision, readingBook]);
+  const uiPrefs = useMemo(() => readSkyUltraUiPrefs(), [readingBook]);
 
-  useEffect(() => () => actionController.current?.abort(), [bridge]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      actionController.current?.abort();
+    };
+  }, [bridge]);
 
   useEffect(() => {
     if (!game || !bridge || obscured) return;
@@ -73,22 +283,29 @@ export default function FavoritesPage({
     const refresh = async (): Promise<void> => {
       if (pending || document.hidden || !(bridge.getVisibility?.().visible ?? true)) return;
       pending = true;
-      setLoading(true);
+      if (!hasLoadedRef.current) setLoading(true);
       try {
         const res = await game.favorites({ signal: controller.signal });
         if (active) {
-          setFavorites(res);
+          hasLoadedRef.current = true;
+          const nextJson = JSON.stringify(res);
+          if (nextJson !== lastFavoritesJsonRef.current) {
+            lastFavoritesJsonRef.current = nextJson;
+            setFavorites(res);
+          }
           if (!res.available && res.message) setStatusMessage(res.message);
         }
       } catch (error) {
-        if (active) setStatusMessage(error instanceof Error ? error.message : 'Could not read your favorites.');
+        if (active && !controller.signal.aborted) {
+          setStatusMessage(error instanceof Error ? error.message : 'Could not read your favorites.');
+        }
       } finally {
         pending = false;
         if (active) setLoading(false);
       }
     };
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 4000);
+    const interval = window.setInterval(() => void refresh(), 15000);
     const onVis = (): void => void refresh();
     const unsubscribe = bridge.on('skyultra.visibility', onVis);
     document.addEventListener('visibilitychange', onVis);
@@ -100,6 +317,26 @@ export default function FavoritesPage({
       document.removeEventListener('visibilitychange', onVis);
     };
   }, [game, bridge, obscured, revision]);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    let timer = 0;
+    const onScroll = (): void => {
+      if (!el.classList.contains('is-scrolling')) el.classList.add('is-scrolling');
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = 0;
+        el.classList.remove('is-scrolling');
+      }, 140);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      el.classList.remove('is-scrolling');
+      el.removeEventListener('scroll', onScroll);
+    };
+  }, []);
 
   const entries = useMemo<FavoriteEntry[]>(() => {
     const items: FavoriteEntry[] = (favorites?.items ?? []).map(item => ({ kind: 'item', key: 'item:' + item.id, name: item.name, item }));
@@ -117,11 +354,15 @@ export default function FavoritesPage({
     return matched.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'spell' ? -1 : 1));
   }, [favorites, filter, query]);
 
-  const selected = entries.find(e => e.key === selectedKey) ?? entries[0] ?? null;
+  const selected = useMemo(() => entries.find(e => e.key === selectedKey) ?? entries[0] ?? null, [entries, selectedKey]);
   const itemCount = favorites?.items.length ?? 0;
   const spellCount = favorites?.spells.length ?? 0;
 
-  async function runAction<T extends { accepted: boolean; message?: string }>(label: string, request: (signal: AbortSignal) => Promise<T>): Promise<void> {
+  async function runAction<T extends { accepted: boolean; message?: string }>(
+    label: string,
+    request: (signal: AbortSignal) => Promise<T>,
+    onAccepted?: (result: T) => void,
+  ): Promise<void> {
     if (!game || obscured || locked.current) return;
     locked.current = true;
     setBusy(true);
@@ -131,30 +372,89 @@ export default function FavoritesPage({
     actionController.current = controller;
     try {
       const result = await request(controller.signal);
-      if (!controller.signal.aborted) {
+      if (!controller.signal.aborted && mountedRef.current) {
         setStatusMessage(result.message ?? (result.accepted ? 'Done.' : 'Skyrim declined that action.'));
-        setRevision(v => v + 1);
+        if (result.accepted && onAccepted) {
+          onAccepted(result);
+        } else {
+          setRevision(v => v + 1);
+        }
       }
     } catch (error) {
-      if (!controller.signal.aborted) setStatusMessage(error instanceof Error ? error.message : 'The favorite action failed.');
+      if (!controller.signal.aborted && mountedRef.current) {
+        setStatusMessage(error instanceof Error ? error.message : 'The favorite action failed.');
+      }
     } finally {
       locked.current = false;
-      if (!controller.signal.aborted) setBusy(false);
+      if (!controller.signal.aborted && mountedRef.current) setBusy(false);
     }
   }
 
-  const equipSpell = (spell: SkyUltraSpell, hand: SkyUltraSpellHand): void => {
-    if (!game) return;
-    void runAction(`Readying ${spell.name}…`, signal => game.equipSpell(spell.id, hand, { signal }));
-  };
-  const equipItem = (item: Item, slot: 'auto' | 'mainHand' | 'offHand'): void => {
-    if (!game) return;
+  const equipSpell = useCallback((spell: SkyUltraSpell, hand: SkyUltraSpellHand): void => {
+    if (!game || obscuredRef.current) return;
+    setStatusMessage(`Readying ${spell.name}…`);
+    lastFavoritesJsonRef.current = '';
+    setFavorites(prev => {
+      if (!prev) return prev;
+      const optimistic = computeOptimisticSpellEquipped(prev.equipped, spell.id, hand);
+      return { ...prev, equipped: optimistic, spells: applySpellEquippedState(prev.spells, optimistic) };
+    });
+    equipChainRef.current = equipChainRef.current.then(async () => {
+      if (!mountedRef.current || obscuredRef.current) return;
+      try {
+        const result = await game.equipSpell(spell.id, hand);
+        if (!mountedRef.current) return;
+        setStatusMessage(result.message ?? (result.accepted ? 'Done.' : 'Skyrim declined that action.'));
+        if (result.equipped) {
+          lastFavoritesJsonRef.current = '';
+          const eq = result.equipped;
+          setFavorites(prev => (prev ? { ...prev, equipped: eq, spells: applySpellEquippedState(prev.spells, eq) } : prev));
+        } else {
+          setRevision(v => v + 1);
+        }
+      } catch (error) {
+        if (mountedRef.current) {
+          setStatusMessage(error instanceof Error ? error.message : 'The favorite action failed.');
+          setRevision(v => v + 1);
+        }
+      }
+    });
+  }, [game]);
+  const equipItem = useCallback((item: Item, slot: 'auto' | 'mainHand' | 'offHand'): void => {
+    if (!game || obscuredRef.current) return;
     const unequip = slot === 'auto' && item.equipped;
-    void runAction(`${unequip ? 'Unequipping' : 'Equipping'} ${item.name}…`, signal =>
-      unequip ? game.unequipItem(item.id, 'auto', { signal }) : game.equipItem(item.id, slot, { signal }),
+    setStatusMessage(`${unequip ? 'Unequipping' : 'Equipping'} ${item.name}…`);
+    lastFavoritesJsonRef.current = '';
+    setFavorites(prev =>
+      prev
+        ? {
+            ...prev,
+            items: prev.items.map(entry => (entry.id === item.id ? { ...entry, equipped: !unequip } : entry)),
+          }
+        : prev,
     );
-  };
-  const useItem = (item: Item, openNative = false): void => {
+    equipChainRef.current = equipChainRef.current.then(async () => {
+      if (!mountedRef.current || obscuredRef.current) return;
+      try {
+        const result = unequip ? await game.unequipItem(item.id, 'auto') : await game.equipItem(item.id, slot);
+        if (!mountedRef.current) return;
+        setStatusMessage(result.message ?? (result.accepted ? 'Done.' : 'Skyrim declined that action.'));
+        if (result.equipment) {
+          lastFavoritesJsonRef.current = '';
+          const eq = result.equipment;
+          setFavorites(prev => (prev ? { ...prev, items: applyFavoriteItemEquipment(prev.items, eq) } : prev));
+        } else {
+          setRevision(v => v + 1);
+        }
+      } catch (error) {
+        if (mountedRef.current) {
+          setStatusMessage(error instanceof Error ? error.message : 'The favorite action failed.');
+          setRevision(v => v + 1);
+        }
+      }
+    });
+  }, [game]);
+  const useItem = useCallback((item: Item, openNative = false): void => {
     if (!game || !item.useAction) return;
     const action = item.useAction;
     void (async () => {
@@ -167,25 +467,40 @@ export default function FavoritesPage({
       actionController.current = controller;
       try {
         const result = await game.itemAction({ formId: item.id, action, openNative }, { signal: controller.signal });
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && mountedRef.current) {
           const parsedBook = !openNative ? parseBookActionResult(item, result) : null;
           if (parsedBook) setReadingBook(parsedBook);
           setStatusMessage(result.message ?? (result.accepted ? 'Done.' : 'Skyrim declined that action.'));
           setRevision(v => v + 1);
         }
       } catch (error) {
-        if (!controller.signal.aborted) setStatusMessage(error instanceof Error ? error.message : 'The favorite action failed.');
+        if (!controller.signal.aborted && mountedRef.current) {
+          setStatusMessage(error instanceof Error ? error.message : 'The favorite action failed.');
+        }
       } finally {
         locked.current = false;
-        if (!controller.signal.aborted) setBusy(false);
+        if (!controller.signal.aborted && mountedRef.current) setBusy(false);
       }
     })();
-  };
-  const removeFavorite = (entry: FavoriteEntry): void => {
+  }, [game, obscured]);
+  const removeFavorite = useCallback((entry: FavoriteEntry): void => {
     if (!game) return;
     const id = entry.kind === 'item' ? entry.item.id : entry.spell.id;
-    void runAction(`Removing ${entry.name} from favorites…`, signal => game.setFavorite(id, entry.kind, false, { signal }));
-  };
+    void runAction(
+      `Removing ${entry.name} from favorites…`,
+      signal => game.setFavorite(id, entry.kind, false, { signal }),
+      () => {
+        lastFavoritesJsonRef.current = '';
+        setFavorites(prev =>
+          prev
+            ? entry.kind === 'spell'
+              ? { ...prev, spells: prev.spells.filter(spell => spell.id !== id) }
+              : { ...prev, items: prev.items.filter(item => item.id !== id) }
+            : prev,
+        );
+      },
+    );
+  }, [game]);
   const quickUse = (entry: FavoriteEntry): void => {
     if (entry.kind === 'spell') {
       const spell = entry.spell;
@@ -199,29 +514,59 @@ export default function FavoritesPage({
     else if (item.useAction) useItem(item);
   };
 
+  const handleEntryClick = useCallback((entry: FavoriteEntry, button: 'left' | 'right'): void => {
+    setSelectedKey(entry.key);
+    if (entry.kind === 'spell') {
+      const hand = resolveSpellClickHand(entry.spell, button);
+      if (hand) equipSpell(entry.spell, hand);
+      return;
+    }
+    const itemAction = resolveFavoriteItemClickAction(entry.item, button);
+    if (!itemAction) return;
+    if (itemAction.kind === 'equip') equipItem(entry.item, itemAction.slot);
+    else useItem(entry.item);
+  }, [equipSpell, equipItem, useItem]);
+
+  const handleEntryLeftClick = useCallback((entry: FavoriteEntry): void => {
+    handleEntryClick(entry, 'left');
+  }, [handleEntryClick]);
+
+  const handleEntryRightDown = useCallback((key: string): void => {
+    rightDownKeyRef.current = key;
+  }, []);
+
+  const handleEntryRightUp = useCallback((entry: FavoriteEntry): void => {
+    if (rightDownKeyRef.current !== entry.key) return;
+    rightDownKeyRef.current = '';
+    handleEntryClick(entry, 'right');
+  }, [handleEntryClick]);
+
+  const keyHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  keyHandlerRef.current = (event: KeyboardEvent): void => {
+    if (busy || obscured || event.ctrlKey || event.altKey || event.metaKey) return;
+    if ((event.target as HTMLElement | null)?.closest('input,textarea,select,[contenteditable=true]')) return;
+    const index = Number(event.key) - 1;
+    if (Number.isInteger(index) && index >= 0 && index < Math.min(9, entries.length)) {
+      event.preventDefault();
+      setSelectedKey(entries[index].key);
+      quickUse(entries[index]);
+    } else if (event.key === 'Enter' && selected) {
+      event.preventDefault();
+      quickUse(selected);
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (!entries.length) return;
+      event.preventDefault();
+      const current = Math.max(0, entries.findIndex(e => e.key === selected?.key));
+      const next = (current + (event.key === 'ArrowDown' ? 1 : -1) + entries.length) % entries.length;
+      setSelectedKey(entries[next].key);
+    }
+  };
+
   useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (busy || obscured || event.ctrlKey || event.altKey || event.metaKey) return;
-      if ((event.target as HTMLElement | null)?.closest('input,textarea,select,[contenteditable=true]')) return;
-      const index = Number(event.key) - 1;
-      if (Number.isInteger(index) && index >= 0 && index < Math.min(9, entries.length)) {
-        event.preventDefault();
-        setSelectedKey(entries[index].key);
-        quickUse(entries[index]);
-      } else if (event.key === 'Enter' && selected) {
-        event.preventDefault();
-        quickUse(selected);
-      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        if (!entries.length) return;
-        event.preventDefault();
-        const current = Math.max(0, entries.findIndex(e => e.key === selected?.key));
-        const next = (current + (event.key === 'ArrowDown' ? 1 : -1) + entries.length) % entries.length;
-        setSelectedKey(entries[next].key);
-      }
-    };
+    const onKey = (event: KeyboardEvent): void => keyHandlerRef.current(event);
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  });
+  }, []);
 
   const renderItemActions = (item: Item): React.ReactNode => {
     const slots = item.equipSlots ?? [];
@@ -258,7 +603,13 @@ export default function FavoritesPage({
   };
 
   return (
-    <div className={`page inventory-page inventory-page--armory inventory-page--standalone favorites-page favorites-page--${displayMode}`} data-container-mode={displayMode}>
+    <div
+      className={`page inventory-page inventory-page--armory inventory-page--standalone favorites-page favorites-page--${displayMode}`}
+      data-container-mode={displayMode}
+      onContextMenu={e => {
+        if (!(e.target as HTMLElement | null)?.closest('input,textarea')) e.preventDefault();
+      }}
+    >
       <div className="spellbook-backdrop favorites-backdrop" aria-hidden="true">
         <i /><i /><i />
       </div>
@@ -365,102 +716,32 @@ export default function FavoritesPage({
           />
         </div>
 
-        <div className={'favorites-list favorites-list--' + layout} role="listbox" aria-label="Favorite entries">
+        <div
+          ref={listRef}
+          className={'favorites-list favorites-list--' + layout}
+          role="listbox"
+          aria-label="Favorite entries"
+          onMouseUp={e => {
+            if (e.button === 2) rightDownKeyRef.current = '';
+          }}
+        >
           {entries.length ? (
-            entries.map((entry, index) => {
-              const isSelected = entry.key === selected?.key;
-              const equipped = entry.kind === 'item' ? entry.item.equipped : entry.spell.equippedLeft || entry.spell.equippedRight || entry.spell.equippedVoice;
-              if (layout === 'grid') {
-                return (
-                  <div
-                    key={entry.key}
-                    role="option"
-                    aria-selected={isSelected}
-                    tabIndex={0}
-                    className={'favorites-tile favorites-tile--' + entry.kind + (isSelected ? ' is-active' : '') + (equipped ? ' is-equipped' : '')}
-                    style={entry.kind === 'spell' ? spellColorStyle(entry.spell) : undefined}
-                    onClick={() => setSelectedKey(entry.key)}
-                    onDoubleClick={() => { if (!busy && !obscured) quickUse(entry); }}
-                  >
-                    <div className="favorites-tile__top">
-                      <span className="favorites-tile__index">{index < 9 ? `#${index + 1}` : entry.kind.toUpperCase()}</span>
-                      <div className="favorites-tile__badges">
-                        {entry.kind === 'spell' ? (
-                          <SpellHandBadges spell={entry.spell} />
-                        ) : entry.item.equipped ? (
-                          <span className="spellbook-hands"><b title="Equipped">E</b></span>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="favorites-row__heart favorites-tile__heart"
-                          aria-label={`Remove ${entry.name} from favorites`}
-                          title="Remove from favorites"
-                          disabled={!bridge || busy || obscured}
-                          onClick={event => { event.stopPropagation(); removeFavorite(entry); }}
-                        >
-                          <HeartIcon filled size={13} />
-                        </button>
-                      </div>
-                    </div>
-                    <span className="favorites-tile__art">
-                      {entry.kind === 'spell' ? (
-                        <SpellSigil spell={entry.spell} size={64} active={isSelected} />
-                      ) : (
-                        <ItemThumbnail item={entry.item} bridge={bridge} paused={obscured} />
-                      )}
-                    </span>
-                    <span className="favorites-tile__copy">
-                      <strong>{entry.name}</strong>
-                      <small>
-                        {entry.kind === 'spell'
-                          ? `${entry.spell.kind === 'shout' ? 'Shout' : entry.spell.kind === 'spell' ? entry.spell.school : 'Power'} · ${spellCostLabel(entry.spell)}`
-                          : itemSubtitle(entry.item)}
-                      </small>
-                    </span>
-                  </div>
-                );
-              }
-              return (
-                <div
-                  key={entry.key}
-                  role="option"
-                  aria-selected={isSelected}
-                  tabIndex={0}
-                  className={'favorites-row favorites-row--' + entry.kind + (isSelected ? ' is-active' : '') + (equipped ? ' is-equipped' : '')}
-                  style={entry.kind === 'spell' ? spellColorStyle(entry.spell) : undefined}
-                  onClick={() => setSelectedKey(entry.key)}
-                  onDoubleClick={() => { if (!busy && !obscured) quickUse(entry); }}
-                >
-                  <span className="favorites-row__index">{index < 9 ? index + 1 : ''}</span>
-                  <span className="favorites-row__art">
-                    {entry.kind === 'spell' ? (
-                      <SpellSigil spell={entry.spell} size={44} active={isSelected} />
-                    ) : (
-                      <ItemThumbnail item={entry.item} bridge={bridge} paused={obscured} />
-                    )}
-                  </span>
-                  <span className="favorites-row__copy">
-                    <strong>{entry.name}</strong>
-                    <small>
-                      {entry.kind === 'spell'
-                        ? `${entry.spell.kind === 'shout' ? 'Shout' : entry.spell.kind === 'spell' ? entry.spell.school : 'Power'} · ${spellCostLabel(entry.spell)}`
-                        : itemSubtitle(entry.item)}
-                    </small>
-                  </span>
-                  {entry.kind === 'spell' ? <SpellHandBadges spell={entry.spell} /> : entry.item.equipped ? <span className="spellbook-hands"><b title="Equipped">E</b></span> : null}
-                  <button
-                    type="button"
-                    className="favorites-row__heart"
-                    aria-label={`Remove ${entry.name} from favorites`}
-                    title="Remove from favorites"
-                    disabled={!bridge || busy || obscured}
-                    onClick={event => { event.stopPropagation(); removeFavorite(entry); }}
-                  >
-                    <HeartIcon filled size={15} />
-                  </button>
-                </div>
-              );
-            })
+            entries.map((entry, index) => (
+              <FavoriteEntryItem
+                key={entry.key}
+                entry={entry}
+                index={index}
+                layout={layout}
+                isSelected={entry.key === selected?.key}
+                bridge={bridge}
+                paused={obscured}
+                actionDisabled={!bridge || busy || obscured}
+                onLeftClick={handleEntryLeftClick}
+                onRightDown={handleEntryRightDown}
+                onRightUp={handleEntryRightUp}
+                onRemoveFavorite={removeFavorite}
+              />
+            ))
           ) : (
             <Empty
               title={loading ? 'Gathering your favorites' : query ? 'No favorites matched' : 'No favorites yet'}
@@ -513,7 +794,7 @@ export default function FavoritesPage({
         )}
 
         <div className="inventory-notice spellbook-notice" role="status">
-          <span>{statusMessage || `${entries.length} favorite${entries.length === 1 ? '' : 's'} · 1–9 quick-use · Enter to use selected · Double-click to equip`}</span>
+          <span>{statusMessage || `${entries.length} favorite${entries.length === 1 ? '' : 's'} · Left-click: Left hand / Equip / Use · Right-click: Right hand · 1–9 quick-use`}</span>
         </div>
       </section>
       {readingBook && (

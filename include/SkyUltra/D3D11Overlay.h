@@ -20,7 +20,9 @@ struct OverlayTimingMetric {
     double total_ms{};
     double last_ms{};
     double mean_ms{};
+    double p50_ms{};
     double p95_ms{};
+    double p99_ms{};
     double max_ms{};
     double age_ms{-1};
     std::uint32_t window_samples{};
@@ -69,6 +71,7 @@ void NoteVRControllerThumbstick(int hand, float y) noexcept;
 void SetD3D11UiPassMenuVisible(bool visible) noexcept;
 
 [[nodiscard]] bool InstallD3D11PresentHook() noexcept;
+[[nodiscard]] bool IsD3D11PresentHookInstalled() noexcept;
 void ShutdownD3D11PresentHook() noexcept;
 
 }  // namespace skyultra

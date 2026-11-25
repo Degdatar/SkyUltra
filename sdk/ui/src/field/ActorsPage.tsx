@@ -444,15 +444,18 @@ export default function ActorsPage({
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState<Item | null>(null);
   const [hoverSlot, setHoverSlot] = useState("");
+  const hoverSlotRef = useRef("");
+  const lastDragEventRef = useRef<unknown>(null);
+  const lastHitPointRef = useRef({ x: -1, y: -1 });
   const ghostRef = useRef<HTMLDivElement>(null);
   const ghostPoint = useRef({ x: 0, y: 0 });
   const dragImage = useRef<string | undefined>(undefined);
-  const [thumbnailsDeferred, setThumbnailsDeferred] = useState(false);
+  const [thumbnailsDeferred, setThumbnailsDeferred] = useState(true);
   const thumbnailResumeTimer = useRef(0);
   const deferThumbnails = (): void => {
     window.clearTimeout(thumbnailResumeTimer.current);
     setThumbnailsDeferred(true);
-    thumbnailResumeTimer.current = window.setTimeout(() => setThumbnailsDeferred(false), 180);
+    thumbnailResumeTimer.current = window.setTimeout(() => setThumbnailsDeferred(false), 320);
   };
 
   const data = useActors(bridge, "actors", radius, mode, query);
@@ -653,6 +656,7 @@ export default function ActorsPage({
         }
         setActorEquipmentOverrides((prev) => ({ ...prev, [selectedKey]: nextEquip }));
       }
+      setRevision((value) => value + 1);
       for (let attempt = 0; attempt < 6 && !controller.signal.aborted; attempt++) {
         await new Promise((resolve) => window.setTimeout(resolve, 180));
         if (controller.signal.aborted) return;
@@ -696,6 +700,9 @@ export default function ActorsPage({
     const current = dragRef.current;
     if (!current || current.pointer !== pointerId) return;
     dragRef.current = null;
+    lastDragEventRef.current = null;
+    lastHitPointRef.current = { x: -1, y: -1 };
+    hoverSlotRef.current = "";
     setDragging(null);
     setHoverSlot("");
     try {
@@ -725,26 +732,46 @@ export default function ActorsPage({
   const endDragAtPointRef = useRef(endDragAtPoint);
   endDragAtPointRef.current = endDragAtPoint;
 
+  const handleDragMove = (
+    pointerId: number,
+    clientX: number,
+    clientY: number,
+    nativeEvent?: unknown,
+    preventDefaultFn?: () => void,
+  ): void => {
+    if (nativeEvent != null && lastDragEventRef.current === nativeEvent) return;
+    const current = dragRef.current;
+    if (!current || current.pointer !== pointerId) return;
+    if (!current.active && Math.hypot(clientX - current.x, clientY - current.y) < 6) return;
+    lastDragEventRef.current = nativeEvent ?? null;
+    const starting = !current.active;
+    current.active = true;
+    preventDefaultFn?.();
+    if (starting) {
+      setDragging(current.item);
+      setSelectedGearId(current.item.id);
+    }
+    ghostPoint.current = itemDragPosition(clientX, clientY, window.innerWidth, window.innerHeight);
+    if (ghostRef.current) {
+      ghostRef.current.style.transform =
+        "translate3d(" + ghostPoint.current.x + "px," + ghostPoint.current.y + "px,0)";
+    }
+    const lastHit = lastHitPointRef.current;
+    if (starting || Math.abs(clientX - lastHit.x) >= 3 || Math.abs(clientY - lastHit.y) >= 3) {
+      lastHitPointRef.current = { x: clientX, y: clientY };
+      const nextSlot =
+        document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("[data-equip-slot]")?.dataset.equipSlot ??
+        "";
+      if (nextSlot !== hoverSlotRef.current) {
+        hoverSlotRef.current = nextSlot;
+        setHoverSlot(nextSlot);
+      }
+    }
+  };
+
   useEffect(() => {
     const onWindowPointerMove = (event: PointerEvent): void => {
-      const current = dragRef.current;
-      if (!current || current.pointer !== event.pointerId) return;
-      if (!current.active && Math.hypot(event.clientX - current.x, event.clientY - current.y) < 6) return;
-      const starting = !current.active;
-      current.active = true;
-      if (starting) {
-        setDragging(current.item);
-        setSelectedGearId(current.item.id);
-      }
-      ghostPoint.current = itemDragPosition(event.clientX, event.clientY, window.innerWidth, window.innerHeight);
-      if (ghostRef.current) {
-        ghostRef.current.style.transform =
-          "translate3d(" + ghostPoint.current.x + "px," + ghostPoint.current.y + "px,0)";
-      }
-      setHoverSlot(
-        document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-equip-slot]")?.dataset
-          .equipSlot ?? "",
-      );
+      handleDragMove(event.pointerId, event.clientX, event.clientY, event);
     };
     const onWindowPointerUp = (event: PointerEvent): void => {
       if (dragRef.current && dragRef.current.pointer === event.pointerId) {
@@ -768,6 +795,7 @@ export default function ActorsPage({
 
   const renderSlotButton = ({ id, label, biped }: (typeof equipmentSlots)[number]): React.JSX.Element => {
     const item = actorEquipment[id] ?? null;
+    const itemEnchanted = Boolean(item?.enchanted || item?.enchantments?.length);
     const candidate = dragging ?? selectedGear;
     const fits = fitsEquipmentSlot(candidate, id);
     return (
@@ -776,6 +804,7 @@ export default function ActorsPage({
         className={
           "equipment-target" +
           (item ? " is-occupied" : "") +
+          (itemEnchanted ? " is-enchanted" : "") +
           (dragging && fits ? " can-drop" : "") +
           (hoverSlot === id ? (fits ? " is-over" : " is-invalid") : "")
         }
@@ -805,9 +834,15 @@ export default function ActorsPage({
             <span className="equipment-slot__art">
               <EquipmentGlyph slot={id} />
               {item && <ItemThumbnail item={item} bridge={bridge} paused={obscured} />}
+              {itemEnchanted && (
+                <span className="equipment-slot__enchant" title={item?.enchantmentName || "Enchanted"}>
+                  <Icon name="enchant" size={9} />
+                </span>
+              )}
             </span>
           </span>
           <strong>{item?.name ?? "Not equipped"}</strong>
+          <i className="equipment-slot__bar" aria-hidden="true" />
         </button>
         {item && !!item.equipSlots?.length && (
           <button
@@ -854,6 +889,7 @@ export default function ActorsPage({
           {mode !== "search" && (
             <div className="observatory-radar-pill">
               <i className="status-dot" />
+              <Icon name="compass" size={12} />
               <span>
                 RADAR <b>{radius / 1000}K u</b>
               </span>
@@ -1071,10 +1107,10 @@ export default function ActorsPage({
               <div className="wardrobe-categories" role="group" aria-label="Wardrobe categories">
                 {(
                   [
-                    { id: "all", label: "All gear" },
-                    { id: "armor", label: "Armor" },
-                    { id: "weapon", label: "Weapons" },
-                    { id: "ammo", label: "Ammo" },
+                    { id: "all", label: "All gear", icon: "inventory" },
+                    { id: "armor", label: "Armor", icon: "shield" },
+                    { id: "weapon", label: "Weapons", icon: "sword" },
+                    { id: "ammo", label: "Ammo", icon: "ammo" },
                   ] as const
                 ).map((cat) => (
                   <button
@@ -1083,7 +1119,8 @@ export default function ActorsPage({
                     aria-pressed={gearCategory === cat.id}
                     onClick={() => setGearCategory(cat.id)}
                   >
-                    {cat.label}
+                    <Icon name={cat.icon} size={12} />
+                    <span>{cat.label}</span>
                   </button>
                 ))}
               </div>
@@ -1163,30 +1200,12 @@ export default function ActorsPage({
                         };
                       }}
                       onPointerMove={(event) => {
-                        const current = dragRef.current;
-                        if (!current || current.pointer !== event.pointerId) return;
-                        if (!current.active && Math.hypot(event.clientX - current.x, event.clientY - current.y) < 6) return;
-                        const starting = !current.active;
-                        current.active = true;
-                        event.preventDefault();
-                        if (starting) {
-                          setDragging(item);
-                          setSelectedGearId(item.id);
-                        }
-                        ghostPoint.current = itemDragPosition(
+                        handleDragMove(
+                          event.pointerId,
                           event.clientX,
                           event.clientY,
-                          window.innerWidth,
-                          window.innerHeight,
-                        );
-                        if (ghostRef.current) {
-                          ghostRef.current.style.transform =
-                            "translate3d(" + ghostPoint.current.x + "px," + ghostPoint.current.y + "px,0)";
-                        }
-                        setHoverSlot(
-                          document
-                            .elementFromPoint(event.clientX, event.clientY)
-                            ?.closest<HTMLElement>("[data-equip-slot]")?.dataset.equipSlot ?? "",
+                          event.nativeEvent,
+                          () => event.preventDefault(),
                         );
                       }}
                       onPointerUp={(event) => endDrag(event)}
@@ -1363,71 +1382,41 @@ export default function ActorsPage({
               </div>
             </div>
 
-            <div className="outfit-vitals actor-outfit-vitals" aria-label="Actor vital signs">
-              <div className="actor-trivitals">
-                <div className="actor-vital-bar" role="meter" aria-label="Health">
-                  <span>HEALTH</span>
-                  <div className="actor-vital-track">
-                    <div
-                      className="actor-vital-fill is-health"
-                      style={{
-                        width:
-                          (selected.health !== undefined
-                            ? Math.max(0, Math.min(100, (selected.health / Math.max(1, selected.healthMax ?? 1)) * 100))
-                            : 100) + "%",
-                      }}
-                    />
+            {(() => {
+              const hasHealth = selected.health !== undefined;
+              const hpCur = hasHealth ? Math.max(0, Math.round(selected.health!)) : null;
+              const hpMax = hasHealth ? Math.max(1, Math.round(selected.healthMax ?? selected.health ?? 1)) : null;
+              const hpPct =
+                hpCur !== null && hpMax !== null
+                  ? Math.max(0, Math.min(100, Math.round((hpCur / hpMax) * 100)))
+                  : 100;
+              const hpTone =
+                hpCur === 0 ? " is-dead" : hpPct <= 25 ? " is-critical" : hpPct <= 50 ? " is-low" : "";
+              return (
+                <div
+                  className={"actor-health-strip" + hpTone}
+                  role="meter"
+                  aria-label="Health"
+                  aria-valuemin={0}
+                  aria-valuemax={hpMax ?? 100}
+                  aria-valuenow={hpCur ?? 100}
+                >
+                  <span className="actor-health-strip__badge">
+                    <Icon name="heart" size={12} />
+                    <span>HP</span>
+                  </span>
+                  <div className="actor-health-strip__rail">
+                    <div className="actor-health-strip__fill" style={{ width: `${hpPct}%` }} />
                   </div>
-                  <b>
-                    {selected.health !== undefined
-                      ? `${Math.round(selected.health).toLocaleString()} / ${Math.round(selected.healthMax ?? selected.health).toLocaleString()}`
+                  <strong className="actor-health-strip__value">
+                    {hpCur !== null && hpMax !== null
+                      ? `${hpCur.toLocaleString()} / ${hpMax.toLocaleString()}`
                       : "Base Record"}
-                  </b>
+                  </strong>
+                  <em className="actor-health-strip__pct">{hpCur !== null ? `${hpPct}%` : "BASE"}</em>
                 </div>
-                {selected.magicka !== undefined && (
-                  <div className="actor-vital-bar" role="meter" aria-label="Magicka">
-                    <span>MAGICKA</span>
-                    <div className="actor-vital-track">
-                      <div
-                        className="actor-vital-fill is-magicka"
-                        style={{
-                          width:
-                            Math.max(
-                              0,
-                              Math.min(100, (selected.magicka.current / Math.max(1, selected.magicka.max || 1)) * 100),
-                            ) + "%",
-                        }}
-                      />
-                    </div>
-                    <b>
-                      {Math.round(selected.magicka.current).toLocaleString()} /{" "}
-                      {Math.round(selected.magicka.max).toLocaleString()}
-                    </b>
-                  </div>
-                )}
-                {selected.stamina !== undefined && (
-                  <div className="actor-vital-bar" role="meter" aria-label="Stamina">
-                    <span>STAMINA</span>
-                    <div className="actor-vital-track">
-                      <div
-                        className="actor-vital-fill is-stamina"
-                        style={{
-                          width:
-                            Math.max(
-                              0,
-                              Math.min(100, (selected.stamina.current / Math.max(1, selected.stamina.max || 1)) * 100),
-                            ) + "%",
-                        }}
-                      />
-                    </div>
-                    <b>
-                      {Math.round(selected.stamina.current).toLocaleString()} /{" "}
-                      {Math.round(selected.stamina.max).toLocaleString()}
-                    </b>
-                  </div>
-                )}
-              </div>
-            </div>
+              );
+            })()}
 
             <div className="outfit-doll">
               <div className="equipment-rail equipment-rail--armor">{equipmentSlots.slice(0, 5).map(renderSlotButton)}</div>
@@ -1437,6 +1426,7 @@ export default function ActorsPage({
                   bridge={bridge}
                   obscured={obscured}
                   equipment={!poseDrawer}
+                  initialMotion={false}
                   refreshToken={revision}
                   onCapturePortrait={async () => {
                     const result = await game.actorThumbnail({

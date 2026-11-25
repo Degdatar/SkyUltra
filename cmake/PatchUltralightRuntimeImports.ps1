@@ -95,6 +95,7 @@ public static class SkyUltraImportNamePatcher
 $patches = @(
     @{ Path = $PluginPath; Old = 'Ultralight.dll'; New = 'SUL.dll' },
     @{ Path = $PluginPath; Old = 'UltralightCore.dll'; New = 'SULCore.dll' },
+    @{ Path = $PluginPath; Old = 'WebCore.dll'; New = 'SULWeb.dll' },
     @{ Path = (Join-Path $RuntimeDirectory 'SUL.dll'); Old = 'UltralightCore.dll'; New = 'SULCore.dll' },
     @{ Path = (Join-Path $RuntimeDirectory 'SUL.dll'); Old = 'WebCore.dll'; New = 'SULWeb.dll' },
     @{ Path = (Join-Path $RuntimeDirectory 'SULWeb.dll'); Old = 'UltralightCore.dll'; New = 'SULCore.dll' }

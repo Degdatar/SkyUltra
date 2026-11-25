@@ -64,6 +64,13 @@ export interface SkyUltraSettings {
   replaceSkyrimMannequin?: boolean;
   replaceSkyrimLoot?: boolean;
   replaceSkyrimPickpocket?: boolean;
+  replaceSkyrimBlacksmith?: boolean;
+  replaceSkyrimEnchanting?: boolean;
+  replaceSkyrimAlchemy?: boolean;
+  superEnchanting?: boolean;
+  playerEnchantingLevel?: number;
+  enchantmentCustomNames?: Record<string, string>;
+  replaceSkyrimBookReader?: boolean;
   replaceSkyrimCompass?: boolean;
   menuDisplayMode?: SkyUltraDisplayMode;
   inventoryDisplayMode?: SkyUltraDisplayMode;
@@ -74,6 +81,9 @@ export interface SkyUltraSettings {
   mannequinDisplayMode?: SkyUltraContainerDisplayMode;
   lootDisplayMode?: SkyUltraContainerDisplayMode;
   pickpocketDisplayMode?: SkyUltraContainerDisplayMode;
+  blacksmithDisplayMode?: SkyUltraContainerDisplayMode;
+  enchantingDisplayMode?: SkyUltraContainerDisplayMode;
+  alchemyDisplayMode?: SkyUltraContainerDisplayMode;
   menuPauseWorld?: boolean;
   inventoryPauseWorld?: boolean;
   barterPauseWorld?: boolean;
@@ -83,6 +93,10 @@ export interface SkyUltraSettings {
   mannequinPauseWorld?: boolean;
   lootPauseWorld?: boolean;
   pickpocketPauseWorld?: boolean;
+  blacksmithPauseWorld?: boolean;
+  enchantingPauseWorld?: boolean;
+  alchemyPauseWorld?: boolean;
+  bookPauseWorld?: boolean;
   modHotkeys?: Record<string, SkyUltraHotkeyBinding>;
   registeredMods?: SkyUltraRegisteredMod[];
   profileState?: Record<string, unknown>;
@@ -109,6 +123,11 @@ export const defaultSkyUltraSettings: SkyUltraSettings = {
   replaceSkyrimMannequin: true,
   replaceSkyrimLoot: true,
   replaceSkyrimPickpocket: true,
+  replaceSkyrimBlacksmith: true,
+  replaceSkyrimEnchanting: true,
+  replaceSkyrimAlchemy: true,
+  superEnchanting: false,
+  replaceSkyrimBookReader: true,
   replaceSkyrimCompass: true,
   menuDisplayMode: 'fullscreen',
   inventoryDisplayMode: 'windowed',
@@ -119,15 +138,22 @@ export const defaultSkyUltraSettings: SkyUltraSettings = {
   mannequinDisplayMode: 'full',
   lootDisplayMode: 'half',
   pickpocketDisplayMode: 'half',
+  blacksmithDisplayMode: 'half',
+  enchantingDisplayMode: 'half',
+  alchemyDisplayMode: 'half',
   menuPauseWorld: false,
-  inventoryPauseWorld: false,
-  barterPauseWorld: false,
-  magicPauseWorld: false,
-  favoritesPauseWorld: false,
-  containerPauseWorld: false,
-  mannequinPauseWorld: false,
-  lootPauseWorld: false,
-  pickpocketPauseWorld: false,
+  inventoryPauseWorld: true,
+  barterPauseWorld: true,
+  magicPauseWorld: true,
+  favoritesPauseWorld: true,
+  containerPauseWorld: true,
+  mannequinPauseWorld: true,
+  lootPauseWorld: true,
+  pickpocketPauseWorld: true,
+  blacksmithPauseWorld: true,
+  enchantingPauseWorld: true,
+  alchemyPauseWorld: true,
+  bookPauseWorld: true,
   modHotkeys: {},
   registeredMods: [],
 };
@@ -209,15 +235,33 @@ function withExportDefaults(settings: SkyUltraSettings): SkyUltraSettings {
   const barterDisplayMode: SkyUltraBarterDisplayMode =
     settings.barterDisplayMode === 'full' || settings.barterDisplayMode === 'windowed' ? settings.barterDisplayMode : 'half';
   const menuPauseWorld = typeof settings.menuPauseWorld === 'boolean' ? settings.menuPauseWorld : false;
-  const inventoryPauseWorld = typeof settings.inventoryPauseWorld === 'boolean' ? settings.inventoryPauseWorld : false;
-  const barterPauseWorld = typeof settings.barterPauseWorld === 'boolean' ? settings.barterPauseWorld : false;
+  const inventoryPauseWorld = typeof settings.inventoryPauseWorld === 'boolean' ? settings.inventoryPauseWorld : true;
+  const barterPauseWorld = typeof settings.barterPauseWorld === 'boolean' ? settings.barterPauseWorld : true;
   const replaceSkyrimMagic = typeof settings.replaceSkyrimMagic === 'boolean' ? settings.replaceSkyrimMagic : true;
   const replaceSkyrimFavorites = typeof settings.replaceSkyrimFavorites === 'boolean' ? settings.replaceSkyrimFavorites : true;
   const replaceSkyrimContainer = typeof settings.replaceSkyrimContainer === 'boolean' ? settings.replaceSkyrimContainer : true;
   const replaceSkyrimMannequin = typeof settings.replaceSkyrimMannequin === 'boolean' ? settings.replaceSkyrimMannequin : true;
   const replaceSkyrimLoot = typeof settings.replaceSkyrimLoot === 'boolean' ? settings.replaceSkyrimLoot : true;
   const replaceSkyrimPickpocket = typeof settings.replaceSkyrimPickpocket === 'boolean' ? settings.replaceSkyrimPickpocket : true;
+  const replaceSkyrimBlacksmith = typeof settings.replaceSkyrimBlacksmith === 'boolean' ? settings.replaceSkyrimBlacksmith : true;
+  const replaceSkyrimEnchanting = typeof settings.replaceSkyrimEnchanting === 'boolean' ? settings.replaceSkyrimEnchanting : true;
+  const replaceSkyrimAlchemy = typeof settings.replaceSkyrimAlchemy === 'boolean' ? settings.replaceSkyrimAlchemy : true;
+  const superEnchanting = typeof settings.superEnchanting === 'boolean' ? settings.superEnchanting : false;
+  const replaceSkyrimBookReader = typeof settings.replaceSkyrimBookReader === 'boolean' ? settings.replaceSkyrimBookReader : true;
   const replaceSkyrimCompass = typeof settings.replaceSkyrimCompass === 'boolean' ? settings.replaceSkyrimCompass : true;
+  const playerEnchantingLevel =
+    typeof settings.playerEnchantingLevel === 'number' && Number.isFinite(settings.playerEnchantingLevel)
+      ? Math.max(0, settings.playerEnchantingLevel)
+      : undefined;
+  let enchantmentCustomNames: Record<string, string> | undefined;
+  if (settings.enchantmentCustomNames && typeof settings.enchantmentCustomNames === 'object' && !Array.isArray(settings.enchantmentCustomNames)) {
+    enchantmentCustomNames = {};
+    for (const [k, v] of Object.entries(settings.enchantmentCustomNames)) {
+      if (k && typeof v === 'string' && v.trim()) {
+        enchantmentCustomNames[k] = v.trim().slice(0, 80);
+      }
+    }
+  }
   const containerMode = (value: unknown, fallback: SkyUltraContainerDisplayMode = 'half'): SkyUltraContainerDisplayMode =>
     value === 'full' || value === 'windowed' || value === 'half' ? value : value === 'fullscreen' ? 'full' : fallback;
   const magicDisplayMode = containerMode(settings.magicDisplayMode, 'half');
@@ -226,12 +270,19 @@ function withExportDefaults(settings: SkyUltraSettings): SkyUltraSettings {
   const mannequinDisplayMode = containerMode(settings.mannequinDisplayMode, 'full');
   const lootDisplayMode = containerMode(settings.lootDisplayMode, 'half');
   const pickpocketDisplayMode = containerMode(settings.pickpocketDisplayMode, 'half');
-  const magicPauseWorld = typeof settings.magicPauseWorld === 'boolean' ? settings.magicPauseWorld : false;
-  const favoritesPauseWorld = typeof settings.favoritesPauseWorld === 'boolean' ? settings.favoritesPauseWorld : false;
-  const containerPauseWorld = typeof settings.containerPauseWorld === 'boolean' ? settings.containerPauseWorld : false;
-  const mannequinPauseWorld = typeof settings.mannequinPauseWorld === 'boolean' ? settings.mannequinPauseWorld : false;
-  const lootPauseWorld = typeof settings.lootPauseWorld === 'boolean' ? settings.lootPauseWorld : false;
-  const pickpocketPauseWorld = typeof settings.pickpocketPauseWorld === 'boolean' ? settings.pickpocketPauseWorld : false;
+  const blacksmithDisplayMode = containerMode(settings.blacksmithDisplayMode, 'half');
+  const enchantingDisplayMode = containerMode(settings.enchantingDisplayMode, 'half');
+  const alchemyDisplayMode = containerMode(settings.alchemyDisplayMode, 'half');
+  const magicPauseWorld = typeof settings.magicPauseWorld === 'boolean' ? settings.magicPauseWorld : true;
+  const favoritesPauseWorld = typeof settings.favoritesPauseWorld === 'boolean' ? settings.favoritesPauseWorld : true;
+  const containerPauseWorld = typeof settings.containerPauseWorld === 'boolean' ? settings.containerPauseWorld : true;
+  const mannequinPauseWorld = typeof settings.mannequinPauseWorld === 'boolean' ? settings.mannequinPauseWorld : true;
+  const lootPauseWorld = typeof settings.lootPauseWorld === 'boolean' ? settings.lootPauseWorld : true;
+  const pickpocketPauseWorld = typeof settings.pickpocketPauseWorld === 'boolean' ? settings.pickpocketPauseWorld : true;
+  const blacksmithPauseWorld = typeof settings.blacksmithPauseWorld === 'boolean' ? settings.blacksmithPauseWorld : true;
+  const enchantingPauseWorld = typeof settings.enchantingPauseWorld === 'boolean' ? settings.enchantingPauseWorld : true;
+  const alchemyPauseWorld = typeof settings.alchemyPauseWorld === 'boolean' ? settings.alchemyPauseWorld : true;
+  const bookPauseWorld = typeof settings.bookPauseWorld === 'boolean' ? settings.bookPauseWorld : true;
   return {
     ...settings,
     schemaVersion: typeof settings.schemaVersion === 'number' && Number.isFinite(settings.schemaVersion) ? Math.max(1, Math.round(settings.schemaVersion)) : 2,
@@ -257,6 +308,13 @@ function withExportDefaults(settings: SkyUltraSettings): SkyUltraSettings {
     replaceSkyrimMannequin,
     replaceSkyrimLoot,
     replaceSkyrimPickpocket,
+    replaceSkyrimBlacksmith,
+    replaceSkyrimEnchanting,
+    replaceSkyrimAlchemy,
+    superEnchanting,
+    ...(playerEnchantingLevel !== undefined ? { playerEnchantingLevel } : {}),
+    ...(enchantmentCustomNames ? { enchantmentCustomNames } : {}),
+    replaceSkyrimBookReader,
     replaceSkyrimCompass,
     magicDisplayMode,
     favoritesDisplayMode,
@@ -264,12 +322,19 @@ function withExportDefaults(settings: SkyUltraSettings): SkyUltraSettings {
     mannequinDisplayMode,
     lootDisplayMode,
     pickpocketDisplayMode,
+    blacksmithDisplayMode,
+    enchantingDisplayMode,
+    alchemyDisplayMode,
     magicPauseWorld,
     favoritesPauseWorld,
     containerPauseWorld,
     mannequinPauseWorld,
     lootPauseWorld,
     pickpocketPauseWorld,
+    blacksmithPauseWorld,
+    enchantingPauseWorld,
+    alchemyPauseWorld,
+    bookPauseWorld,
     modHotkeys,
     registeredMods,
     ...(profileState ? { profileState } : {}),
@@ -307,14 +372,19 @@ export async function updateSkyUltraSettings(settings: SkyUltraSettings, bridge:
     inventoryDisplayMode: normalized.inventoryDisplayMode ?? 'fullscreen',
     barterDisplayMode: normalized.barterDisplayMode ?? 'half',
     menuPauseWorld: normalized.menuPauseWorld ?? false,
-    inventoryPauseWorld: normalized.inventoryPauseWorld ?? false,
-    barterPauseWorld: normalized.barterPauseWorld ?? false,
+    inventoryPauseWorld: normalized.inventoryPauseWorld ?? true,
+    barterPauseWorld: normalized.barterPauseWorld ?? true,
     replaceSkyrimMagic: normalized.replaceSkyrimMagic ?? true,
     replaceSkyrimFavorites: normalized.replaceSkyrimFavorites ?? true,
     replaceSkyrimContainer: normalized.replaceSkyrimContainer ?? true,
     replaceSkyrimMannequin: normalized.replaceSkyrimMannequin ?? true,
     replaceSkyrimLoot: normalized.replaceSkyrimLoot ?? true,
     replaceSkyrimPickpocket: normalized.replaceSkyrimPickpocket ?? true,
+    replaceSkyrimBlacksmith: normalized.replaceSkyrimBlacksmith ?? true,
+    replaceSkyrimEnchanting: normalized.replaceSkyrimEnchanting ?? true,
+    replaceSkyrimAlchemy: normalized.replaceSkyrimAlchemy ?? true,
+    superEnchanting: normalized.superEnchanting ?? false,
+    replaceSkyrimBookReader: normalized.replaceSkyrimBookReader ?? true,
     replaceSkyrimCompass: normalized.replaceSkyrimCompass ?? true,
     magicDisplayMode: normalized.magicDisplayMode ?? 'half',
     favoritesDisplayMode: normalized.favoritesDisplayMode ?? 'half',
@@ -322,14 +392,24 @@ export async function updateSkyUltraSettings(settings: SkyUltraSettings, bridge:
     mannequinDisplayMode: normalized.mannequinDisplayMode ?? 'full',
     lootDisplayMode: normalized.lootDisplayMode ?? 'half',
     pickpocketDisplayMode: normalized.pickpocketDisplayMode ?? 'half',
-    magicPauseWorld: normalized.magicPauseWorld ?? false,
-    favoritesPauseWorld: normalized.favoritesPauseWorld ?? false,
-    containerPauseWorld: normalized.containerPauseWorld ?? false,
-    mannequinPauseWorld: normalized.mannequinPauseWorld ?? false,
-    lootPauseWorld: normalized.lootPauseWorld ?? false,
-    pickpocketPauseWorld: normalized.pickpocketPauseWorld ?? false,
+    blacksmithDisplayMode: normalized.blacksmithDisplayMode ?? 'half',
+    enchantingDisplayMode: normalized.enchantingDisplayMode ?? 'half',
+    alchemyDisplayMode: normalized.alchemyDisplayMode ?? 'half',
+    magicPauseWorld: normalized.magicPauseWorld ?? true,
+    favoritesPauseWorld: normalized.favoritesPauseWorld ?? true,
+    containerPauseWorld: normalized.containerPauseWorld ?? true,
+    mannequinPauseWorld: normalized.mannequinPauseWorld ?? true,
+    lootPauseWorld: normalized.lootPauseWorld ?? true,
+    pickpocketPauseWorld: normalized.pickpocketPauseWorld ?? true,
+    blacksmithPauseWorld: normalized.blacksmithPauseWorld ?? true,
+    enchantingPauseWorld: normalized.enchantingPauseWorld ?? true,
+    alchemyPauseWorld: normalized.alchemyPauseWorld ?? true,
+    bookPauseWorld: normalized.bookPauseWorld ?? true,
     modHotkeys: resolvedModHotkeys,
   };
+  if (normalized.enchantmentCustomNames) {
+    payload.enchantmentCustomNames = { ...normalized.enchantmentCustomNames };
+  }
   if (normalized.profileState) {
     payload.profileState = JSON.parse(JSON.stringify(normalized.profileState)) as JsonValue;
   }

@@ -3,8 +3,10 @@ import {
   getSkyWebView,
   markSkyUltraPageReady,
   sanitizeCustomHudCode,
+  skyUltraPortraitCrestStyles,
   type SkyUltraCustomHudCode,
   type SkyUltraGameTopic,
+  type SkyUltraPortraitCrestStyle,
   type SkyUltraWidgetAnchor,
   type SkyUltraWidgetPlacement,
 } from "@skyultra/sdk";
@@ -38,6 +40,7 @@ interface LiveHudConfigPayload {
 }
 
 const validAnchors = new Set<string>(hudAnchorOptions.map((a) => a.value));
+const validCrestStyles = new Set<string>(skyUltraPortraitCrestStyles);
 
 export function SkyGameplayHud() {
   const bridge = useMemo(() => getSkyWebView(), []);
@@ -71,11 +74,16 @@ export function SkyGameplayHud() {
   }, [options]);
 
   const fallbackAnchor = useMemo<SkyUltraWidgetAnchor>(() => {
+    const explicitAnchor = options.get("anchor");
+    if (explicitAnchor && validAnchors.has(explicitAnchor)) {
+      return explicitAnchor as SkyUltraWidgetAnchor;
+    }
     const side = options.get("side") ?? "right";
     const align = options.get("align") ?? "top";
-    if (side === "center") return align === "bottom" ? "bottom-center" : "top-center";
-    if (side === "left") return align === "bottom" ? "bottom-left" : "top-left";
-    return align === "bottom" ? "bottom-right" : "top-right";
+    const vAlign = align === "middle" || align === "bottom" ? align : "top";
+    if (side === "center") return `${vAlign}-center` as SkyUltraWidgetAnchor;
+    if (side === "left") return `${vAlign}-left` as SkyUltraWidgetAnchor;
+    return `${vAlign}-right` as SkyUltraWidgetAnchor;
   }, [options]);
 
   const initialPlacements = useMemo(
@@ -151,7 +159,13 @@ export function SkyGameplayHud() {
     return [...set];
   }, [kinds, customCode]);
 
-  const { player } = usePlayer(bridge, idle, "hud", hudTopics);
+  const { player } = usePlayer(
+    bridge,
+    idle,
+    "hud",
+    hudTopics,
+    !customCode && !kinds.includes("radar"),
+  );
 
   useEffect(() => {
     if (!player) return;
@@ -200,13 +214,34 @@ export function SkyGameplayHud() {
           opacity: typeof raw.opacity === "number" ? Math.max(0.35, Math.min(1, raw.opacity)) : base.opacity,
           glow: typeof raw.glow === "number" ? Math.max(0, Math.min(150, raw.glow)) : base.glow,
           color: typeof raw.color === "string" ? raw.color : base.color,
+          theme:
+            typeof raw.theme === "string" && palettes.some((palette) => palette.value === raw.theme)
+              ? raw.theme
+              : base.theme,
           fontStyle: raw.fontStyle ?? base.fontStyle,
-          offsetX: typeof raw.offsetX === "number" ? Math.max(-600, Math.min(600, Math.round(raw.offsetX))) : 0,
-          offsetY: typeof raw.offsetY === "number" ? Math.max(-400, Math.min(400, Math.round(raw.offsetY))) : 0,
+          offsetX: typeof raw.offsetX === "number" ? Math.max(-1600, Math.min(1600, Math.round(raw.offsetX))) : 0,
+          offsetY: typeof raw.offsetY === "number" ? Math.max(-900, Math.min(900, Math.round(raw.offsetY))) : 0,
           visibilityRule: raw.visibilityRule ?? base.visibilityRule ?? "always",
           width: typeof raw.width === "number" ? raw.width : base.width,
           customLabel: typeof raw.customLabel === "string" ? raw.customLabel : base.customLabel,
           bindingPath: typeof raw.bindingPath === "string" ? raw.bindingPath : base.bindingPath,
+          crestStyle:
+            typeof raw.crestStyle === "string" && validCrestStyles.has(raw.crestStyle)
+              ? (raw.crestStyle as SkyUltraPortraitCrestStyle)
+              : base.crestStyle,
+          hpColor: typeof raw.hpColor === "string" && /^#[0-9a-f]{3,6}$/i.test(raw.hpColor) ? raw.hpColor : base.hpColor,
+          magickaColor:
+            typeof raw.magickaColor === "string" && /^#[0-9a-f]{3,6}$/i.test(raw.magickaColor)
+              ? raw.magickaColor
+              : base.magickaColor,
+          staminaColor:
+            typeof raw.staminaColor === "string" && /^#[0-9a-f]{3,6}$/i.test(raw.staminaColor)
+              ? raw.staminaColor
+              : base.staminaColor,
+          compassRadius:
+            typeof raw.compassRadius === "number" && Number.isFinite(raw.compassRadius)
+              ? Math.max(50, Math.min(1000, Math.round(raw.compassRadius)))
+              : base.compassRadius,
         };
       }
       return next;
@@ -220,8 +255,9 @@ export function SkyGameplayHud() {
     if (!needsNearbyActors) return;
     let active = true;
     const poll = (): void => {
+      if (document.hidden || !(bridge.getVisibility?.().visible ?? true)) return;
       void bridge
-        .request<ActorResponse>("game.getNearbyNpcs", { radius: 3000 })
+        .request<ActorResponse>("game.getNearbyNpcs", { radius: 3000, limit: 8 })
         .then((res) => {
           if (active && Array.isArray(res?.results)) setNearbyActors(res.results.slice(0, 8));
         })
@@ -236,6 +272,7 @@ export function SkyGameplayHud() {
   }, [bridge, needsNearbyActors]);
 
   const theme = liveConfig?.theme ?? options.get("theme") ?? "dragonstone";
+  const resolvedBaseTheme = palettes.some((palette) => palette.value === theme) ? theme : "dragonstone";
 
   if (!player || player.available === false) {
     return null;
@@ -243,8 +280,8 @@ export function SkyGameplayHud() {
 
   return (
     <SkyThemeScope
-      theme={palettes.some((palette) => palette.value === theme) ? theme : "dragonstone"}
-      className="hud-root hud-root--six-zone"
+      theme={resolvedBaseTheme}
+      className="hud-root hud-root--nine-zone"
       data-density={kinds.length > 5 ? "compact" : "comfortable"}
     >
       {customCode ? (
@@ -262,9 +299,14 @@ export function SkyGameplayHud() {
                   const ox = wp?.offsetX ?? 0;
                   const oy = wp?.offsetY ?? 0;
                   const sc = wp?.scale ?? 1;
+                  const widgetTheme =
+                    wp?.theme && palettes.some((palette) => palette.value === wp.theme)
+                      ? wp.theme
+                      : resolvedBaseTheme;
                   return (
-                    <div
+                    <SkyThemeScope
                       key={kind}
+                      theme={widgetTheme}
                       className="sky-hud-zone__item"
                       style={{
                         opacity: wp?.opacity ?? 0.96,
@@ -281,8 +323,14 @@ export function SkyGameplayHud() {
                         fontStyle={wp?.fontStyle ?? "theme"}
                         customLabel={wp?.customLabel}
                         bindingPath={wp?.bindingPath}
+                        crestStyle={wp?.crestStyle}
+                        hpColor={wp?.hpColor}
+                        magickaColor={wp?.magickaColor}
+                        staminaColor={wp?.staminaColor}
+                        compassRadius={wp?.compassRadius}
+                        liveHud
                       />
-                    </div>
+                    </SkyThemeScope>
                   );
                 })}
               </div>

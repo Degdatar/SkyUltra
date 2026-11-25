@@ -5,15 +5,18 @@
 
 #if defined(SKYULTRA_WITH_CEF) || defined(SKYULTRA_WITH_ULTRALIGHT)
 #    include "SkyUltra/D3D11Overlay.h"
+#    include "SkyUltra/FrameTrace.h"
 #    include "SkyUltra/VideoSplash.h"
 #    include "SkyUltra/FrameworkServices.h"
 #    include "SkyUltra/ActorPreview.h"
 #    include "SkyUltra/BrowserBackend.h"
 #    include "SkyUltra/GameTaskQueue.h"
+#    include "SkyUltra/LiveCompassState.h"
 #    include "SkyUltra/ModManifest.h"
 #    include "SkyUltra/NativeAPI.h"
 #    include "SkyUltra/Papyrus.h"
 #    include "SkyUltra/PanelVisibility.h"
+#    include "SkyUltra/PixelConvert.h"
 #    include "SkyUltra/ViewManager.h"
 #    if defined(SKYULTRA_WITH_CEF)
 #        include "SkyUltra/CefBackend.h"
@@ -36,6 +39,7 @@
 #    include <cmath>
 #    include <cstddef>
 #    include <cstdint>
+#    include <cstdio>
 #    include <cstring>
 #    include <deque>
 #    include <filesystem>
@@ -58,7 +62,10 @@
 
 #    include <RE/A/Actor.h>
 #    include <RE/B/BarterMenu.h>
+#    include <RE/B/BookMenu.h>
 #    include <RE/C/ContainerMenu.h>
+#    include <RE/M/MenuEventHandler.h>
+#    include <RE/C/CraftingMenu.h>
 #    include <RE/B/BSInputDeviceManager.h>
 #    if defined(ENABLE_SKYRIM_VR)
 #        include <RE/B/BSOpenVRControllerDevice.h>
@@ -68,11 +75,17 @@
 #    include <RE/B/BSWin32MouseDevice.h>
 #    include <RE/B/ButtonEvent.h>
 #    include <RE/C/CharEvent.h>
+#    include <RE/C/ControlMap.h>
+#    include <RE/U/UserEvents.h>
 #    include <RE/G/GFxMovieView.h>
 #    include <RE/G/GFxValue.h>
+#    include <RE/I/IMenu.h>
 #    include <RE/I/Inventory3DManager.h>
 #    include <RE/I/InventoryMenu.h>
+#    include <RE/L/LocationDiscovery.h>
 #    include <RE/M/MenuOpenCloseEvent.h>
+#    include <RE/M/MessageBoxData.h>
+#    include <RE/M/MessageBoxMenu.h>
 #    include <RE/M/Misc.h>
 #    include <RE/M/MouseMoveEvent.h>
 #    include <RE/N/NiAVObject.h>
@@ -131,6 +144,7 @@ std::jthread g_mod_hot_reload_thread;
 skyultra::GameTaskQueue g_game_task_queue;
 bool g_input_sink_registered{};
 bool g_menu_event_sink_registered{};
+bool g_location_discovery_sink_registered{};
 bool g_modal_menu_open{ true };
 std::atomic_bool g_game_session_active{ false };
 bool g_restore_browser_after_menu{};
@@ -236,13 +250,21 @@ struct GameDataSubscriptionRecord {
     bool compact{ false };
     std::uint32_t interval_ms{ 750 };
     std::uint64_t last_push_ms{ 0 };
+    std::uint64_t last_snapshot_push_ms{ 0 };
     std::uint64_t last_sequence{ 0 };
+    float last_heading_deg{ -1000.0F };
     bool needs_catchup{ false };
     std::unordered_map<std::string, std::string> topic_signatures;
 };
-std::unordered_map<SkyUltraViewHandle, GameDataSubscriptionRecord> g_game_subscriptions; // game thread only
+std::recursive_mutex g_game_subscriptions_mutex;
+std::unordered_map<SkyUltraViewHandle, GameDataSubscriptionRecord> g_game_subscriptions; // guarded by g_game_subscriptions_mutex
 std::atomic_uint32_t g_active_game_subscription_count{ 0 };
+std::atomic_uint64_t g_last_game_subscription_pump_ms{ 0 };
 std::atomic_bool g_game_subscription_pump_queued{ false };
+std::atomic_bool g_has_visible_interactive_view{ false };
+std::atomic_uint64_t g_compass_heading_seq{ 0 };
+std::thread::id g_skyrim_main_thread_id{};
+std::atomic_uint64_t g_live_compass_frame_index{ 0 };
 std::jthread g_game_subscription_thread;
 std::unordered_map<std::string, SkyUltraModHandle> g_native_mod_handles_by_id;
 
@@ -274,15 +296,37 @@ std::unordered_map<std::string, DevModRuntimeStats> g_dev_mod_stats;
 std::atomic_uint64_t g_hot_reload_total_count{ 0 };
 std::string g_last_reloaded_mod;
 SkyUltraViewHandle g_diagnostic_sample_view{};
+enum class NativeTaskPriority : std::uint8_t {
+    Interactive = 0,
+    Normal = 1,
+    Background = 2,
+};
+
+struct QueuedNativeTask {
+    std::function<void()> fn;
+    NativeTaskPriority priority{ NativeTaskPriority::Normal };
+    std::string label;
+    std::string mod_id;
+    std::chrono::steady_clock::time_point enqueued_at{ std::chrono::steady_clock::now() };
+};
+
 std::mutex g_native_api_queue_mutex;
 std::mutex g_native_api_enqueue_mutex;
-std::deque<std::function<void()>> g_native_api_queue;
+std::array<std::deque<QueuedNativeTask>, 3> g_native_api_queues;
+std::size_t g_native_consecutive_interactive{};
 bool g_native_api_drain_scheduled{};
+std::atomic_bool g_menu_opened_before{ false };
 std::mutex g_page_request_callback_mutex;
 SkyUltraPageRequestCallbackV2 g_page_request_callback{};
 void* g_page_request_user_data{};
 
+bool QueueNativeApiTask(
+    std::function<void()> task,
+    NativeTaskPriority priority,
+    std::string_view label = {},
+    std::string_view mod_id = {});
 bool QueueNativeApiTask(std::function<void()> task);
+void InvalidateDevModAuditCache() noexcept;
 SkyUltraResult SKYULTRA_CALL NativeApiSetVisible(SkyUltraViewHandle handle,std::uint8_t visible);
 void OnBrowserPageBridgeMessage(skyultra::PageBridgeMessage message);
 SkyUltraResult SKYULTRA_CALL NativeApiCompletePageRequest(
@@ -504,8 +548,8 @@ std::string g_menu_display_mode{ "fullscreen" };
 std::string g_inventory_display_mode{ "windowed" };
 std::string g_barter_display_mode{ "half" };
 bool g_menu_pause_world{ false };
-bool g_inventory_pause_world{ false };
-bool g_barter_pause_world{ false };
+bool g_inventory_pause_world{ true };
+bool g_barter_pause_world{ true };
 bool g_skyultra_world_paused{ false };
 bool g_inventory_replacement_active{ false };
 bool g_barter_replacement_active{ false };
@@ -517,6 +561,11 @@ struct ExtraMenuSettings {
     bool replace_mannequin{ true };
     bool replace_loot{ true };
     bool replace_pickpocket{ true };
+    bool replace_blacksmith{ true };
+    bool replace_enchanting{ true };
+    bool replace_alchemy{ true };
+    bool super_enchanting{ false };
+    bool replace_book_reader{ true };
     bool replace_compass{ true };
     std::string magic_display_mode{ "half" };
     std::string favorites_display_mode{ "half" };
@@ -524,12 +573,20 @@ struct ExtraMenuSettings {
     std::string mannequin_display_mode{ "full" };
     std::string loot_display_mode{ "half" };
     std::string pickpocket_display_mode{ "half" };
-    bool magic_pause_world{ false };
-    bool favorites_pause_world{ false };
-    bool container_pause_world{ false };
-    bool mannequin_pause_world{ false };
-    bool loot_pause_world{ false };
-    bool pickpocket_pause_world{ false };
+    std::string blacksmith_display_mode{ "half" };
+    std::string enchanting_display_mode{ "half" };
+    std::string alchemy_display_mode{ "half" };
+    bool magic_pause_world{ true };
+    bool favorites_pause_world{ true };
+    bool container_pause_world{ true };
+    bool mannequin_pause_world{ true };
+    bool loot_pause_world{ true };
+    bool pickpocket_pause_world{ true };
+    bool blacksmith_pause_world{ true };
+    bool enchanting_pause_world{ true };
+    bool alchemy_pause_world{ true };
+    bool book_pause_world{ true };
+    std::unordered_map<std::uint32_t, std::string> enchantment_custom_names;
 };
 ExtraMenuSettings g_extra_menus;
 bool g_magic_replacement_active{ false };
@@ -538,6 +595,18 @@ bool g_container_replacement_active{ false };
 bool g_mannequin_replacement_active{ false };
 bool g_loot_replacement_active{ false };
 bool g_pickpocket_replacement_active{ false };
+bool g_blacksmith_replacement_active{ false };
+bool g_enchanting_replacement_active{ false };
+bool g_alchemy_replacement_active{ false };
+bool g_book_replacement_active{ false };
+std::atomic_bool g_blacksmith_pending_open{ false };
+std::atomic_bool g_enchanting_pending_open{ false };
+std::atomic_bool g_alchemy_pending_open{ false };
+std::atomic_bool g_book_pending_open{ false };
+std::atomic_bool g_bypass_next_native_book_menu{ false };
+std::atomic_bool g_pending_blacksmith_furniture_exit{ false };
+std::atomic<std::int64_t> g_blacksmith_open_grace_until_ms{ 0 };
+std::atomic<std::int64_t> g_book_opened_at_ms{ 0 };
 std::uint64_t g_menu_transition_epoch{ 0 };
 struct MenuSessionModeSnapshot {
     bool visible{};
@@ -551,6 +620,10 @@ struct MenuSessionModeSnapshot {
     bool mannequin{};
     bool loot{};
     bool pickpocket{};
+    bool blacksmith{};
+    bool enchanting{};
+    bool alchemy{};
+    bool book{};
     bool operator==(const MenuSessionModeSnapshot&) const noexcept = default;
 };
 std::optional<MenuSessionModeSnapshot> g_last_menu_session;
@@ -559,7 +632,11 @@ std::unordered_map<std::string, HotkeyBinding> g_mod_hotkeys;
 bool IsBrowserEngineBuilt(skyultra::BrowserEngine engine) noexcept;
 void SwitchMenuBrowserEngine(skyultra::BrowserEngine target_engine);
 void SwitchModBrowserEngine(std::string_view mod_id, skyultra::BrowserEngine target_engine);
+[[nodiscard]] bool RegisterSkyUltraPauseMenu() noexcept;
+void SetSkyUltraPauseMenuVisible(bool visible, bool force = false) noexcept;
 void SyncSkyUltraWorldPause() noexcept;
+void ExitActiveBlacksmithFurniture() noexcept;
+void ScheduleBlacksmithFurnitureExit() noexcept;
 void SyncVanillaCompassVisibility(bool force = false) noexcept;
 void PublishOverlayViews();
 bool IsModalOrBlockingMenuOpen(RE::UI* ui) noexcept;
@@ -683,6 +760,15 @@ nlohmann::json FrameworkSettingsJson()
             }
         }
     }
+    nlohmann::json enchantment_custom_names_json = nlohmann::json::object();
+    const auto live_custom_names = g_extra_menus.enchantment_custom_names.empty()
+        ? skyultra::GetSavedEnchantmentCustomNames()
+        : g_extra_menus.enchantment_custom_names;
+    for (const auto& [eid, ename] : live_custom_names) {
+        if (eid != 0 && !ename.empty()) {
+            enchantment_custom_names_json[std::to_string(eid)] = ename;
+        }
+    }
     return {{"schemaVersion",2}, {"runtime",g_runtime_settings},
         {"splash",{{"enabled",g_splash_settings.enabled},{"playback",g_splash_settings.full_duration?"full-duration":"until-ready"},
         {"replay",g_splash_settings.replay},{"audio",g_splash_settings.audio},{"volume",g_splash_settings.volume}}},
@@ -707,6 +793,13 @@ nlohmann::json FrameworkSettingsJson()
         {"replaceSkyrimMannequin",g_extra_menus.replace_mannequin},
         {"replaceSkyrimLoot",g_extra_menus.replace_loot},
         {"replaceSkyrimPickpocket",g_extra_menus.replace_pickpocket},
+        {"replaceSkyrimBlacksmith",g_extra_menus.replace_blacksmith},
+        {"replaceSkyrimEnchanting",g_extra_menus.replace_enchanting},
+        {"replaceSkyrimAlchemy",g_extra_menus.replace_alchemy},
+        {"superEnchanting",g_extra_menus.super_enchanting},
+        {"playerEnchantingLevel",skyultra::ReadPlayerEnchantingSkillLevel()},
+        {"enchantmentCustomNames",std::move(enchantment_custom_names_json)},
+        {"replaceSkyrimBookReader",g_extra_menus.replace_book_reader},
         {"replaceSkyrimCompass",g_extra_menus.replace_compass},
         {"magicDisplayMode",g_extra_menus.magic_display_mode},
         {"favoritesDisplayMode",g_extra_menus.favorites_display_mode},
@@ -714,12 +807,19 @@ nlohmann::json FrameworkSettingsJson()
         {"mannequinDisplayMode",g_extra_menus.mannequin_display_mode},
         {"lootDisplayMode",g_extra_menus.loot_display_mode},
         {"pickpocketDisplayMode",g_extra_menus.pickpocket_display_mode},
+        {"blacksmithDisplayMode",g_extra_menus.blacksmith_display_mode},
+        {"enchantingDisplayMode",g_extra_menus.enchanting_display_mode},
+        {"alchemyDisplayMode",g_extra_menus.alchemy_display_mode},
         {"magicPauseWorld",g_extra_menus.magic_pause_world},
         {"favoritesPauseWorld",g_extra_menus.favorites_pause_world},
         {"containerPauseWorld",g_extra_menus.container_pause_world},
         {"mannequinPauseWorld",g_extra_menus.mannequin_pause_world},
         {"lootPauseWorld",g_extra_menus.loot_pause_world},
         {"pickpocketPauseWorld",g_extra_menus.pickpocket_pause_world},
+        {"blacksmithPauseWorld",g_extra_menus.blacksmith_pause_world},
+        {"enchantingPauseWorld",g_extra_menus.enchanting_pause_world},
+        {"alchemyPauseWorld",g_extra_menus.alchemy_pause_world},
+        {"bookPauseWorld",g_extra_menus.book_pause_world},
         {"modHotkeys",std::move(mod_hotkeys)},
         {"registeredMods",std::move(registered_mods)},
         {"profileState",g_profile_state_json}};
@@ -833,13 +933,42 @@ bool ParseFrameworkSettings(const nlohmann::json& input,skyultra::VideoSplashSet
         if(!read_bool("replaceSkyrimMagic",extra_menus.replace_magic)||!read_bool("replaceSkyrimFavorites",extra_menus.replace_favorites)||
             !read_bool("replaceSkyrimContainer",extra_menus.replace_container)||!read_bool("replaceSkyrimMannequin",extra_menus.replace_mannequin)||
             !read_bool("replaceSkyrimLoot",extra_menus.replace_loot)||!read_bool("replaceSkyrimPickpocket",extra_menus.replace_pickpocket)||
+            !read_bool("replaceSkyrimBlacksmith",extra_menus.replace_blacksmith)||
+            !read_bool("replaceSkyrimEnchanting",extra_menus.replace_enchanting)||
+            !read_bool("replaceSkyrimAlchemy",extra_menus.replace_alchemy)||
+            !read_bool("superEnchanting",extra_menus.super_enchanting)||
+            !read_bool("replaceSkyrimBookReader",extra_menus.replace_book_reader)||
             !read_bool("replaceSkyrimCompass",extra_menus.replace_compass)||
             !read_container_mode("magicDisplayMode",extra_menus.magic_display_mode)||!read_container_mode("favoritesDisplayMode",extra_menus.favorites_display_mode)||
             !read_container_mode("containerDisplayMode",extra_menus.container_display_mode)||!read_container_mode("mannequinDisplayMode",extra_menus.mannequin_display_mode)||
             !read_container_mode("lootDisplayMode",extra_menus.loot_display_mode)||!read_container_mode("pickpocketDisplayMode",extra_menus.pickpocket_display_mode)||
+            !read_container_mode("blacksmithDisplayMode",extra_menus.blacksmith_display_mode)||
+            !read_container_mode("enchantingDisplayMode",extra_menus.enchanting_display_mode)||
+            !read_container_mode("alchemyDisplayMode",extra_menus.alchemy_display_mode)||
             !read_bool("magicPauseWorld",extra_menus.magic_pause_world)||!read_bool("favoritesPauseWorld",extra_menus.favorites_pause_world)||
             !read_bool("containerPauseWorld",extra_menus.container_pause_world)||!read_bool("mannequinPauseWorld",extra_menus.mannequin_pause_world)||
-            !read_bool("lootPauseWorld",extra_menus.loot_pause_world)||!read_bool("pickpocketPauseWorld",extra_menus.pickpocket_pause_world))return false;
+            !read_bool("lootPauseWorld",extra_menus.loot_pause_world)||!read_bool("pickpocketPauseWorld",extra_menus.pickpocket_pause_world)||
+            !read_bool("blacksmithPauseWorld",extra_menus.blacksmith_pause_world)||
+            !read_bool("enchantingPauseWorld",extra_menus.enchanting_pause_world)||
+            !read_bool("alchemyPauseWorld",extra_menus.alchemy_pause_world)||
+            !read_bool("bookPauseWorld",extra_menus.book_pause_world))return false;
+        if(const auto cn_field=input.find("enchantmentCustomNames");cn_field!=input.end()){
+            if(!cn_field->is_object()||cn_field->size()>512){error="Invalid enchantmentCustomNames map.";return false;}
+            std::unordered_map<std::uint32_t,std::string> parsed_names;
+            for(auto it=cn_field->begin();it!=cn_field->end();++it){
+                if(!it.value().is_string()){error="Invalid enchantmentCustomNames entry.";return false;}
+                std::uint32_t eid=0;
+                const auto& key=it.key();
+                const bool hex=key.starts_with("0x")||key.starts_with("0X");
+                if(std::from_chars(key.data()+(hex?2:0),key.data()+key.size(),eid,hex?16:10).ec!=std::errc{}||eid==0)continue;
+                auto val=it.value().get<std::string>();
+                while(!val.empty()&&(val.front()==' '||val.front()=='\t'))val.erase(val.begin());
+                while(!val.empty()&&(val.back()==' '||val.back()=='\t'))val.pop_back();
+                if(val.size()>80)val.resize(80);
+                if(!val.empty())parsed_names.emplace(eid,std::move(val));
+            }
+            extra_menus.enchantment_custom_names=std::move(parsed_names);
+        }
     }
     if(const auto field=input.find("modHotkeys");field!=input.end()){
         if(!field->is_object()||field->size()>64){error="Invalid modHotkeys map.";return false;}
@@ -870,6 +999,8 @@ void LoadFrameworkSettings()
             g_splash_settings=std::move(parsed);g_actor_export_settings=exports;g_skyultra_hotkey=std::move(hotkey);g_keyboard_hotkey=std::move(keyboard_hotkey);g_menu_browser_engine=std::move(menu_engine);g_mod_browser_engines=std::move(mod_engines);g_vr_head_tracking=vr_head_tracking;g_replace_skyrim_inventory=replace_skyrim_inventory;g_replace_skyrim_barter=replace_skyrim_barter;g_menu_display_mode=std::move(menu_display_mode);g_inventory_display_mode=std::move(inventory_display_mode);g_barter_display_mode=std::move(barter_display_mode);g_menu_pause_world=menu_pause_world;g_inventory_pause_world=inventory_pause_world;g_barter_pause_world=barter_pause_world;g_extra_menus=std::move(extra_menus);g_mod_hotkeys=std::move(mod_hotkeys);g_profile_state_json=std::move(profile_state);
         }
         else SKSE::log::warn("SkyUltra settings use defaults: {}",error);}
+    skyultra::SetSuperEnchantingEnabled(g_extra_menus.super_enchanting);
+    skyultra::ApplySavedEnchantmentCustomNames(g_extra_menus.enchantment_custom_names);
     if (const auto mods_dir = skyultra::GetInstalledWebModsDirectory(); !mods_dir.empty()) {
         std::error_code ec;
         for (std::filesystem::directory_iterator it(mods_dir, ec), end; !ec && it != end; it.increment(ec)) {
@@ -918,6 +1049,12 @@ bool SaveFrameworkSettings(const nlohmann::json& input,std::string& error)
     const bool engine_changed = (menu_engine != g_menu_browser_engine);
     const auto previous_mod_engines = g_mod_browser_engines;
     g_splash_settings=std::move(parsed);g_actor_export_settings=exports;g_skyultra_hotkey=std::move(hotkey);g_keyboard_hotkey=std::move(keyboard_hotkey);g_menu_browser_engine=menu_engine;g_mod_browser_engines=mod_engines;g_vr_head_tracking=vr_head_tracking;g_replace_skyrim_inventory=replace_skyrim_inventory;g_replace_skyrim_barter=replace_skyrim_barter;g_menu_display_mode=std::move(menu_display_mode);g_inventory_display_mode=std::move(inventory_display_mode);g_barter_display_mode=std::move(barter_display_mode);g_menu_pause_world=menu_pause_world;g_inventory_pause_world=inventory_pause_world;g_barter_pause_world=barter_pause_world;g_extra_menus=std::move(extra_menus);g_mod_hotkeys=std::move(mod_hotkeys);g_profile_state_json=std::move(profile_state);
+    skyultra::SetSuperEnchantingEnabled(g_extra_menus.super_enchanting);
+    if (input.contains("enchantmentCustomNames")) {
+        skyultra::ApplySavedEnchantmentCustomNames(g_extra_menus.enchantment_custom_names);
+    } else {
+        g_extra_menus.enchantment_custom_names = skyultra::GetSavedEnchantmentCustomNames();
+    }
     if (!g_replace_skyrim_inventory && g_inventory_replacement_active) {
         g_inventory_replacement_active = false;
         if (g_view_manager != nullptr && g_menu_view_id != 0) {
@@ -941,14 +1078,45 @@ bool SaveFrameworkSettings(const nlohmann::json& input,std::string& error)
         (!g_extra_menus.replace_container && g_container_replacement_active) ||
         (!g_extra_menus.replace_mannequin && g_mannequin_replacement_active) ||
         (!g_extra_menus.replace_loot && g_loot_replacement_active) ||
-        (!g_extra_menus.replace_pickpocket && g_pickpocket_replacement_active)) {
+        (!g_extra_menus.replace_pickpocket && g_pickpocket_replacement_active) ||
+        (!g_extra_menus.replace_blacksmith && (g_blacksmith_replacement_active || g_blacksmith_pending_open.load(std::memory_order_relaxed))) ||
+        (!g_extra_menus.replace_enchanting && (g_enchanting_replacement_active || g_enchanting_pending_open.load(std::memory_order_relaxed))) ||
+        (!g_extra_menus.replace_alchemy && (g_alchemy_replacement_active || g_alchemy_pending_open.load(std::memory_order_relaxed))) ||
+        (!g_extra_menus.replace_book_reader && (g_book_replacement_active || g_book_pending_open.load(std::memory_order_relaxed)))) {
+        const bool exit_crafting_furniture =
+            (!g_extra_menus.replace_blacksmith && (g_blacksmith_replacement_active || g_blacksmith_pending_open.load(std::memory_order_relaxed))) ||
+            (!g_extra_menus.replace_enchanting && (g_enchanting_replacement_active || g_enchanting_pending_open.load(std::memory_order_relaxed))) ||
+            (!g_extra_menus.replace_alchemy && (g_alchemy_replacement_active || g_alchemy_pending_open.load(std::memory_order_relaxed)));
         if (!g_extra_menus.replace_magic) g_magic_replacement_active = false;
         if (!g_extra_menus.replace_favorites) g_favorites_replacement_active = false;
         if (!g_extra_menus.replace_container) g_container_replacement_active = false;
         if (!g_extra_menus.replace_mannequin) g_mannequin_replacement_active = false;
         if (!g_extra_menus.replace_loot) g_loot_replacement_active = false;
         if (!g_extra_menus.replace_pickpocket) g_pickpocket_replacement_active = false;
+        if (!g_extra_menus.replace_blacksmith) {
+            g_blacksmith_replacement_active = false;
+            g_blacksmith_pending_open.store(false, std::memory_order_relaxed);
+            skyultra::ClearActiveBlacksmithStation();
+        }
+        if (!g_extra_menus.replace_enchanting) {
+            g_enchanting_replacement_active = false;
+            g_enchanting_pending_open.store(false, std::memory_order_relaxed);
+            skyultra::ClearActiveEnchantingStation();
+        }
+        if (!g_extra_menus.replace_alchemy) {
+            g_alchemy_replacement_active = false;
+            g_alchemy_pending_open.store(false, std::memory_order_relaxed);
+            skyultra::ClearActiveAlchemyStation();
+        }
+        if (!g_extra_menus.replace_book_reader) {
+            g_book_replacement_active = false;
+            g_book_pending_open.store(false, std::memory_order_relaxed);
+            skyultra::ClearActiveBookMenu();
+        }
         SendMenuReplacementModes();
+        if (exit_crafting_furniture) {
+            ScheduleBlacksmithFurnitureExit();
+        }
     }
     SyncSkyUltraWorldPause();
     SyncVanillaCompassVisibility(true);
@@ -1202,6 +1370,7 @@ void QueueHotReloadForMod(SkyUltraModHandle mod_handle, std::string_view mod_id)
     for (const auto handle : views) {
         (void)NativeApiReloadView(handle);
     }
+    InvalidateDevModAuditCache();
     if (!views.empty()) {
         RecordDevModHotReload(mod_id);
         if (!g_logged_first_mod_hot_reload.exchange(true, std::memory_order_relaxed)) {
@@ -1384,6 +1553,7 @@ std::uint64_t SubscriptionNowMs() noexcept
 void PumpGameDataSubscriptions(bool force_immediate)
 {
     g_game_subscription_pump_queued.store(false, std::memory_order_release);
+    const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
     if (g_game_subscriptions.empty() || g_view_manager == nullptr) {
         g_active_game_subscription_count.store(0, std::memory_order_relaxed);
         return;
@@ -1408,9 +1578,21 @@ void PumpGameDataSubscriptions(bool force_immediate)
     }
 
     const auto now_ms = SubscriptionNowMs();
-    if (!hud_suppressed && g_extra_menus.replace_compass) {
+    g_last_game_subscription_pump_ms.store(now_ms, std::memory_order_relaxed);
+    if (!hud_suppressed) {
         SyncVanillaCompassVisibility(false);
     }
+    const auto precise_heading = skyultra::ReadPlayerCompassHeadingPrecise();
+    if (!hud_suppressed && precise_heading.has_value() &&
+        !g_has_visible_interactive_view.load(std::memory_order_relaxed)) {
+        skyultra::PublishLiveCompassHeading(
+            *precise_heading,
+            true,
+            g_live_compass_frame_index.fetch_add(1, std::memory_order_relaxed) + 1);
+    }
+    const auto fast_heading = precise_heading.has_value()
+        ? std::optional<float>(static_cast<float>(*precise_heading))
+        : skyultra::ReadPlayerCompassHeadingFast();
     for (auto it = g_game_subscriptions.begin(); it != g_game_subscriptions.end();) {
         const auto handle = it->first;
         auto& sub = it->second;
@@ -1440,25 +1622,147 @@ void PumpGameDataSubscriptions(bool force_immediate)
             ++it;
             continue;
         }
+
+        const bool has_live_heading = pinned_widget &&
+            (config->browser_engine == skyultra::BrowserEngine::Ultralight ||
+             skyultra::IsLiveCompassSharedMemoryReady());
+        const bool wants_vitals = sub.topics.empty() ||
+            std::ranges::find(sub.topics, std::string("vitals")) != sub.topics.end();
+        if (!has_live_heading && sub.compact && wants_vitals && !sub.topic_signatures.empty() && fast_heading.has_value()) {
+            bool heading_changed = (sub.last_heading_deg < -1.0F);
+            if (!heading_changed) {
+                float diff = std::abs(*fast_heading - sub.last_heading_deg);
+                if (diff > 180.0F) {
+                    diff = 360.0F - diff;
+                }
+                heading_changed = diff >= 0.01F;
+            }
+            if (heading_changed) {
+                const auto seq = g_compass_heading_seq.fetch_add(1, std::memory_order_relaxed) + 1;
+                char heading_buf[96]{};
+                std::snprintf(heading_buf, sizeof(heading_buf), "{\"heading\":%.2f,\"seq\":%llu}",
+                    *fast_heading, static_cast<unsigned long long>(seq));
+                if (view->SendEventJson("skyultra.compassHeading", heading_buf)) {
+                    sub.last_heading_deg = *fast_heading;
+                }
+            }
+        }
+
         if (!force_immediate && !sub.needs_catchup &&
             now_ms >= sub.last_push_ms && (now_ms - sub.last_push_ms) < sub.interval_ms) {
             ++it;
             continue;
         }
-        const bool send_full = sub.needs_catchup;
-        const auto update_json = skyultra::CollectSharedGameDataUpdateJSON(
-            sub.compact, sub.topics, sub.topic_signatures, sub.last_sequence, send_full);
-        sub.last_push_ms = now_ms;
-        sub.needs_catchup = false;
-        if (!update_json.empty()) {
-            (void)view->SendEventJson("skyultra.game.update", update_json);
-            RecordDevBridgeEntry(*view_id, ModIdForViewHandle(handle), "event",
-                "skyultra.game.update", "ok", 0.1, update_json.size());
+
+        const bool interactive_full_menu = (*view_id == g_menu_view_id);
+        const std::uint32_t snapshot_interval_ms = sub.compact
+            ? std::max<std::uint32_t>(sub.interval_ms, has_live_heading ? 120U : 33U)
+            : (interactive_full_menu
+                ? std::max<std::uint32_t>(sub.interval_ms, g_skyultra_world_paused ? 1500U : 3000U)
+                : sub.interval_ms);
+        const bool snapshot_due = force_immediate || sub.needs_catchup || sub.topic_signatures.empty() ||
+            now_ms < sub.last_snapshot_push_ms || (now_ms - sub.last_snapshot_push_ms) >= snapshot_interval_ms;
+
+        bool can_push_snapshot = snapshot_due;
+        if (can_push_snapshot && !force_immediate && !sub.needs_catchup) {
+            if (const auto events_q = view->BridgeEvents(); events_q != nullptr) {
+                const auto qstats = events_q->Snapshot();
+                const std::size_t regular_pending = qstats.pending > qstats.controls
+                    ? (qstats.pending - qstats.controls)
+                    : 0U;
+                if (qstats.in_flight > 0 || regular_pending > 0) {
+                    can_push_snapshot = false;
+                }
+            }
         }
+
+        if (can_push_snapshot && !sub.compact && skyultra::FrameworkSplashActive()) {
+            sub.needs_catchup = true;
+            sub.last_push_ms = now_ms;
+            ++it;
+            continue;
+        }
+
+        if (can_push_snapshot) {
+            const bool send_full = sub.topic_signatures.empty();
+            auto candidate_signatures = sub.topic_signatures;
+            auto candidate_sequence = sub.last_sequence;
+            const auto pump_op_start = std::chrono::steady_clock::now();
+            const auto update_json = skyultra::CollectSharedGameDataUpdateJSON(
+                sub.compact, sub.topics, candidate_signatures, candidate_sequence, send_full, !has_live_heading);
+            sub.last_snapshot_push_ms = now_ms;
+            if (update_json.empty()) {
+                sub.topic_signatures = std::move(candidate_signatures);
+                sub.last_sequence = candidate_sequence;
+                sub.needs_catchup = false;
+            } else {
+                const bool sent = view->SendEventJson("skyultra.game.update", update_json);
+                const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - pump_op_start).count();
+                if (sent) {
+                    sub.topic_signatures = std::move(candidate_signatures);
+                    sub.last_sequence = candidate_sequence;
+                    sub.needs_catchup = false;
+                    RecordDevBridgeEntry(*view_id, ModIdForViewHandle(handle), "event",
+                        "skyultra.game.update", "ok", elapsed_ms, update_json.size());
+                } else {
+                    sub.needs_catchup = true;
+                    RecordDevBridgeEntry(*view_id, ModIdForViewHandle(handle), "event",
+                        "skyultra.game.update", "dropped", elapsed_ms, update_json.size());
+                }
+                static std::atomic<std::int64_t> s_last_slow_pump_log_ms{ 0 };
+                if (elapsed_ms >= 25.0) {
+                    const auto log_now = static_cast<std::int64_t>(now_ms);
+                    auto prev = s_last_slow_pump_log_ms.load(std::memory_order_relaxed);
+                    if (log_now - prev >= 10000 &&
+                        s_last_slow_pump_log_ms.compare_exchange_strong(prev, log_now, std::memory_order_relaxed)) {
+                        SKSE::log::warn(
+                            "SkyUltra game-data subscription pump took {:.1f} ms ({} bytes, delivered={}).",
+                            elapsed_ms, update_json.size(), sent);
+                    }
+                }
+            }
+        }
+        sub.last_push_ms = now_ms;
         ++it;
     }
     g_active_game_subscription_count.store(
         static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+}
+
+void ScheduleGameDataSubscriptionPump(
+    std::uint64_t min_interval_ms,
+    NativeTaskPriority priority = NativeTaskPriority::Interactive) noexcept
+{
+    const auto now_ms = SubscriptionNowMs();
+    const auto last_pump = g_last_game_subscription_pump_ms.load(std::memory_order_relaxed);
+    if (now_ms >= last_pump && (now_ms - last_pump) < min_interval_ms) {
+        return;
+    }
+    bool expected = false;
+    if (g_game_subscription_pump_queued.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel)) {
+        if (!QueueNativeApiTask([] { PumpGameDataSubscriptions(false); },
+                priority,
+                "skyultra.gameSubscriptionPump",
+                "skyultra")) {
+            g_game_subscription_pump_queued.store(false, std::memory_order_release);
+        }
+    }
+}
+
+std::atomic_uint64_t g_wearable_light_diag_due_ms{ 0 };
+std::mutex g_wearable_light_diag_mutex;
+std::string g_wearable_light_diag_reason;
+
+void ScheduleWearableLightDiagnostic(std::string_view reason, std::uint64_t delay_ms) noexcept
+{
+    const auto due = SubscriptionNowMs() + delay_ms;
+    {
+        const std::scoped_lock lock(g_wearable_light_diag_mutex);
+        g_wearable_light_diag_reason.assign(reason);
+    }
+    g_wearable_light_diag_due_ms.store(due, std::memory_order_release);
 }
 
 void StartGameDataSubscriptionTicker()
@@ -1468,21 +1772,36 @@ void StartGameDataSubscriptionTicker()
     }
     g_game_subscription_thread = std::jthread([](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            const bool interactive_open = g_has_visible_interactive_view.load(std::memory_order_relaxed);
+            std::this_thread::sleep_for(std::chrono::milliseconds(interactive_open ? 50 : 5));
             if (stop_token.stop_requested()) {
                 break;
+            }
+            if (g_game_session_active.load(std::memory_order_relaxed)) {
+                const auto diag_due = g_wearable_light_diag_due_ms.load(std::memory_order_acquire);
+                if (diag_due != 0 && SubscriptionNowMs() >= diag_due) {
+                    std::uint64_t expected_due = diag_due;
+                    if (g_wearable_light_diag_due_ms.compare_exchange_strong(expected_due, 0, std::memory_order_acq_rel)) {
+                        std::string diag_reason;
+                        {
+                            const std::scoped_lock lock(g_wearable_light_diag_mutex);
+                            diag_reason = g_wearable_light_diag_reason;
+                        }
+                        (void)QueueNativeApiTask([reason = std::move(diag_reason)] {
+                            skyultra::LogWearableLightDiagnostic(reason);
+                        });
+                    }
+                }
             }
             if (!g_game_session_active.load(std::memory_order_relaxed) ||
                 g_active_game_subscription_count.load(std::memory_order_relaxed) == 0 ||
                 skyultra::FrameworkSplashActive()) {
                 continue;
             }
-            bool expected = false;
-            if (g_game_subscription_pump_queued.compare_exchange_strong(
-                    expected, true, std::memory_order_acq_rel)) {
-                if (!QueueNativeApiTask([] { PumpGameDataSubscriptions(false); })) {
-                    g_game_subscription_pump_queued.store(false, std::memory_order_release);
-                }
+            if (interactive_open) {
+                ScheduleGameDataSubscriptionPump(500, NativeTaskPriority::Background);
+            } else {
+                ScheduleGameDataSubscriptionPump(4, NativeTaskPriority::Interactive);
             }
         }
     });
@@ -1673,40 +1992,165 @@ skyultra::HitTestResult HitTestBrowserCursor()
         { static_cast<float>(g_browser_cursor.x), static_cast<float>(g_browser_cursor.y) }, viewport);
 }
 
+std::optional<skyultra::ViewId> ResolveKeyboardTargetWithFallback()
+{
+    if (const auto focused = GetFocusedView(skyultra::InputMode::Keyboard)) {
+        return focused;
+    }
+    if (g_view_manager == nullptr || g_browser_overlay_suppressed.load(std::memory_order_relaxed)) {
+        return std::nullopt;
+    }
+    std::optional<skyultra::ViewId> candidate = HitTestBrowserCursor().target;
+    if (candidate) {
+        if (const auto* cfg = FindViewConfig(*candidate);
+            cfg == nullptr || !cfg->visible || cfg->click_through || cfg->layer == skyultra::ViewLayer::Hud) {
+            candidate.reset();
+        }
+    }
+    if (!candidate && g_menu_view_id != 0) {
+        if (const auto* cfg = FindViewConfig(g_menu_view_id);
+            cfg != nullptr && cfg->visible && !cfg->click_through && cfg->layer != skyultra::ViewLayer::Hud) {
+            candidate = g_menu_view_id;
+        }
+    }
+    if (!candidate) {
+        const auto views = g_view_manager->OrderedViews();
+        for (auto it = views.rbegin(); it != views.rend(); ++it) {
+            if (it->config.visible && !it->config.click_through && it->config.layer != skyultra::ViewLayer::Hud) {
+                candidate = it->id;
+                break;
+            }
+        }
+    }
+    if (candidate) {
+        (void)g_view_manager->RequestFocus(
+            *candidate,
+            InputFocusForView(*candidate, skyultra::InputMode::MouseAndKeyboard));
+    }
+    return candidate;
+}
+
 bool HasVisibleInteractiveView()
 {
-    if (g_browser_overlay_suppressed.load(std::memory_order_relaxed) || g_view_manager == nullptr) {
+    const auto compute = []() -> bool {
+        if (g_browser_overlay_suppressed.load(std::memory_order_relaxed) || g_view_manager == nullptr) {
+            return false;
+        }
+        for (const auto& snapshot : g_view_manager->OrderedViews()) {
+            if (!snapshot.config.visible || snapshot.config.click_through ||
+                snapshot.config.layer == skyultra::ViewLayer::Hud) {
+                continue;
+            }
+            const bool pinned_widget = std::ranges::any_of(g_widget_overlays,
+                [&](const auto& item) { return item.second.manager_id == snapshot.id; });
+            if (!pinned_widget) {
+                return true;
+            }
+        }
+        const std::scoped_lock lock(g_native_views_mutex);
+        for (const auto& [handle, record] : g_native_views) {
+            (void)handle;
+            if (record.state == SKYULTRA_VIEW_PENDING && record.pending_config &&
+                record.pending_config->visible && !record.pending_config->click_through &&
+                record.pending_config->layer != skyultra::ViewLayer::Hud) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const bool result = compute();
+    g_has_visible_interactive_view.store(result, std::memory_order_release);
+    return result;
+}
+
+constexpr std::string_view kSkyUltraPauseMenuName = "SkyUltraPause";
+
+enum class PauseMenuRequest : std::uint8_t {
+    Unknown = 0,
+    Hide = 1,
+    Show = 2,
+};
+
+std::mutex g_pause_menu_mutex;
+bool g_pause_menu_registered{ false };
+PauseMenuRequest g_pause_menu_request{ PauseMenuRequest::Unknown };
+
+class SkyUltraPauseMenu final : public RE::IMenu {
+public:
+    static RE::IMenu* Create()
+    {
+        auto* menu = new SkyUltraPauseMenu();
+        menu->depthPriority = 0;
+        menu->menuFlags.set(RE::UI_MENU_FLAGS::kPausesGame);
+        menu->menuFlags.set(RE::UI_MENU_FLAGS::kAllowSaving);
+        return menu;
+    }
+
+    void PostDisplay() override {}
+};
+
+bool RegisterSkyUltraPauseMenuLocked() noexcept
+{
+    if (g_pause_menu_registered) {
+        return true;
+    }
+    auto* ui = RE::UI::GetSingleton();
+    if (ui == nullptr) {
         return false;
     }
-    for (const auto& snapshot : g_view_manager->OrderedViews()) {
-        if (!snapshot.config.visible || snapshot.config.click_through ||
-            snapshot.config.layer == skyultra::ViewLayer::Hud) {
-            continue;
+    ui->Register(kSkyUltraPauseMenuName, SkyUltraPauseMenu::Create);
+    g_pause_menu_registered = true;
+    SKSE::log::info("SkyUltra registered its Skyrim world-pause carrier menu.");
+    return true;
+}
+
+bool RegisterSkyUltraPauseMenu() noexcept
+{
+    const std::scoped_lock lock(g_pause_menu_mutex);
+    return RegisterSkyUltraPauseMenuLocked();
+}
+
+void SetSkyUltraPauseMenuVisible(bool visible, bool force) noexcept
+{
+    const std::scoped_lock lock(g_pause_menu_mutex);
+    const auto request = visible ? PauseMenuRequest::Show : PauseMenuRequest::Hide;
+    if (!force && g_pause_menu_request == request) {
+        return;
+    }
+    auto* ui = RE::UI::GetSingleton();
+    if (!visible) {
+        if (!force && g_pause_menu_request == PauseMenuRequest::Unknown) {
+            if (ui == nullptr || !ui->IsMenuOpen(kSkyUltraPauseMenuName)) {
+                g_pause_menu_request = request;
+                g_skyultra_world_paused = false;
+                return;
+            }
         }
-        const bool pinned_widget = std::ranges::any_of(g_widget_overlays,
-            [&](const auto& item) { return item.second.manager_id == snapshot.id; });
-        if (!pinned_widget) {
-            return true;
+        if (force) {
+            const bool might_be_open = (g_pause_menu_request == PauseMenuRequest::Show) ||
+                (ui != nullptr && ui->IsMenuOpen(kSkyUltraPauseMenuName));
+            if (!might_be_open) {
+                g_pause_menu_request = request;
+                g_skyultra_world_paused = false;
+                return;
+            }
         }
     }
-    const std::scoped_lock lock(g_native_views_mutex);
-    for (const auto& [handle, record] : g_native_views) {
-        (void)handle;
-        if (record.state == SKYULTRA_VIEW_PENDING && record.pending_config &&
-            record.pending_config->visible && !record.pending_config->click_through &&
-            record.pending_config->layer != skyultra::ViewLayer::Hud) {
-            return true;
-        }
+    if (visible && !RegisterSkyUltraPauseMenuLocked()) {
+        return;
     }
-    return false;
+    auto* queue = RE::UIMessageQueue::GetSingleton();
+    if (queue == nullptr) {
+        return;
+    }
+    static const RE::BSFixedString menu_name(kSkyUltraPauseMenuName.data());
+    g_pause_menu_request = request;
+    g_skyultra_world_paused = visible;
+    queue->AddMessage(menu_name, visible ? RE::UI_MESSAGE_TYPE::kShow : RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
 }
 
 void SyncSkyUltraWorldPause() noexcept
 {
-    auto* ui = RE::UI::GetSingleton();
-    if (ui == nullptr) {
-        return;
-    }
     const bool browser_open = HasVisibleInteractiveView();
     const bool pause_pref = g_barter_replacement_active ? g_barter_pause_world :
         g_magic_replacement_active ? g_extra_menus.magic_pause_world :
@@ -1715,16 +2159,118 @@ void SyncSkyUltraWorldPause() noexcept
         g_mannequin_replacement_active ? g_extra_menus.mannequin_pause_world :
         g_loot_replacement_active ? g_extra_menus.loot_pause_world :
         g_pickpocket_replacement_active ? g_extra_menus.pickpocket_pause_world :
+        g_blacksmith_replacement_active ? g_extra_menus.blacksmith_pause_world :
+        g_enchanting_replacement_active ? g_extra_menus.enchanting_pause_world :
+        g_alchemy_replacement_active ? g_extra_menus.alchemy_pause_world :
+        g_book_replacement_active ? g_extra_menus.book_pause_world :
         (g_inventory_replacement_active ? g_inventory_pause_world : g_menu_pause_world);
-    const bool should_pause = browser_open && pause_pref;
-    if (should_pause && !g_skyultra_world_paused) {
-        ++ui->numPausesGame;
-        g_skyultra_world_paused = true;
-    } else if (!should_pause && g_skyultra_world_paused) {
-        if (ui->numPausesGame > 0) {
-            --ui->numPausesGame;
+    const bool should_pause = g_game_session_active.load(std::memory_order_relaxed) && browser_open && pause_pref;
+    SetSkyUltraPauseMenuVisible(should_pause);
+    if (g_browser_runtime != nullptr) {
+        g_browser_runtime->SetWorldPaused(should_pause || !browser_open);
+    }
+}
+
+std::int64_t SteadyClockNowMs() noexcept
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void SuppressBlacksmithNoticesOnUiThread(RE::UI* ui, bool allow_message_box) noexcept
+{
+    if (ui == nullptr) {
+        return;
+    }
+    auto* msg_queue = RE::UIMessageQueue::GetSingleton();
+    if (ui->IsMenuOpen("Tutorial Menu"sv)) {
+        if (auto tut = ui->GetMenu("Tutorial Menu"sv); tut && tut->uiMovie) {
+            tut->uiMovie->SetBackgroundAlpha(0.0F);
+            tut->uiMovie->SetVariable("_root._visible", RE::GFxValue(false));
         }
-        g_skyultra_world_paused = false;
+        if (msg_queue != nullptr) {
+            msg_queue->AddMessage("Tutorial Menu"sv, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+        }
+    }
+    if (allow_message_box && ui->IsMenuOpen(RE::MessageBoxMenu::MENU_NAME)) {
+        if (auto* data = RE::MessageBoxMenu::GetCurrentMessageBoxData();
+            data != nullptr && data->buttonText.size() <= 1U) {
+            std::string body_preview = data->bodyText.c_str() != nullptr ? data->bodyText.c_str() : "";
+            for (char& ch : body_preview) {
+                if (ch == '\r' || ch == '\n') ch = ' ';
+            }
+            if (body_preview.size() > 140) {
+                body_preview.resize(140);
+                body_preview += "...";
+            }
+            SKSE::log::info("SkyUltra suppressed Blacksmith opening notice: '{}'", body_preview);
+            if (auto mb = ui->GetMenu<RE::MessageBoxMenu>(); mb && mb->uiMovie) {
+                mb->uiMovie->SetBackgroundAlpha(0.0F);
+                mb->uiMovie->SetVariable("_root._visible", RE::GFxValue(false));
+            }
+            RE::MessageBoxMenu::SelectOption(0);
+        }
+    }
+}
+
+void ExitActiveBlacksmithFurniture() noexcept
+{
+    if (!g_game_session_active.load(std::memory_order_relaxed)) {
+        return;
+    }
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (player == nullptr) {
+        return;
+    }
+    const auto occupied = player->GetOccupiedFurniture();
+    const auto* actor_state = player->AsActorState();
+    const auto sit_state = actor_state != nullptr
+        ? actor_state->GetSitSleepState()
+        : RE::SIT_SLEEP_STATE::kNormal;
+    if (!occupied && sit_state == RE::SIT_SLEEP_STATE::kNormal) {
+        return;
+    }
+    RE::CraftingMenu::QuitMenu();
+    const auto after_sit_state = actor_state != nullptr
+        ? actor_state->GetSitSleepState()
+        : RE::SIT_SLEEP_STATE::kNormal;
+    if (player->GetOccupiedFurniture() &&
+        after_sit_state != RE::SIT_SLEEP_STATE::kNormal &&
+        after_sit_state != RE::SIT_SLEEP_STATE::kWantToStand) {
+        player->InitiateGetUpPackage();
+        const auto after_getup_state = actor_state != nullptr
+            ? actor_state->GetSitSleepState()
+            : RE::SIT_SLEEP_STATE::kNormal;
+        if (player->GetOccupiedFurniture() &&
+            after_getup_state != RE::SIT_SLEEP_STATE::kNormal &&
+            after_getup_state != RE::SIT_SLEEP_STATE::kWantToStand) {
+            (void)player->NotifyAnimationGraph("IdleFurnitureExit");
+            const auto post_notify_state = actor_state != nullptr
+                ? actor_state->GetSitSleepState()
+                : RE::SIT_SLEEP_STATE::kNormal;
+            if (player->GetOccupiedFurniture() &&
+                post_notify_state != RE::SIT_SLEEP_STATE::kNormal &&
+                post_notify_state != RE::SIT_SLEEP_STATE::kWantToStand) {
+                player->StopInteractingQuick(true);
+            }
+        }
+    }
+}
+
+void ScheduleBlacksmithFurnitureExit() noexcept
+{
+    g_pending_blacksmith_furniture_exit.store(true, std::memory_order_release);
+    const auto try_exit_once_unpaused = []() {
+        auto* cur_ui = RE::UI::GetSingleton();
+        if (cur_ui != nullptr && cur_ui->IsMenuOpen(kSkyUltraPauseMenuName)) {
+            return;
+        }
+        if (g_pending_blacksmith_furniture_exit.exchange(false, std::memory_order_acq_rel)) {
+            ExitActiveBlacksmithFurniture();
+        }
+    };
+    if (!g_game_task_queue.PostUI(try_exit_once_unpaused)) {
+        (void)g_game_task_queue.Post(try_exit_once_unpaused);
     }
 }
 
@@ -1736,11 +2282,28 @@ bool IsModalOrBlockingMenuOpen(RE::UI* ui) noexcept
     if (!g_game_session_active.load(std::memory_order_relaxed)) {
         return true;
     }
-    if (ui->IsModalMenuOpen() ||
+    const bool crafting_active = g_blacksmith_replacement_active ||
+        g_blacksmith_pending_open.load(std::memory_order_relaxed) ||
+        g_enchanting_replacement_active ||
+        g_enchanting_pending_open.load(std::memory_order_relaxed);
+    bool suppress_crafting_notice_modal = false;
+    if (crafting_active) {
+        const bool within_grace = SteadyClockNowMs() <= g_blacksmith_open_grace_until_ms.load(std::memory_order_relaxed);
+        const bool is_tutorial = ui->IsMenuOpen("Tutorial Menu"sv);
+        bool is_notice_box = false;
+        if (within_grace && ui->IsMenuOpen(RE::MessageBoxMenu::MENU_NAME)) {
+            if (auto* data = RE::MessageBoxMenu::GetCurrentMessageBoxData();
+                data == nullptr || data->buttonText.size() <= 1U) {
+                is_notice_box = true;
+            }
+        }
+        suppress_crafting_notice_modal = is_tutorial || is_notice_box;
+    }
+    if ((!suppress_crafting_notice_modal && ui->IsModalMenuOpen()) ||
         ui->IsMenuOpen("Main Menu"sv) ||
         ui->IsMenuOpen("Loading Menu"sv) ||
         ui->IsMenuOpen("Mist Menu"sv) ||
-        ui->IsMenuOpen("Fader Menu"sv) ||
+        (!crafting_active && ui->IsMenuOpen("Fader Menu"sv)) ||
         ui->IsMenuOpen("RaceSex Menu"sv) ||
         ui->IsMenuOpen("MapMenu"sv) ||
         ui->IsMenuOpen("Journal Menu"sv) ||
@@ -1749,8 +2312,8 @@ bool IsModalOrBlockingMenuOpen(RE::UI* ui) noexcept
         ui->IsMenuOpen("Sleep/Wait Menu"sv) ||
         ui->IsMenuOpen("Lockpicking Menu"sv) ||
         ui->IsMenuOpen("GiftMenu"sv) ||
-        ui->IsMenuOpen("Book Menu"sv) ||
-        ui->IsMenuOpen("Crafting Menu"sv) ||
+        (!g_book_replacement_active && ui->IsMenuOpen("Book Menu"sv)) ||
+        (!crafting_active && ui->IsMenuOpen("Crafting Menu"sv)) ||
         (!g_container_replacement_active && !g_mannequin_replacement_active &&
          !g_loot_replacement_active && !g_pickpocket_replacement_active && ui->IsMenuOpen("ContainerMenu"sv)) ||
         (!g_replace_skyrim_barter && !g_barter_replacement_active && ui->IsMenuOpen("BarterMenu"sv)) ||
@@ -1810,14 +2373,29 @@ bool ShouldSuppressHudOverlays() noexcept
     return false;
 }
 
+bool AnyPinnedCompassHudActive() noexcept
+{
+    for (const auto& [mod_handle, overlay] : g_widget_overlays) {
+        (void)mod_handle;
+        if (std::ranges::find(overlay.widgets, "compass") != overlay.widgets.end()) {
+            return true;
+        }
+        if (overlay.custom_code.is_object() && overlay.custom_code.value("enabled", false)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void SyncVanillaCompassVisibility(bool force) noexcept
 {
     static std::optional<bool> s_last_applied_show_vanilla;
     auto* ui = RE::UI::GetSingleton();
-    if (ui == nullptr || ShouldSuppressHudOverlays()) {
+    if (ui == nullptr) {
+        s_last_applied_show_vanilla.reset();
         return;
     }
-    const bool show_vanilla = !g_extra_menus.replace_compass;
+    const bool show_vanilla = !g_extra_menus.replace_compass || !AnyPinnedCompassHudActive();
     if (!force && s_last_applied_show_vanilla.has_value() && *s_last_applied_show_vanilla == show_vanilla) {
         return;
     }
@@ -1826,6 +2404,7 @@ void SyncVanillaCompassVisibility(bool force) noexcept
         hud_menu = ui->GetMenu("HUDMenu"sv);
     }
     if (!hud_menu || !hud_menu->uiMovie) {
+        s_last_applied_show_vanilla.reset();
         return;
     }
     const double alpha = show_vanilla ? 100.0 : 0.0;
@@ -1839,6 +2418,7 @@ void SyncVanillaCompassVisibility(bool force) noexcept
 void PublishOverlayViews()
 {
     if (g_view_manager == nullptr) {
+        g_has_visible_interactive_view.store(false, std::memory_order_release);
         skyultra::SetOverlayViews({});
         skyultra::SetOverlayVisible(false);
         skyultra::SetD3D11UiPassMenuVisible(false);
@@ -1893,6 +2473,7 @@ void PublishOverlayViews()
     // The carrier has no menu-blocking/cursor-preservation flags; opening a
     // Skyrim menu still suppresses the HUD and queues the carrier's hide.
     skyultra::SetD3D11UiPassMenuVisible(overlay_visible);
+    g_has_visible_interactive_view.store(any_interactive_visible, std::memory_order_release);
     if (!any_interactive_visible) {
         skyultra::SetOverlayCursor({}, {}, false);
     }
@@ -1979,6 +2560,8 @@ std::unordered_set<std::uint32_t> g_held_vr_buttons;
 std::unordered_map<std::uint64_t, std::uint32_t> g_button_repeat_steps;
 std::chrono::steady_clock::time_point g_last_hotkey_toggle_time{};
 
+bool AnyMenuReplacementActive() noexcept;
+
 enum class BrowserOpenTarget { MainMenu, CurrentPanels, RestoreSuspended };
 
 void ApplyBrowserPanelVisibility(skyultra::PanelVisibilityAction action,
@@ -2031,11 +2614,13 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
         return;
     }
     if (visible && !REL::Module::IsVR()) {
-        const auto hook_ready = skyultra::InstallD3D11PresentHook();
+        const auto hook_ready =
+            skyultra::RegisterD3D11UiPassMenu() || skyultra::InstallD3D11PresentHook();
         g_render_hook_installed = hook_ready;
         if (!hook_ready) {
             SKSE::log::error(
-                "SkyUltra could not attach to Skyrim's D3D11 swap chain while handling {}.", reason);
+                "SkyUltra could not attach to Skyrim's D3D11 UI pass or swap chain while handling {}.",
+                reason);
             return;
         }
     }
@@ -2063,6 +2648,7 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
                 snapshot.config.layer != skyultra::ViewLayer::Hud && !std::ranges::any_of(g_widget_overlays,
                     [&](const auto& entry) { return entry.second.manager_id == snapshot.id; });
         });
+    bool exit_blacksmith_furniture = false;
     if (visible) {
         if (show_main_menu && g_menu_view_id != 0) {
             const auto epoch = ++g_menu_transition_epoch;
@@ -2070,7 +2656,7 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
             skyultra::HideActorPreviewImmediate(g_menu_view_id);
             const auto baseline_paint = menu_view != nullptr ? menu_view->PaintSequence() : 0ULL;
             if (menu_view != nullptr) {
-                menu_view->DiscardCachedFrame();
+                menu_view->BeginPageTransition();
             }
             skyultra::ClearOverlayViewCachedFrames(
                 g_menu_view_id, main_config != nullptr ? std::string_view(main_config->id) : std::string_view{});
@@ -2080,6 +2666,8 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
                 !g_magic_replacement_active && !g_favorites_replacement_active &&
                 !g_container_replacement_active && !g_mannequin_replacement_active &&
                 !g_loot_replacement_active && !g_pickpocket_replacement_active &&
+                !g_blacksmith_replacement_active && !g_enchanting_replacement_active &&
+                !g_alchemy_replacement_active && !g_book_replacement_active &&
                 !g_virtual_keyboard_opened_menu) {
                 BeginSplashForView(g_menu_view_id);
             }
@@ -2096,7 +2684,11 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
                     g_container_replacement_active,
                     g_mannequin_replacement_active,
                     g_loot_replacement_active,
-                    g_pickpocket_replacement_active
+                    g_pickpocket_replacement_active,
+                    g_blacksmith_replacement_active,
+                    g_enchanting_replacement_active,
+                    g_alchemy_replacement_active,
+                    g_book_replacement_active
                 };
                 const auto send_bool = [&](const char* event_name, bool active) {
                     (void)menu_view->SendEventJson(event_name, nlohmann::json{ { "active", active } }.dump());
@@ -2114,6 +2706,10 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
                     { "mannequinMode", session.mannequin },
                     { "lootMode", session.loot },
                     { "pickpocketMode", session.pickpocket },
+                    { "blacksmithMode", session.blacksmith },
+                    { "enchantingMode", session.enchanting },
+                    { "alchemyMode", session.alchemy },
+                    { "bookMode", session.book },
                     { "menuDisplayMode", g_menu_display_mode },
                     { "inventoryDisplayMode", g_inventory_display_mode },
                     { "barterDisplayMode", g_barter_display_mode },
@@ -2123,6 +2719,9 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
                     { "mannequinDisplayMode", g_extra_menus.mannequin_display_mode },
                     { "lootDisplayMode", g_extra_menus.loot_display_mode },
                     { "pickpocketDisplayMode", g_extra_menus.pickpocket_display_mode },
+                    { "blacksmithDisplayMode", g_extra_menus.blacksmith_display_mode },
+                    { "enchantingDisplayMode", g_extra_menus.enchanting_display_mode },
+                    { "alchemyDisplayMode", g_extra_menus.alchemy_display_mode },
                     { "menuPauseWorld", g_menu_pause_world },
                     { "inventoryPauseWorld", g_inventory_pause_world },
                     { "barterPauseWorld", g_barter_pause_world },
@@ -2131,7 +2730,11 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
                     { "containerPauseWorld", g_extra_menus.container_pause_world },
                     { "mannequinPauseWorld", g_extra_menus.mannequin_pause_world },
                     { "lootPauseWorld", g_extra_menus.loot_pause_world },
-                    { "pickpocketPauseWorld", g_extra_menus.pickpocket_pause_world }
+                    { "pickpocketPauseWorld", g_extra_menus.pickpocket_pause_world },
+                    { "blacksmithPauseWorld", g_extra_menus.blacksmith_pause_world },
+                    { "enchantingPauseWorld", g_extra_menus.enchanting_pause_world },
+                    { "alchemyPauseWorld", g_extra_menus.alchemy_pause_world },
+                    { "bookPauseWorld", g_extra_menus.book_pause_world }
                 }.dump());
                 if (!g_last_menu_session || g_last_menu_session->visible != session.visible) {
                     (void)menu_view->SendEventJson("skyultra.visibility",
@@ -2152,8 +2755,16 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
                 if (!g_last_menu_session || g_last_menu_session->mannequin != session.mannequin) send_bool("skyultra.mannequinMode", session.mannequin);
                 if (!g_last_menu_session || g_last_menu_session->loot != session.loot) send_bool("skyultra.lootMode", session.loot);
                 if (!g_last_menu_session || g_last_menu_session->pickpocket != session.pickpocket) send_bool("skyultra.pickpocketMode", session.pickpocket);
+                if (!g_last_menu_session || g_last_menu_session->blacksmith != session.blacksmith) send_bool("skyultra.blacksmithMode", session.blacksmith);
+                if (!g_last_menu_session || g_last_menu_session->enchanting != session.enchanting) send_bool("skyultra.enchantingMode", session.enchanting);
+                if (!g_last_menu_session || g_last_menu_session->alchemy != session.alchemy) send_bool("skyultra.alchemyMode", session.alchemy);
+                if (!g_last_menu_session || g_last_menu_session->book != session.book) send_bool("skyultra.bookMode", session.book);
                 g_last_menu_session = session;
             }
+            const bool warm_open = g_menu_opened_before.exchange(true, std::memory_order_relaxed) &&
+                baseline_paint > 0;
+            skyultra::TraceBeginMenuOpen(
+                g_menu_view_id, warm_open, skyultra::FrameworkSplashActive(), baseline_paint);
             if (!g_view_manager->SetVisible(g_menu_view_id, true)) {
                 SKSE::log::error("SkyUltra could not change visibility for its main menu.");
                 return;
@@ -2172,6 +2783,12 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
         g_browser_cursor.y = static_cast<LONG>(screen.height / 2U);
     } else {
         const auto epoch = ++g_menu_transition_epoch;
+        const bool was_crafting = g_blacksmith_replacement_active ||
+            g_blacksmith_pending_open.exchange(false, std::memory_order_relaxed) ||
+            g_enchanting_replacement_active ||
+            g_enchanting_pending_open.exchange(false, std::memory_order_relaxed) ||
+            g_alchemy_replacement_active ||
+            g_alchemy_pending_open.exchange(false, std::memory_order_relaxed);
         g_inventory_replacement_active = false;
         g_barter_replacement_active = false;
         g_magic_replacement_active = false;
@@ -2180,6 +2797,18 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
         g_mannequin_replacement_active = false;
         g_loot_replacement_active = false;
         g_pickpocket_replacement_active = false;
+        g_blacksmith_replacement_active = false;
+        g_enchanting_replacement_active = false;
+        g_alchemy_replacement_active = false;
+        g_book_replacement_active = false;
+        if (target != BrowserOpenTarget::RestoreSuspended) {
+            skyultra::ClearActiveBlacksmithStation();
+            skyultra::ClearActiveEnchantingStation();
+            skyultra::ClearActiveAlchemyStation();
+            skyultra::ClearActiveBookMenu();
+            skyultra::ReleaseVirtualCraftingProxyNow();
+            exit_blacksmith_furniture = was_crafting;
+        }
         g_virtual_keyboard_open = false;
         g_virtual_keyboard_opened_menu = false;
         if (g_menu_view_id != 0) {
@@ -2205,7 +2834,11 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
                     { "containerMode", false },
                     { "mannequinMode", false },
                     { "lootMode", false },
-                    { "pickpocketMode", false }
+                    { "pickpocketMode", false },
+                    { "blacksmithMode", false },
+                    { "enchantingMode", false },
+                    { "alchemyMode", false },
+                    { "bookMode", false }
                 }.dump());
                 if (!g_last_menu_session || g_last_menu_session->visible) {
                     (void)menu_view->SendEventJson("skyultra.visibility",
@@ -2223,6 +2856,10 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
                 if (!g_last_menu_session || g_last_menu_session->mannequin) send_bool("skyultra.mannequinMode", false);
                 if (!g_last_menu_session || g_last_menu_session->loot) send_bool("skyultra.lootMode", false);
                 if (!g_last_menu_session || g_last_menu_session->pickpocket) send_bool("skyultra.pickpocketMode", false);
+                if (!g_last_menu_session || g_last_menu_session->blacksmith) send_bool("skyultra.blacksmithMode", false);
+                if (!g_last_menu_session || g_last_menu_session->enchanting) send_bool("skyultra.enchantingMode", false);
+                if (!g_last_menu_session || g_last_menu_session->alchemy) send_bool("skyultra.alchemyMode", false);
+                if (!g_last_menu_session || g_last_menu_session->book) send_bool("skyultra.bookMode", false);
                 g_last_menu_session = session;
                 menu_view->DiscardCachedFrame();
             }
@@ -2242,21 +2879,29 @@ void SetBrowserVisible(bool visible, const char* reason = "Shift+F6",
         }
     }
     g_browser_overlay_suppressed.store(!visible, std::memory_order_relaxed);
-    // Do not focus the main WebView just because the overlay opened. It can be
-    // expensive on the first focus, and the first key should go to the view the
-    // player actually clicks (including a popup on a different browser engine).
+    // For SWF replacements (Inventory, Container, Loot, Barter, Magic, Favorites, Mannequin),
+    // grant keyboard focus immediately so Space -> Search and hotkeys work on first keypress.
+    // Otherwise keep lazy focus until click/key press to avoid unnecessary startup focus churn.
     if (!visible) {
         for (const auto& snapshot : g_view_manager->OrderedViews()) {
             g_view_manager->ReleaseFocus(snapshot.id);
         }
+    } else if (AnyMenuReplacementActive() && g_menu_view_id != 0) {
+        (void)g_view_manager->RequestFocus(
+            g_menu_view_id,
+            InputFocusForView(g_menu_view_id, skyultra::InputMode::MouseAndKeyboard));
     }
     PublishOverlayViews();
     SyncSkyUltraWorldPause();
+    if (exit_blacksmith_furniture) {
+        ScheduleBlacksmithFurnitureExit();
+    }
     PublishBrowserCursor(visible);
-    if (visible && !g_game_subscriptions.empty()) {
-        if (!QueueNativeApiTask([] { PumpGameDataSubscriptions(true); })) {
-            PumpGameDataSubscriptions(true);
-        }
+    if (visible && g_active_game_subscription_count.load(std::memory_order_relaxed) > 0) {
+        (void)QueueNativeApiTask([] { PumpGameDataSubscriptions(true); });
+    }
+    if (!visible) {
+        ScheduleWearableLightDiagnostic("skyUltraClosed", 1500);
     }
     SKSE::log::info("SkyUltra browser {} ({}).", visible ? "shown" : "hidden", reason);
 }
@@ -2274,6 +2919,10 @@ void OpenSkyUltraInventoryReplacement()
     g_mannequin_replacement_active = false;
     g_loot_replacement_active = false;
     g_pickpocket_replacement_active = false;
+    g_blacksmith_replacement_active = false;
+    g_enchanting_replacement_active = false;
+    g_alchemy_replacement_active = false;
+    g_book_replacement_active = false;
     g_restore_browser_after_menu = false;
     g_modal_menu_open = false;
     SetBrowserVisible(true, "Skyrim InventoryMenu replacement");
@@ -2292,12 +2941,16 @@ void OpenSkyUltraBarterReplacement()
     g_mannequin_replacement_active = false;
     g_loot_replacement_active = false;
     g_pickpocket_replacement_active = false;
+    g_blacksmith_replacement_active = false;
+    g_enchanting_replacement_active = false;
+    g_alchemy_replacement_active = false;
+    g_book_replacement_active = false;
     g_restore_browser_after_menu = false;
     g_modal_menu_open = false;
     SetBrowserVisible(true, "Skyrim BarterMenu replacement");
 }
 
-// Publishes the Magic / Favorites / Container / Mannequin / Loot / Pickpocket replacement state to the built-in menu page.
+// Publishes the Magic / Favorites / Container / Mannequin / Loot / Pickpocket / Blacksmith / Enchanting / Alchemy / Book replacement state to the built-in menu page.
 void SendMenuReplacementModes()
 {
     if (g_view_manager == nullptr || g_menu_view_id == 0) {
@@ -2316,6 +2969,14 @@ void SendMenuReplacementModes()
             nlohmann::json{ { "active", g_loot_replacement_active } }.dump());
         (void)menu_view->SendEventJson("skyultra.pickpocketMode",
             nlohmann::json{ { "active", g_pickpocket_replacement_active } }.dump());
+        (void)menu_view->SendEventJson("skyultra.blacksmithMode",
+            nlohmann::json{ { "active", g_blacksmith_replacement_active } }.dump());
+        (void)menu_view->SendEventJson("skyultra.enchantingMode",
+            nlohmann::json{ { "active", g_enchanting_replacement_active } }.dump());
+        (void)menu_view->SendEventJson("skyultra.alchemyMode",
+            nlohmann::json{ { "active", g_alchemy_replacement_active } }.dump());
+        (void)menu_view->SendEventJson("skyultra.bookMode",
+            nlohmann::json{ { "active", g_book_replacement_active } }.dump());
     }
 }
 
@@ -2330,6 +2991,10 @@ void OpenSkyUltraMagicOrFavoritesReplacement(bool favorites)
     g_mannequin_replacement_active = false;
     g_loot_replacement_active = false;
     g_pickpocket_replacement_active = false;
+    g_blacksmith_replacement_active = false;
+    g_enchanting_replacement_active = false;
+    g_alchemy_replacement_active = false;
+    g_book_replacement_active = false;
     g_inventory_replacement_active = false;
     g_barter_replacement_active = false;
     g_restore_browser_after_menu = false;
@@ -2353,6 +3018,10 @@ void OpenSkyUltraContainerVariantReplacement(ContainerReplacementVariant variant
     g_mannequin_replacement_active = (variant == ContainerReplacementVariant::Mannequin);
     g_loot_replacement_active = (variant == ContainerReplacementVariant::Loot);
     g_pickpocket_replacement_active = (variant == ContainerReplacementVariant::Pickpocket);
+    g_blacksmith_replacement_active = false;
+    g_enchanting_replacement_active = false;
+    g_alchemy_replacement_active = false;
+    g_book_replacement_active = false;
     g_magic_replacement_active = false;
     g_favorites_replacement_active = false;
     g_inventory_replacement_active = false;
@@ -2366,12 +3035,116 @@ void OpenSkyUltraContainerVariantReplacement(ContainerReplacementVariant variant
     SetBrowserVisible(true, reason);
 }
 
+void OpenSkyUltraBlacksmithReplacement()
+{
+    if (g_view_manager == nullptr || g_menu_view_id == 0) {
+        return;
+    }
+    g_blacksmith_pending_open.store(false, std::memory_order_relaxed);
+    g_enchanting_pending_open.store(false, std::memory_order_relaxed);
+    g_alchemy_pending_open.store(false, std::memory_order_relaxed);
+    g_pending_blacksmith_furniture_exit.store(false, std::memory_order_relaxed);
+    g_blacksmith_replacement_active = true;
+    g_enchanting_replacement_active = false;
+    g_alchemy_replacement_active = false;
+    g_book_replacement_active = false;
+    g_inventory_replacement_active = false;
+    g_barter_replacement_active = false;
+    g_magic_replacement_active = false;
+    g_favorites_replacement_active = false;
+    g_container_replacement_active = false;
+    g_mannequin_replacement_active = false;
+    g_loot_replacement_active = false;
+    g_pickpocket_replacement_active = false;
+    g_restore_browser_after_menu = false;
+    g_modal_menu_open = false;
+    SetBrowserVisible(true, "Skyrim Blacksmith CraftingMenu replacement");
+}
+
+void OpenSkyUltraEnchantingReplacement()
+{
+    if (g_view_manager == nullptr || g_menu_view_id == 0) {
+        return;
+    }
+    g_enchanting_pending_open.store(false, std::memory_order_relaxed);
+    g_blacksmith_pending_open.store(false, std::memory_order_relaxed);
+    g_alchemy_pending_open.store(false, std::memory_order_relaxed);
+    g_pending_blacksmith_furniture_exit.store(false, std::memory_order_relaxed);
+    g_enchanting_replacement_active = true;
+    g_blacksmith_replacement_active = false;
+    g_alchemy_replacement_active = false;
+    g_book_replacement_active = false;
+    g_inventory_replacement_active = false;
+    g_barter_replacement_active = false;
+    g_magic_replacement_active = false;
+    g_favorites_replacement_active = false;
+    g_container_replacement_active = false;
+    g_mannequin_replacement_active = false;
+    g_loot_replacement_active = false;
+    g_pickpocket_replacement_active = false;
+    g_restore_browser_after_menu = false;
+    g_modal_menu_open = false;
+    SetBrowserVisible(true, "Skyrim Enchanting CraftingMenu replacement");
+}
+
+void OpenSkyUltraAlchemyReplacement()
+{
+    if (g_view_manager == nullptr || g_menu_view_id == 0) {
+        return;
+    }
+    g_alchemy_pending_open.store(false, std::memory_order_relaxed);
+    g_enchanting_pending_open.store(false, std::memory_order_relaxed);
+    g_blacksmith_pending_open.store(false, std::memory_order_relaxed);
+    g_pending_blacksmith_furniture_exit.store(false, std::memory_order_relaxed);
+    g_alchemy_replacement_active = true;
+    g_enchanting_replacement_active = false;
+    g_blacksmith_replacement_active = false;
+    g_book_replacement_active = false;
+    g_inventory_replacement_active = false;
+    g_barter_replacement_active = false;
+    g_magic_replacement_active = false;
+    g_favorites_replacement_active = false;
+    g_container_replacement_active = false;
+    g_mannequin_replacement_active = false;
+    g_loot_replacement_active = false;
+    g_pickpocket_replacement_active = false;
+    g_restore_browser_after_menu = false;
+    g_modal_menu_open = false;
+    SetBrowserVisible(true, "Skyrim Alchemy CraftingMenu replacement");
+}
+
+void OpenSkyUltraBookReplacement()
+{
+    if (g_view_manager == nullptr || g_menu_view_id == 0) {
+        return;
+    }
+    g_book_pending_open.store(false, std::memory_order_relaxed);
+    g_book_opened_at_ms.store(SteadyClockNowMs(), std::memory_order_relaxed);
+    g_book_replacement_active = true;
+    g_blacksmith_replacement_active = false;
+    g_enchanting_replacement_active = false;
+    g_alchemy_replacement_active = false;
+    g_inventory_replacement_active = false;
+    g_barter_replacement_active = false;
+    g_magic_replacement_active = false;
+    g_favorites_replacement_active = false;
+    g_container_replacement_active = false;
+    g_mannequin_replacement_active = false;
+    g_loot_replacement_active = false;
+    g_pickpocket_replacement_active = false;
+    g_restore_browser_after_menu = false;
+    g_modal_menu_open = false;
+    SetBrowserVisible(true, "Skyrim BookMenu replacement");
+}
+
 bool AnyMenuReplacementActive() noexcept
 {
     return g_inventory_replacement_active || g_barter_replacement_active ||
         g_magic_replacement_active || g_favorites_replacement_active ||
         g_container_replacement_active || g_mannequin_replacement_active ||
-        g_loot_replacement_active || g_pickpocket_replacement_active;
+        g_loot_replacement_active || g_pickpocket_replacement_active ||
+        g_blacksmith_replacement_active || g_enchanting_replacement_active ||
+        g_alchemy_replacement_active || g_book_replacement_active;
 }
 
 bool EqualsTokenCaseInsensitive(std::string_view a, std::string_view b) noexcept
@@ -2519,6 +3292,35 @@ std::string_view VRButtonToken(int vr_hand, std::uint32_t id_code) noexcept
 #endif
 }
 
+[[nodiscard]] std::uint32_t DirectInputScanCodeToVirtualKey(std::uint32_t scan_code) noexcept
+{
+    using Key = RE::BSKeyboardDevice::Keys::Key;
+    switch (scan_code) {
+    case Key::kUp: return VK_UP;
+    case Key::kDown: return VK_DOWN;
+    case Key::kLeft: return VK_LEFT;
+    case Key::kRight: return VK_RIGHT;
+    case Key::kHome: return VK_HOME;
+    case Key::kEnd: return VK_END;
+    case Key::kPageUp: return VK_PRIOR;
+    case Key::kPageDown: return VK_NEXT;
+    case Key::kInsert: return VK_INSERT;
+    case Key::kDelete: return VK_DELETE;
+    case Key::kKP_Enter: return VK_RETURN;
+    case Key::kKP_Divide: return VK_DIVIDE;
+    case Key::kRightControl: return VK_RCONTROL;
+    case Key::kRightAlt: return VK_RMENU;
+    case Key::kPause: return VK_PAUSE;
+    default: break;
+    }
+    if ((scan_code & 0x80U) != 0U) {
+        if (const auto ext_vk = MapVirtualKeyW(0xE000U | (scan_code & 0x7FU), MAPVK_VSC_TO_VK_EX); ext_vk != 0U) {
+            return ext_vk;
+        }
+    }
+    return MapVirtualKeyW(scan_code, MAPVK_VSC_TO_VK_EX);
+}
+
 bool IsKeyboardModifierToken(std::string_view token) noexcept
 {
     return EqualsTokenCaseInsensitive(token, "Shift") ||
@@ -2533,7 +3335,7 @@ bool IsKeyboardTokenHeld(std::string_view token) noexcept
     if (EqualsTokenCaseInsensitive(token, "Alt")) return (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
     for (auto it = g_held_keyboard_scans.begin(); it != g_held_keyboard_scans.end();) {
         const auto scan = *it;
-        const auto vk = MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX);
+        const auto vk = DirectInputScanCodeToVirtualKey(scan);
         if (vk != 0 && (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) == 0) {
             it = g_held_keyboard_scans.erase(it);
             continue;
@@ -2712,6 +3514,10 @@ bool ToggleModViewsByHotkey(std::string_view mod_id)
         policy.entry_file = manifest->entry_file;
         policy.asset_access_enabled = manifest->asset_access_enabled;
         policy.network_hosts = manifest->network_hosts;
+        if (manifest->page_request_methods.contains("game.getItemThumbnail") ||
+            manifest->page_request_methods.contains("game.getActorThumbnail")) {
+            policy.thumbnail_cache_directory = skyultra::GetThumbnailCacheRootDirectory();
+        }
         config.mod_content_policy = std::move(policy);
         config.resource_budget = ModBudget(mod_handle);
         config.resource_lease = config.resource_budget->ReserveView(config.size.width, config.size.height);
@@ -2774,6 +3580,14 @@ public:
         if (event_list == nullptr) {
             return RE::BSEventNotifyControl::kContinue;
         }
+        // Avoid pumping high-rate HUD/radar subscriptions while the interactive menu
+        // owns cursor input; menu mouse motion otherwise floods g_native_api_queue.
+        if (g_game_session_active.load(std::memory_order_relaxed) &&
+            g_active_game_subscription_count.load(std::memory_order_relaxed) > 0 &&
+            !skyultra::FrameworkSplashActive() &&
+            !HasVisibleInteractiveView()) {
+            ScheduleGameDataSubscriptionPump(4);
+        }
 
         bool consume_input{};
         for (auto* event = *event_list; event != nullptr; event = event->next) {
@@ -2800,6 +3614,12 @@ public:
                             if (now - g_last_hotkey_toggle_time >= std::chrono::milliseconds(280)) {
                                 g_last_hotkey_toggle_time = now;
                                 if (AnyMenuReplacementActive() && HasVisibleInteractiveView()) {
+                                    const bool was_crafting = g_blacksmith_replacement_active ||
+                                        g_blacksmith_pending_open.exchange(false, std::memory_order_relaxed) ||
+                                        g_enchanting_replacement_active ||
+                                        g_enchanting_pending_open.exchange(false, std::memory_order_relaxed) ||
+                                        g_alchemy_replacement_active ||
+                                        g_alchemy_pending_open.exchange(false, std::memory_order_relaxed);
                                     g_inventory_replacement_active = false;
                                     g_barter_replacement_active = false;
                                     g_magic_replacement_active = false;
@@ -2808,6 +3628,15 @@ public:
                                     g_mannequin_replacement_active = false;
                                     g_loot_replacement_active = false;
                                     g_pickpocket_replacement_active = false;
+                                    g_blacksmith_replacement_active = false;
+                                    g_enchanting_replacement_active = false;
+                                    g_alchemy_replacement_active = false;
+                                    g_book_replacement_active = false;
+                                    g_book_pending_open.store(false, std::memory_order_relaxed);
+                                    skyultra::ClearActiveBlacksmithStation();
+                                    skyultra::ClearActiveEnchantingStation();
+                                    skyultra::ClearActiveAlchemyStation();
+                                    skyultra::ClearActiveBookMenu();
                                     SendMenuReplacementModes();
                                     if (auto* menu_view = g_view_manager ? g_view_manager->Find(g_menu_view_id) : nullptr) {
                                         (void)menu_view->SendEventJson("skyultra.inventoryMode",
@@ -2816,6 +3645,9 @@ public:
                                             nlohmann::json{ { "active", false } }.dump());
                                     }
                                     SetBrowserVisible(true, "configured hotkey");
+                                    if (was_crafting) {
+                                        ScheduleBlacksmithFurnitureExit();
+                                    }
                                 } else {
                                     const auto* main = g_view_manager ? g_view_manager->Config(g_menu_view_id) : nullptr;
                                     const bool main_visible = main && main->visible &&
@@ -2926,8 +3758,7 @@ public:
 
                 if(skyultra::FrameworkSplashActive()&&button->GetDevice()!=RE::INPUT_DEVICE::kKeyboard){consume_input=true;continue;}
                 if (button->GetDevice() == RE::INPUT_DEVICE::kKeyboard) {
-                    const auto virtual_key = MapVirtualKeyW(
-                        button->GetIDCode(), MAPVK_VSC_TO_VK_EX);
+                    const auto virtual_key = DirectInputScanCodeToVirtualKey(button->GetIDCode());
                     if(skyultra::FrameworkSplashActive()){
                         if(virtual_key==VK_ESCAPE&&button->IsDown()){
                             skyultra::CancelFrameworkSplash();
@@ -2936,7 +3767,7 @@ public:
                         }
                         consume_input=true;continue;
                     }
-                    const auto target = GetFocusedView(skyultra::InputMode::Keyboard);
+                    const auto target = ResolveKeyboardTargetWithFallback();
                     bool popup_owns_escape{};
                     if (target && virtual_key == VK_ESCAPE) {
                         const std::scoped_lock lock(g_native_views_mutex);
@@ -2955,7 +3786,7 @@ public:
                         if (ShouldDispatchButtonKey(RE::INPUT_DEVICE::kKeyboard, button->GetIDCode(), button, is_repeat)) {
                             skyultra::KeyInput input;
                             input.scan_code = button->GetIDCode();
-                            input.virtual_key = MapVirtualKeyW(input.scan_code, MAPVK_VSC_TO_VK_EX);
+                            input.virtual_key = DirectInputScanCodeToVirtualKey(input.scan_code);
                             input.modifiers = CurrentModifiers();
                             input.pressed = button->IsPressed();
                             input.repeat = is_repeat;
@@ -3064,6 +3895,25 @@ public:
                         continue;
                     }
                     const auto hit = HitTestBrowserCursor();
+                    if (g_book_replacement_active && g_view_manager != nullptr) {
+                        auto* cm = RE::ControlMap::GetSingleton();
+                        auto* ue = RE::UserEvents::GetSingleton();
+                        const auto mouse_act = (cm && ue && !ue->activate.empty())
+                            ? cm->GetMappedKey(ue->activate, RE::INPUT_DEVICE::kMouse, RE::ControlMap::InputContextID::kGameplay)
+                            : 0xFFU;
+                        if (mouse_act != 0xFFU && mouse_act != 0xFFFFFFFFU &&
+                            mouse_act != RE::BSWin32MouseDevice::Keys::kLeftButton &&
+                            button->GetIDCode() == mouse_act) {
+                            if (button->IsDown() && !button->IsRepeating() &&
+                                (SteadyClockNowMs() - g_book_opened_at_ms.load(std::memory_order_relaxed)) >= 250) {
+                                if (auto* menu_view = g_view_manager->Find(g_menu_view_id)) {
+                                    (void)menu_view->SendEventJson("skyultra.bookActivate", "{}");
+                                }
+                            }
+                            consume_input = true;
+                            continue;
+                        }
+                    }
                     std::optional<skyultra::MouseButton> mouse_button;
                     std::optional<std::size_t> capture_slot;
                     auto action = skyultra::MouseButtonAction::None;
@@ -3117,6 +3967,9 @@ public:
                         wheel_y = -120;
                         break;
                     default:
+                        if (g_book_replacement_active || hit.block_game_input) {
+                            consume_input = true;
+                        }
                         continue;
                     }
 
@@ -3152,6 +4005,7 @@ public:
                                     g_logged_first_browser_focus = true;
                                 }
                             }
+                            skyultra::NoteActorPreviewInteractiveInput();
                             view->SendMouse(input);
                             if (input.button_action == skyultra::MouseButtonAction::Down &&
                                 !g_logged_popup_click) {
@@ -3183,6 +4037,16 @@ public:
                     }
                     continue;
                 }
+                if (mouse_move->mouseInputX == 0 && mouse_move->mouseInputY == 0) {
+                    const auto hit = HitTestBrowserCursor();
+                    const auto captured = std::find_if(g_mouse_capture.begin(), g_mouse_capture.end(),
+                        [](const auto& owner) { return owner.has_value(); });
+                    if (captured != g_mouse_capture.end() || hit.target || hit.block_game_input) {
+                        consume_input = true;
+                    }
+                    continue;
+                }
+                skyultra::NoteActorPreviewInteractiveInput();
                 UpdateBrowserCursor(*mouse_move);
                 if (skyultra::FrameworkSplashActive()) {
                     consume_input = true;
@@ -3232,7 +4096,7 @@ public:
             }
 
             if (auto* character = event->AsCharEvent()) {
-                const auto target = GetFocusedView(skyultra::InputMode::Keyboard);
+                const auto target = ResolveKeyboardTargetWithFallback();
                 auto* view = target ? g_view_manager->Find(*target) : nullptr;
                 if (view != nullptr) {
                     if (character->keyCode != 0) {
@@ -3277,9 +4141,30 @@ public:
         if (ui == nullptr) {
             return RE::BSEventNotifyControl::kContinue;
         }
+        if (event->menuName == kSkyUltraPauseMenuName) {
+            if (!event->opening) {
+                PublishOverlayViews();
+                if (ui->GameIsPaused()) {
+                    (void)g_game_task_queue.Post([] { PublishOverlayViews(); });
+                }
+                if (g_pending_blacksmith_furniture_exit.exchange(false, std::memory_order_acq_rel)) {
+                    if (!g_game_task_queue.PostUI([] { ExitActiveBlacksmithFurniture(); })) {
+                        (void)g_game_task_queue.Post([] { ExitActiveBlacksmithFurniture(); });
+                    }
+                }
+            }
+            return RE::BSEventNotifyControl::kContinue;
+        }
         if (event->menuName == "Main Menu"sv) {
             if (event->opening) {
                 g_game_session_active.store(false, std::memory_order_relaxed);
+                g_blacksmith_pending_open.store(false, std::memory_order_relaxed);
+                g_enchanting_pending_open.store(false, std::memory_order_relaxed);
+                g_alchemy_pending_open.store(false, std::memory_order_relaxed);
+                g_book_pending_open.store(false, std::memory_order_relaxed);
+                g_bypass_next_native_book_menu.store(false, std::memory_order_relaxed);
+                g_pending_blacksmith_furniture_exit.store(false, std::memory_order_relaxed);
+                SetSkyUltraPauseMenuVisible(false, true);
                 for (const auto& [mod, widgets] : g_widget_overlays) {
                     (void)mod;
                     (void)NativeApiDestroyView(widgets.view);
@@ -3292,6 +4177,13 @@ public:
         } else if (event->menuName == "Loading Menu"sv) {
             if (event->opening) {
                 g_game_session_active.store(false, std::memory_order_relaxed);
+                g_blacksmith_pending_open.store(false, std::memory_order_relaxed);
+                g_enchanting_pending_open.store(false, std::memory_order_relaxed);
+                g_alchemy_pending_open.store(false, std::memory_order_relaxed);
+                g_book_pending_open.store(false, std::memory_order_relaxed);
+                g_bypass_next_native_book_menu.store(false, std::memory_order_relaxed);
+                g_pending_blacksmith_furniture_exit.store(false, std::memory_order_relaxed);
+                SetSkyUltraPauseMenuVisible(false, true);
                 PublishOverlayViews();
             } else if (!ui->IsMenuOpen("Main Menu"sv)) {
                 if (auto* player = RE::PlayerCharacter::GetSingleton();
@@ -3340,6 +4232,9 @@ public:
                 g_modal_menu_open = ui->IsModalMenuOpen();
                 return RE::BSEventNotifyControl::kContinue;
             }
+        }
+        if (!event->opening && event->menuName == RE::InventoryMenu::MENU_NAME && !g_inventory_replacement_active) {
+            ScheduleWearableLightDiagnostic("vanillaInventoryClosed", 1500);
         }
 
         if (g_replace_skyrim_barter && event->menuName == RE::BarterMenu::MENU_NAME) {
@@ -3432,6 +4327,181 @@ public:
             }
         }
 
+        if (event->menuName == RE::CraftingMenu::MENU_NAME) {
+            if (event->opening) {
+                bool captured_blacksmith = false;
+                bool captured_enchanting = false;
+                bool captured_alchemy = false;
+                if (g_extra_menus.replace_blacksmith) {
+                    captured_blacksmith = skyultra::CaptureActiveBlacksmithStation();
+                }
+                if (!captured_blacksmith && g_extra_menus.replace_enchanting) {
+                    captured_enchanting = skyultra::CaptureActiveEnchantingStation();
+                }
+                if (!captured_blacksmith && !captured_enchanting && g_extra_menus.replace_alchemy) {
+                    captured_alchemy = skyultra::CaptureActiveAlchemyStation();
+                }
+                if (captured_blacksmith || captured_enchanting || captured_alchemy) {
+                    g_blacksmith_pending_open.store(captured_blacksmith, std::memory_order_release);
+                    g_enchanting_pending_open.store(captured_enchanting, std::memory_order_release);
+                    g_alchemy_pending_open.store(captured_alchemy, std::memory_order_release);
+                    g_pending_blacksmith_furniture_exit.store(false, std::memory_order_relaxed);
+                    g_blacksmith_open_grace_until_ms.store(SteadyClockNowMs() + 2500, std::memory_order_relaxed);
+                    if (auto menu = ui->GetMenu<RE::CraftingMenu>(); menu && menu->uiMovie) {
+                        menu->uiMovie->SetBackgroundAlpha(0.0F);
+                        menu->uiMovie->SetVariable("_root._visible", RE::GFxValue(false));
+                    }
+                    if (auto* msg_queue = RE::UIMessageQueue::GetSingleton()) {
+                        msg_queue->AddMessage(RE::CraftingMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                        if (ui->IsMenuOpen("Tutorial Menu"sv)) {
+                            msg_queue->AddMessage("Tutorial Menu"sv, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                        }
+                    }
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+            } else if (!event->opening) {
+                if (g_blacksmith_pending_open.exchange(false, std::memory_order_acq_rel)) {
+                    const auto finish_blacksmith_open = []() {
+                        if (auto* cur_ui = RE::UI::GetSingleton(); cur_ui != nullptr) {
+                            SuppressBlacksmithNoticesOnUiThread(cur_ui, true);
+                        }
+                        OpenSkyUltraBlacksmithReplacement();
+                    };
+                    if (std::this_thread::get_id() == g_skyrim_main_thread_id) {
+                        finish_blacksmith_open();
+                    } else if (!g_game_task_queue.PostUI(finish_blacksmith_open)) {
+                        (void)g_game_task_queue.Post(finish_blacksmith_open);
+                    }
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+                if (g_enchanting_pending_open.exchange(false, std::memory_order_acq_rel)) {
+                    const auto finish_enchanting_open = []() {
+                        if (auto* cur_ui = RE::UI::GetSingleton(); cur_ui != nullptr) {
+                            SuppressBlacksmithNoticesOnUiThread(cur_ui, true);
+                        }
+                        OpenSkyUltraEnchantingReplacement();
+                    };
+                    if (std::this_thread::get_id() == g_skyrim_main_thread_id) {
+                        finish_enchanting_open();
+                    } else if (!g_game_task_queue.PostUI(finish_enchanting_open)) {
+                        (void)g_game_task_queue.Post(finish_enchanting_open);
+                    }
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+                if (g_alchemy_pending_open.exchange(false, std::memory_order_acq_rel)) {
+                    const auto finish_alchemy_open = []() {
+                        if (auto* cur_ui = RE::UI::GetSingleton(); cur_ui != nullptr) {
+                            SuppressBlacksmithNoticesOnUiThread(cur_ui, true);
+                        }
+                        OpenSkyUltraAlchemyReplacement();
+                    };
+                    if (std::this_thread::get_id() == g_skyrim_main_thread_id) {
+                        finish_alchemy_open();
+                    } else if (!g_game_task_queue.PostUI(finish_alchemy_open)) {
+                        (void)g_game_task_queue.Post(finish_alchemy_open);
+                    }
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+                if (g_blacksmith_replacement_active || g_enchanting_replacement_active || g_alchemy_replacement_active) {
+                    g_modal_menu_open = ui->IsModalMenuOpen();
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+            }
+        }
+
+        if (event->menuName == RE::BookMenu::MENU_NAME) {
+            if (event->opening) {
+                if (g_bypass_next_native_book_menu.exchange(false, std::memory_order_acq_rel)) {
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+                if (g_extra_menus.replace_book_reader && skyultra::CaptureActiveBookMenu()) {
+                    g_book_pending_open.store(true, std::memory_order_release);
+                    if (auto menu = ui->GetMenu<RE::BookMenu>(); menu && menu->uiMovie) {
+                        menu->uiMovie->SetBackgroundAlpha(0.0F);
+                        menu->uiMovie->SetVariable("_root._visible", RE::GFxValue(false));
+                    }
+                    if (auto* msg_queue = RE::UIMessageQueue::GetSingleton()) {
+                        msg_queue->AddMessage(RE::BookMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                    }
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+            } else if (!event->opening) {
+                if (g_book_pending_open.exchange(false, std::memory_order_acq_rel)) {
+                    const auto finish_book_open = []() {
+                        OpenSkyUltraBookReplacement();
+                    };
+                    if (std::this_thread::get_id() == g_skyrim_main_thread_id) {
+                        finish_book_open();
+                    } else if (!g_game_task_queue.PostUI(finish_book_open)) {
+                        (void)g_game_task_queue.Post(finish_book_open);
+                    }
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+                if (g_book_replacement_active) {
+                    g_modal_menu_open = ui->IsModalMenuOpen();
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+            }
+        }
+
+        if (event->menuName == "Tutorial Menu"sv && event->opening) {
+            if (g_blacksmith_replacement_active ||
+                g_blacksmith_pending_open.load(std::memory_order_relaxed) ||
+                g_enchanting_replacement_active ||
+                g_enchanting_pending_open.load(std::memory_order_relaxed) ||
+                g_alchemy_replacement_active ||
+                g_alchemy_pending_open.load(std::memory_order_relaxed) ||
+                SteadyClockNowMs() <= g_blacksmith_open_grace_until_ms.load(std::memory_order_relaxed)) {
+                if (auto* msg_queue = RE::UIMessageQueue::GetSingleton()) {
+                    msg_queue->AddMessage("Tutorial Menu"sv, RE::UI_MESSAGE_TYPE::kHide, nullptr);
+                }
+                if (std::this_thread::get_id() == g_skyrim_main_thread_id) {
+                    SuppressBlacksmithNoticesOnUiThread(ui, false);
+                } else {
+                    (void)g_game_task_queue.PostUI([] {
+                        SuppressBlacksmithNoticesOnUiThread(RE::UI::GetSingleton(), false);
+                    });
+                }
+                return RE::BSEventNotifyControl::kContinue;
+            }
+        }
+
+        if (event->menuName == RE::MessageBoxMenu::MENU_NAME && event->opening) {
+            if ((g_blacksmith_replacement_active ||
+                 g_blacksmith_pending_open.load(std::memory_order_relaxed) ||
+                 g_enchanting_replacement_active ||
+                 g_enchanting_pending_open.load(std::memory_order_relaxed) ||
+                 g_alchemy_replacement_active ||
+                 g_alchemy_pending_open.load(std::memory_order_relaxed) ||
+                 g_extra_menus.replace_blacksmith ||
+                 g_extra_menus.replace_enchanting ||
+                 g_extra_menus.replace_alchemy) &&
+                SteadyClockNowMs() <= g_blacksmith_open_grace_until_ms.load(std::memory_order_relaxed)) {
+                auto* data = RE::MessageBoxMenu::GetCurrentMessageBoxData();
+                if (data == nullptr || data->buttonText.size() <= 1U) {
+                    if (std::this_thread::get_id() == g_skyrim_main_thread_id) {
+                        SuppressBlacksmithNoticesOnUiThread(ui, true);
+                    } else {
+                        (void)g_game_task_queue.PostUI([] {
+                            SuppressBlacksmithNoticesOnUiThread(RE::UI::GetSingleton(), true);
+                        });
+                    }
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+            }
+        }
+
+        if (!event->opening && event->menuName == "RaceSex Menu"sv) {
+            skyultra::InvalidatePlayerPortraitCache(true);
+            skyultra::InvalidateSharedGameDataCache();
+            if (g_active_game_subscription_count.load(std::memory_order_relaxed) > 0) {
+                (void)QueueNativeApiTask([] {
+                    skyultra::InvalidateSharedGameDataCache();
+                    PumpGameDataSubscriptions(true);
+                });
+            }
+        }
+
         // When placing or removing a custom map marker in MapMenu, Skyrim opens and closes MessageBoxMenu.
         // MessageBoxMenu queues its cursor hide while closing. Restore on the
         // next game task, after that hide, even if Cursor Menu is still open
@@ -3462,8 +4532,27 @@ public:
         static bool restore_mannequin_replacement = false;
         static bool restore_loot_replacement = false;
         static bool restore_pickpocket_replacement = false;
+        static bool restore_book_replacement = false;
         if (modal_menu_open) {
-            g_restore_browser_after_menu = HasVisibleInteractiveView();
+            bool cancel_pending_crafting = false;
+            if (g_blacksmith_pending_open.exchange(false, std::memory_order_relaxed)) {
+                skyultra::ClearActiveBlacksmithStation();
+                cancel_pending_crafting = true;
+            }
+            if (g_enchanting_pending_open.exchange(false, std::memory_order_relaxed)) {
+                skyultra::ClearActiveEnchantingStation();
+                cancel_pending_crafting = true;
+            }
+            if (g_alchemy_pending_open.exchange(false, std::memory_order_relaxed)) {
+                skyultra::ClearActiveAlchemyStation();
+                cancel_pending_crafting = true;
+            }
+            if (cancel_pending_crafting) {
+                ScheduleBlacksmithFurnitureExit();
+            }
+            const bool had_visible_view = HasVisibleInteractiveView();
+            const bool close_crafting = had_visible_view && (g_blacksmith_replacement_active || g_enchanting_replacement_active || g_alchemy_replacement_active);
+            g_restore_browser_after_menu = had_visible_view && !close_crafting;
             restore_inventory_replacement = g_restore_browser_after_menu && g_inventory_replacement_active;
             restore_barter_replacement = g_restore_browser_after_menu && g_barter_replacement_active;
             restore_magic_replacement = g_restore_browser_after_menu && g_magic_replacement_active;
@@ -3472,34 +4561,56 @@ public:
             restore_mannequin_replacement = g_restore_browser_after_menu && g_mannequin_replacement_active;
             restore_loot_replacement = g_restore_browser_after_menu && g_loot_replacement_active;
             restore_pickpocket_replacement = g_restore_browser_after_menu && g_pickpocket_replacement_active;
-            if (g_restore_browser_after_menu) {
-                SetBrowserVisible(false, "Skyrim modal menu opened", BrowserOpenTarget::RestoreSuspended);
+            restore_book_replacement = g_restore_browser_after_menu && g_book_replacement_active;
+            if (had_visible_view) {
+                const auto hide_target = close_crafting
+                    ? BrowserOpenTarget::CurrentPanels
+                    : BrowserOpenTarget::RestoreSuspended;
+                if (std::this_thread::get_id() == g_skyrim_main_thread_id) {
+                    SetBrowserVisible(false, "Skyrim modal menu opened", hide_target);
+                } else if (!g_game_task_queue.PostUI([hide_target] {
+                    SetBrowserVisible(false, "Skyrim modal menu opened", hide_target);
+                })) {
+                    (void)g_game_task_queue.Post([hide_target] {
+                        SetBrowserVisible(false, "Skyrim modal menu opened", hide_target);
+                    });
+                }
             }
         } else if (g_restore_browser_after_menu) {
             g_restore_browser_after_menu = false;
-            if (restore_inventory_replacement) {
-                restore_inventory_replacement = false;
-                OpenSkyUltraInventoryReplacement();
-            } else if (restore_barter_replacement) {
-                restore_barter_replacement = false;
-                OpenSkyUltraBarterReplacement();
-            } else if (restore_magic_replacement || restore_favorites_replacement) {
-                const bool favorites = restore_favorites_replacement;
-                restore_magic_replacement = false;
-                restore_favorites_replacement = false;
-                OpenSkyUltraMagicOrFavoritesReplacement(favorites);
-            } else if (restore_container_replacement || restore_mannequin_replacement ||
-                       restore_loot_replacement || restore_pickpocket_replacement) {
-                const auto variant = restore_mannequin_replacement ? ContainerReplacementVariant::Mannequin :
-                    (restore_loot_replacement ? ContainerReplacementVariant::Loot :
-                     (restore_pickpocket_replacement ? ContainerReplacementVariant::Pickpocket : ContainerReplacementVariant::Container));
-                restore_container_replacement = false;
-                restore_mannequin_replacement = false;
-                restore_loot_replacement = false;
-                restore_pickpocket_replacement = false;
-                OpenSkyUltraContainerVariantReplacement(variant);
-            } else {
-                SetBrowserVisible(true, "Skyrim modal menu closed", BrowserOpenTarget::RestoreSuspended);
+            const auto restore_view = []() {
+                if (restore_inventory_replacement) {
+                    restore_inventory_replacement = false;
+                    OpenSkyUltraInventoryReplacement();
+                } else if (restore_barter_replacement) {
+                    restore_barter_replacement = false;
+                    OpenSkyUltraBarterReplacement();
+                } else if (restore_magic_replacement || restore_favorites_replacement) {
+                    const bool favorites = restore_favorites_replacement;
+                    restore_magic_replacement = false;
+                    restore_favorites_replacement = false;
+                    OpenSkyUltraMagicOrFavoritesReplacement(favorites);
+                } else if (restore_book_replacement) {
+                    restore_book_replacement = false;
+                    OpenSkyUltraBookReplacement();
+                } else if (restore_container_replacement || restore_mannequin_replacement ||
+                           restore_loot_replacement || restore_pickpocket_replacement) {
+                    const auto variant = restore_mannequin_replacement ? ContainerReplacementVariant::Mannequin :
+                        (restore_loot_replacement ? ContainerReplacementVariant::Loot :
+                         (restore_pickpocket_replacement ? ContainerReplacementVariant::Pickpocket : ContainerReplacementVariant::Container));
+                    restore_container_replacement = false;
+                    restore_mannequin_replacement = false;
+                    restore_loot_replacement = false;
+                    restore_pickpocket_replacement = false;
+                    OpenSkyUltraContainerVariantReplacement(variant);
+                } else {
+                    SetBrowserVisible(true, "Skyrim modal menu closed", BrowserOpenTarget::RestoreSuspended);
+                }
+            };
+            if (std::this_thread::get_id() == g_skyrim_main_thread_id) {
+                restore_view();
+            } else if (!g_game_task_queue.PostUI(restore_view)) {
+                (void)g_game_task_queue.Post(restore_view);
             }
         }
         PublishOverlayViews();
@@ -3509,8 +4620,31 @@ public:
 
 BrowserMenuSink g_browser_menu_sink;
 
+class LocationDiscoverySink final : public RE::BSTEventSink<RE::LocationDiscovery::Event> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(
+        const RE::LocationDiscovery::Event* event,
+        RE::BSTEventSource<RE::LocationDiscovery::Event>*) override
+    {
+        skyultra::NotifyCompassLocationDiscovered(event != nullptr ? event->mapMarkerData : nullptr);
+        if (g_active_game_subscription_count.load(std::memory_order_relaxed) > 0) {
+            ScheduleGameDataSubscriptionPump(0);
+        }
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+LocationDiscoverySink g_location_discovery_sink;
+
 void TryRegisterMenuEventSink()
 {
+    if (!g_location_discovery_sink_registered) {
+        if (auto* discovery_source = RE::LocationDiscovery::GetEventSource()) {
+            discovery_source->AddEventSink(&g_location_discovery_sink);
+            g_location_discovery_sink_registered = true;
+            SKSE::log::info("SkyUltra LocationDiscovery event sink registered.");
+        }
+    }
     if (g_menu_event_sink_registered) {
         return;
     }
@@ -3519,6 +4653,7 @@ void TryRegisterMenuEventSink()
         return;
     }
     g_modal_menu_open = IsModalOrBlockingMenuOpen(ui);
+    (void)RegisterSkyUltraPauseMenu();
     ui->AddEventSink<RE::MenuOpenCloseEvent>(&g_browser_menu_sink);
     g_menu_event_sink_registered = true;
     SKSE::log::info("SkyUltra Skyrim menu integration registered.");
@@ -3722,6 +4857,15 @@ public:
         return false;
     }
 
+    void PrewarmDevice(void* d3d_device) override
+    {
+        for (const auto& runtime : runtimes_) {
+            if (runtime != nullptr && IsInitialized(runtime->Engine())) {
+                runtime->PrewarmDevice(d3d_device);
+            }
+        }
+    }
+
     void PumpFrame(void* d3d_device, void* d3d_context) override
     {
         if (d3d_device != nullptr) {
@@ -3729,6 +4873,37 @@ public:
         }
         if (d3d_context != nullptr) {
             last_d3d_context_.store(d3d_context, std::memory_order_release);
+        }
+        // Sample exact camera yaw on frame N before pumping Ultralight/CEF so the live
+        // HUD compass tracks the current rendered frame with zero task/bridge hops.
+        static std::atomic_bool s_was_splash_active{ false };
+        const bool splash_now = skyultra::FrameworkSplashActive();
+        const bool splash_just_ended = s_was_splash_active.exchange(splash_now, std::memory_order_relaxed) && !splash_now;
+        if (std::this_thread::get_id() == g_skyrim_main_thread_id) {
+            if (g_game_session_active.load(std::memory_order_relaxed) &&
+                !splash_now &&
+                !g_has_visible_interactive_view.load(std::memory_order_relaxed)) {
+                const auto precise = skyultra::ReadPlayerCompassHeadingPrecise();
+                skyultra::PublishLiveCompassHeading(
+                    precise.value_or(0.0),
+                    precise.has_value(),
+                    g_live_compass_frame_index.fetch_add(1, std::memory_order_relaxed) + 1);
+            } else {
+                skyultra::PublishLiveCompassHeading(0.0, false, 0);
+            }
+        }
+        if (splash_just_ended &&
+            g_game_session_active.load(std::memory_order_relaxed) &&
+            g_active_game_subscription_count.load(std::memory_order_relaxed) > 0) {
+            ScheduleGameDataSubscriptionPump(0);
+        }
+        // Wake HUD subscriptions in lockstep with each rendered gameplay frame
+        // instead of relying only on 15.6 ms OS thread sleep jitter.
+        if (g_game_session_active.load(std::memory_order_relaxed) &&
+            g_active_game_subscription_count.load(std::memory_order_relaxed) > 0 &&
+            !splash_now &&
+            !g_has_visible_interactive_view.load(std::memory_order_relaxed)) {
+            ScheduleGameDataSubscriptionPump(16);
         }
         PumpMessageLoop();
         for (const auto& runtime : runtimes_) {
@@ -3743,6 +4918,16 @@ public:
         for (const auto& runtime : runtimes_) {
             if (IsInitialized(runtime->Engine())) {
                 runtime->PumpMessageLoop();
+            }
+        }
+    }
+
+    void SetWorldPaused(bool paused) noexcept override
+    {
+        world_paused_.store(paused, std::memory_order_release);
+        for (const auto& runtime : runtimes_) {
+            if (runtime != nullptr && IsInitialized(runtime->Engine())) {
+                runtime->SetWorldPaused(paused);
             }
         }
     }
@@ -3864,6 +5049,7 @@ private:
         }
         runtime->SetPageBridgeMessageCallback(page_bridge_callback_);
         initialized_[index].store(true, std::memory_order_release);
+        runtime->SetWorldPaused(world_paused_.load(std::memory_order_acquire));
         if (auto* dev = last_d3d_device_.load(std::memory_order_acquire);
             dev != nullptr && last_d3d_context_.load(std::memory_order_acquire) != nullptr) {
             runtime->PumpFrame(dev, last_d3d_context_.load(std::memory_order_acquire));
@@ -3892,6 +5078,7 @@ private:
     std::array<bool, 2> logged_backend_fallback_{};
     std::atomic<void*> last_d3d_device_{};
     std::atomic<void*> last_d3d_context_{};
+    std::atomic_bool world_paused_{ true };
     const std::thread::id application_thread_;
 };
 
@@ -3943,7 +5130,19 @@ void StartBrowser()
         runtime_config.runtime_directory = cef_directory;
         runtime_config.subprocess_executable = cef_directory / L"SkyUltraCefSubprocess.exe";
         runtime_config.cache_directory = cache_directory;
-        runtime_config.gpu_rendering = g_browser_settings.render_mode == BrowserRenderMode::Gpu;
+        bool cef_gpu_osr = REL::Module::IsVR();
+        if (!cef_gpu_osr && g_browser_settings.render_mode == BrowserRenderMode::Gpu) {
+            char env_buf[16]{};
+            const DWORD env_len = GetEnvironmentVariableA("SKYULTRA_CEF_GPU_OSR", env_buf, sizeof(env_buf));
+            if (env_len > 0 && env_len < sizeof(env_buf) &&
+                (env_buf[0] == '1' || env_buf[0] == 't' || env_buf[0] == 'T')) {
+                cef_gpu_osr = true;
+            }
+        }
+        runtime_config.gpu_rendering = cef_gpu_osr;
+        SKSE::log::info("SkyUltra CEF OSR compositor mode: {} (Ultralight HUD stays {}).",
+            cef_gpu_osr ? "GPU shared-texture" : "Software dirty-rect (zero WDDM GPU contention)",
+            g_browser_settings.render_mode == BrowserRenderMode::Gpu ? "GPU" : "CPU");
         runtime_config.multi_threaded_message_loop = g_browser_settings.cef_multithreaded;
         if (const auto log_directory = SKSE::log::log_directory()) {
             runtime_config.log_file = *log_directory / L"SkyUltra_CEF.log";
@@ -4019,6 +5218,7 @@ void StartBrowser()
     if(menu_manifest->browser_engine && g_menu_browser_engine.empty())config.browser_engine=EffectiveBrowserEngine(*menu_manifest->browser_engine);
     skyultra::ModContentPolicy menu_policy;
     menu_policy.root_directory=menu_manifest->root_directory;menu_policy.entry_file=menu_manifest->entry_file;
+    menu_policy.thumbnail_cache_directory=skyultra::GetThumbnailCacheRootDirectory();
     menu_policy.asset_access_enabled=true;config.mod_content_policy=std::move(menu_policy);
     const auto menu_url=LocalFileUrl(menu_manifest->entry_file);
     const auto menu_mod=g_next_native_mod_handle.fetch_add(1);
@@ -4036,9 +5236,13 @@ void StartBrowser()
     record.initial_url=menu_url;record.javascript_enabled=true;record.wait_for_page_ready=true;
     menu_manifest->page_request_methods.emplace("game.itemAction");
     menu_manifest->page_request_methods.emplace("ui.manageModRuntime");
-    for (const auto* method : { "game.renameItem", "game.getSpells", "game.equipSpell", "game.renameSpell", "game.deleteSpell", "game.getFavorites", "game.setFavorite", "game.getContainerSnapshot", "game.containerTransfer", "ui.clearBridgeLog", "ui.evalInView", "ui.setModViewState" }) menu_manifest->page_request_methods.emplace(method);
+    for (const auto* method : { "game.renameItem", "game.getSpells", "game.equipSpell", "game.renameSpell", "game.deleteSpell", "game.getFavorites", "game.setFavorite", "game.getContainerSnapshot", "game.containerTransfer", "game.getBlacksmithSnapshot", "game.blacksmithCraft", "game.blacksmithTemper", "game.getEnchantingSnapshot", "game.enchantItem", "game.disenchantItem", "game.renameEnchantment", "game.getAlchemySnapshot", "game.alchemyCraft", "game.eatIngredient", "game.getActiveBookSnapshot", "game.takeActiveBook", "game.openNativeActiveBook", "ui.clearBridgeLog", "ui.evalInView", "ui.setModViewState" }) menu_manifest->page_request_methods.emplace(method);
     record.allowed_page_request_methods=menu_manifest->page_request_methods;
     record.browser_engine=static_cast<BrowserRuntimeRouter*>(g_browser_runtime.get())->ResolvedEngine(config.browser_engine);
+    skyultra::RegisterTraceViewMetadata(
+        g_menu_view_id,
+        record.browser_engine == skyultra::BrowserEngine::CEF ? "cef" : "ultralight",
+        "skyultra.menu");
     {const std::scoped_lock lock(g_native_views_mutex);g_native_views.emplace(menu_handle,std::move(record));}
     {const std::scoped_lock lock(g_native_mods_mutex);g_native_mod_handles_by_id.emplace("skyultra.menu",menu_mod);g_native_mods.emplace(menu_mod,NativeApiModRecord{std::move(*menu_manifest),{}});}
     skyultra::BeginOverlayPageLoad(g_menu_view_id);
@@ -4049,12 +5253,23 @@ void StartBrowser()
 
     skyultra::SetOverlayRuntime(g_browser_runtime.get());
     PublishOverlayViews();
-    if (!REL::Module::IsVR() && !skyultra::RegisterD3D11UiPassMenu()) {
-        SKSE::log::warn("SkyUltra could not register its UI-pass carrier menu; Present fallback remains available.");
+    if (!REL::Module::IsVR()) {
+        if (skyultra::RegisterD3D11UiPassMenu()) {
+            g_render_hook_installed = true;
+        } else {
+            SKSE::log::warn("SkyUltra could not register its UI-pass carrier menu; falling back to Present hook.");
+            g_render_hook_installed = skyultra::InstallD3D11PresentHook();
+        }
+    } else {
+        g_render_hook_installed = skyultra::InstallD3D11PresentHook();
     }
-    g_render_hook_installed = skyultra::InstallD3D11PresentHook();
     TryRegisterInputSink();
     TryRegisterMenuEventSink();
+    skyultra::PrewarmActorPreviewShaders();
+    if (auto* game_device = RE::BSGraphics::Renderer::GetDevice(); game_device != nullptr) {
+        g_browser_runtime->PrewarmDevice(game_device);
+        skyultra::PrewarmFrameworkSplash(reinterpret_cast<ID3D11Device*>(game_device));
+    }
     g_native_api_ready.store(true, std::memory_order_release);
     StartModHotReloadWatcher();
     StartGameDataSubscriptionTicker();
@@ -4065,7 +5280,7 @@ void StartBrowser()
             BrowserEngineName(g_browser_runtime->Engine()),
             BrowserEngineName(config.browser_engine));
     } else {
-        SKSE::log::warn("SkyUltra browser ready; swap-chain hook will retry on Shift+F6.");
+        SKSE::log::warn("SkyUltra browser ready; render hook will retry on Shift+F6.");
     }
 }
 
@@ -4075,10 +5290,15 @@ void DrainNativeApiQueue()
     const auto start = std::chrono::steady_clock::now();
     std::size_t processed = 0;
     const bool splash_active = skyultra::FrameworkSplashActive();
+    const auto all_lanes_empty = [&]() noexcept {
+        return g_native_api_queues[0].empty() &&
+            g_native_api_queues[1].empty() &&
+            g_native_api_queues[2].empty();
+    };
     if (splash_active && start < s_next_splash_drain_time) {
         {
             const std::scoped_lock lock(g_native_api_queue_mutex);
-            if (g_native_api_queue.empty()) {
+            if (all_lanes_empty()) {
                 g_native_api_drain_scheduled = false;
                 return;
             }
@@ -4087,17 +5307,17 @@ void DrainNativeApiQueue()
             return;
         }
     }
-    const std::size_t max_tasks_per_tick = splash_active ? 1U : 3U;
+    const std::size_t max_tasks_per_tick = splash_active ? 1U : 8U;
     const auto max_budget_per_tick = splash_active
         ? std::chrono::milliseconds(1)
-        : std::chrono::milliseconds(2);
+        : std::chrono::milliseconds(3);
     for (;;) {
         if (processed >= max_tasks_per_tick ||
             (processed > 0 && std::chrono::steady_clock::now() - start >= max_budget_per_tick)) {
             bool has_more = false;
             {
                 const std::scoped_lock lock(g_native_api_queue_mutex);
-                has_more = !g_native_api_queue.empty();
+                has_more = !all_lanes_empty();
                 if (!has_more) {
                     g_native_api_drain_scheduled = false;
                     return;
@@ -4107,40 +5327,76 @@ void DrainNativeApiQueue()
                 return;
             }
         }
-        std::function<void()> task;
+        QueuedNativeTask queued;
         {
             const std::scoped_lock lock(g_native_api_queue_mutex);
-            if (g_native_api_queue.empty()) {
+            if (all_lanes_empty()) {
                 g_native_api_drain_scheduled = false;
                 return;
             }
-            task = std::move(g_native_api_queue.front());
-            g_native_api_queue.pop_front();
+            const bool other_waiting =
+                !g_native_api_queues[1].empty() || !g_native_api_queues[2].empty();
+            std::size_t lane = 0;
+            if (!g_native_api_queues[0].empty() &&
+                (g_native_consecutive_interactive < 6U || !other_waiting)) {
+                lane = 0;
+                ++g_native_consecutive_interactive;
+            } else {
+                g_native_consecutive_interactive = 0;
+                if (!g_native_api_queues[1].empty()) {
+                    lane = 1;
+                } else if (!g_native_api_queues[2].empty()) {
+                    lane = 2;
+                } else {
+                    lane = 0;
+                }
+            }
+            queued = std::move(g_native_api_queues[lane].front());
+            g_native_api_queues[lane].pop_front();
         }
         ++processed;
         const auto task_start = std::chrono::steady_clock::now();
         try {
-            task();
+            if (queued.fn) {
+                queued.fn();
+            }
         } catch (const std::exception& exception) {
             SKSE::log::error("SkyUltra native API task failed: {}", exception.what());
         } catch (...) {
             SKSE::log::error("SkyUltra native API task failed with an unknown exception.");
         }
-        if (skyultra::FrameworkSplashActive()) {
-            const auto task_end = std::chrono::steady_clock::now();
-            if (task_end - task_start >= std::chrono::microseconds(1200)) {
-                s_next_splash_drain_time = task_end + std::chrono::milliseconds(40);
-            }
+        const auto task_end = std::chrono::steady_clock::now();
+        const double wait_ms = std::chrono::duration<double, std::milli>(
+            task_start - queued.enqueued_at).count();
+        const double exec_ms = std::chrono::duration<double, std::milli>(
+            task_end - task_start).count();
+        const bool overrun = (task_end - start) >= max_budget_per_tick;
+        skyultra::RecordNativeQueueTask(
+            wait_ms, exec_ms, queued.label, queued.mod_id, overrun);
+        if (splash_active && (task_end - task_start >= std::chrono::microseconds(1200))) {
+            s_next_splash_drain_time = task_end + std::chrono::milliseconds(40);
         }
     }
 }
 
-bool QueueNativeApiTask(std::function<void()> task)
+bool QueueNativeApiTask(
+    std::function<void()> task,
+    NativeTaskPriority priority,
+    std::string_view label,
+    std::string_view mod_id)
 {
+    const std::size_t lane = std::min<std::size_t>(static_cast<std::size_t>(priority), 2U);
+    QueuedNativeTask queued{
+        std::move(task),
+        priority,
+        std::string(label),
+        std::string(mod_id),
+        std::chrono::steady_clock::now()
+    };
     const std::scoped_lock enqueue_lock(g_native_api_enqueue_mutex);
     {
         const std::scoped_lock queue_lock(g_native_api_queue_mutex);
-        g_native_api_queue.emplace_back(std::move(task));
+        g_native_api_queues[lane].emplace_back(std::move(queued));
         if (g_native_api_drain_scheduled) {
             return true;
         }
@@ -4153,8 +5409,15 @@ bool QueueNativeApiTask(std::function<void()> task)
 
     const std::scoped_lock queue_lock(g_native_api_queue_mutex);
     g_native_api_drain_scheduled = false;
-    g_native_api_queue.clear();
+    for (auto& q : g_native_api_queues) {
+        q.clear();
+    }
     return false;
+}
+
+bool QueueNativeApiTask(std::function<void()> task)
+{
+    return QueueNativeApiTask(std::move(task), NativeTaskPriority::Normal, {}, {});
 }
 
 std::optional<skyultra::ViewId> NativeManagerViewId(SkyUltraViewHandle handle)
@@ -4241,7 +5504,11 @@ void SwitchMenuBrowserEngine(skyultra::BrowserEngine target_engine)
         const auto* router = dynamic_cast<BrowserRuntimeRouter*>(g_browser_runtime.get());
         const auto resolved = router != nullptr ? router->ResolvedEngine(desired) : desired;
         g_menu_browser_engine = resolved == skyultra::BrowserEngine::CEF ? "cef" : "ultralight";
-        g_game_subscriptions.erase(*menu_handle);
+        {
+            const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
+            g_game_subscriptions.erase(*menu_handle);
+            g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+        }
         skyultra::InvalidateSharedGameDataCache();
         {
             const std::scoped_lock lock(g_native_views_mutex);
@@ -4305,15 +5572,24 @@ void SwitchModBrowserEngine(std::string_view mod_id_view, skyultra::BrowserEngin
             next_cfg.bridge_response_queue = NativeEventsForView(item.manager_id, true);
             next_cfg.browser_engine = desired;
             skyultra::RemoveActorPreview(item.manager_id);
+            skyultra::UnregisterTraceViewMetadata(item.manager_id);
             (void)g_view_manager->Remove(item.manager_id);
             const auto new_id = g_view_manager->Add(next_cfg, [&](skyultra::ViewId id) {
                 return g_browser_runtime->CreateView(id, next_cfg, item.initial_url);
             });
             if (!new_id) continue;
             skyultra::BeginOverlayPageLoad(new_id);
-            g_game_subscriptions.erase(item.handle);
+            {
+                const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
+                g_game_subscriptions.erase(item.handle);
+                g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+            }
             skyultra::InvalidateSharedGameDataCache();
             const auto resolved = router != nullptr ? router->ResolvedEngine(desired) : desired;
+            skyultra::RegisterTraceViewMetadata(
+                new_id,
+                resolved == skyultra::BrowserEngine::CEF ? "cef" : "ultralight",
+                mod_id);
             {
                 const std::scoped_lock lock(g_native_views_mutex);
                 if (const auto it = g_native_views.find(item.handle); it != g_native_views.end()) {
@@ -4347,7 +5623,7 @@ bool IsActorPreviewRequest(std::string_view name) noexcept
 
 bool IsHostUiRequest(std::string_view name) noexcept
 {
-    return name == "game.getPlayerSnapshot" || name == "game.subscribe" || name == "game.unsubscribe" || name == "game.getInventory" || name == "game.equipItem" || name == "game.unequipItem" || name == "game.itemAction" || name == "game.renameItem" || name == "game.getBarterSnapshot" || name == "game.barterTransaction" || name == "game.getContainerSnapshot" || name == "game.containerTransfer" || name == "game.getSpells" || name == "game.equipSpell" || name == "game.renameSpell" || name == "game.deleteSpell" || name == "game.getFavorites" || name == "game.setFavorite" || name == "game.getNearbyNpcs" || name == "game.searchNpcs" ||
+    return name == "game.getPlayerSnapshot" || name == "game.subscribe" || name == "game.unsubscribe" || name == "game.getInventory" || name == "game.equipItem" || name == "game.unequipItem" || name == "game.itemAction" || name == "game.renameItem" || name == "game.getBarterSnapshot" || name == "game.barterTransaction" || name == "game.getContainerSnapshot" || name == "game.containerTransfer" || name == "game.getBlacksmithSnapshot" || name == "game.blacksmithCraft" || name == "game.blacksmithTemper" || name == "game.getEnchantingSnapshot" || name == "game.enchantItem" || name == "game.disenchantItem" || name == "game.renameEnchantment" || name == "game.getAlchemySnapshot" || name == "game.alchemyCraft" || name == "game.eatIngredient" || name == "game.getActiveBookSnapshot" || name == "game.takeActiveBook" || name == "game.openNativeActiveBook" || name == "game.getSpells" || name == "game.equipSpell" || name == "game.renameSpell" || name == "game.deleteSpell" || name == "game.getFavorites" || name == "game.setFavorite" || name == "game.getNearbyNpcs" || name == "game.searchNpcs" ||
         name == "ui.getSplashStatus" || name == "ui.replaySplash" || name == "ui.setCursor" || name == "ui.close" || name == "ui.getSettings" || name == "ui.updateSettings" || name == "ui.pageReady" || name == "ui.configureWidgets" || name == "ui.setInputScope" || name == "ui.getPerformanceSnapshot" ||
         name == "ui.getDeveloperSnapshot" || name == "ui.manageModRuntime" || name == "ui.reloadModViews" || name == "ui.exportHudMod" || name == "ui.manageDiagnosticSample" || name == "ui.clearBridgeLog" || name == "ui.evalInView" || name == "ui.setModViewState" ||
         name == "ui.playSound" || name == "ui.projectWorldAnchors" || name == "ui.setSpatialPlacement" || name == "ui.toggleDomInspector" || name == "ui.interopCall";
@@ -4409,6 +5685,22 @@ std::string ApplyActorRenderer(skyultra::ViewId view_id,std::string_view method,
     auto status = skyultra::GetActorPreviewStatus(view_id);
     const auto item=IsItemPreviewRequest(method);
     if (method == "game.closeActorPreview"||method=="game.closeItemPreview") {
+        if (!item) {
+            const auto params = nlohmann::json::parse(params_json, nullptr, false);
+            if (params.is_object()) {
+                if (ActorPreviewBoolean(params, "hold", false)) {
+                    skyultra::SetActorPreviewSplashHold(view_id, true);
+                } else if (ActorPreviewBoolean(params, "releaseAfterPaint", false)) {
+                    std::uint64_t paint_seq = 0;
+                    if (g_view_manager != nullptr) {
+                        if (auto* view = g_view_manager->Find(view_id)) {
+                            paint_seq = view->PaintSequence();
+                        }
+                    }
+                    skyultra::SetActorPreviewSplashHold(view_id, false, paint_seq);
+                }
+            }
+        }
         if(status.item_preview==item)skyultra::RemoveActorPreview(view_id);
         status = skyultra::GetActorPreviewStatus(view_id);
     } else if (method == "game.setActorPreview"||method=="game.setItemPreview") {
@@ -4497,6 +5789,18 @@ std::string ApplyActorRenderer(skyultra::ViewId view_id,std::string_view method,
 
 bool HandleActorPreviewRequest(SkyUltraViewHandle handle,const skyultra::PageBridgeMessage& message)
 {
+    std::string cache_url_prefix;
+    if ((message.name == "game.getItemThumbnail" || message.name == "game.getActorThumbnail") &&
+        g_menu_view_id != 0 && message.view_id == g_menu_view_id && g_view_manager != nullptr) {
+        if (auto* menu_view = g_view_manager->Find(message.view_id)) {
+            cache_url_prefix = menu_view->ThumbnailCacheUrlPrefix();
+        }
+        if (cache_url_prefix.empty()) {
+            if (const auto cache_root = skyultra::GetThumbnailCacheRootDirectory(); !cache_root.empty()) {
+                cache_url_prefix = LocalFileUrl(cache_root);
+            }
+        }
+    }
     if(message.name=="game.getItemThumbnail"){
         const auto params=nlohmann::json::parse(message.payload_json,nullptr,false);
         if(!params.is_object())throw std::invalid_argument("Item thumbnail options must be an object.");
@@ -4506,7 +5810,7 @@ bool HandleActorPreviewRequest(SkyUltraViewHandle handle,const skyultra::PageBri
         skyultra::CaptureItemThumbnail(message.view_id,form_id,[handle,id=message.request_id](bool available,std::string detail){
             const auto payload=nlohmann::json{{"available",available},{available?"dataUrl":"message",std::move(detail)}}.dump();
             (void)NativeApiCompletePageRequest(handle,id.data(),static_cast<std::uint32_t>(id.size()),1,payload.data(),static_cast<std::uint32_t>(payload.size()),nullptr,0);
-        },use_preview);
+        },use_preview,cache_url_prefix);
         return true;
     }
     if(message.name=="game.getActorThumbnail"){
@@ -4585,7 +5889,7 @@ bool HandleActorPreviewRequest(SkyUltraViewHandle handle,const skyultra::PageBri
             }
             const auto payload=nlohmann::json{{"available",available},{available?"dataUrl":"message",std::move(detail)}}.dump();
             (void)NativeApiCompletePageRequest(handle,id.data(),static_cast<std::uint32_t>(id.size()),1,payload.data(),static_cast<std::uint32_t>(payload.size()),nullptr,0);
-        },use_preview);
+        },use_preview,cache_url_prefix);
         return true;
     }
     if(message.name=="game.saveActorPreview"||message.name=="game.saveItemPreview"){
@@ -4751,11 +6055,65 @@ void ProcessPageBridgeMessage(skyultra::PageBridgeMessage message)
     }
 }
 
+std::string ModIdForManagerViewId(skyultra::ViewId view_id)
+{
+    if (view_id == 0) {
+        return {};
+    }
+    if (g_menu_view_id != 0 && view_id == g_menu_view_id) {
+        return "skyultra.menu";
+    }
+    SkyUltraModHandle mod_handle{};
+    {
+        const std::scoped_lock lock(g_native_views_mutex);
+        for (const auto& [vh, rec] : g_native_views) {
+            (void)vh;
+            if (rec.manager_id && *rec.manager_id == view_id) {
+                mod_handle = rec.mod_handle;
+                break;
+            }
+        }
+    }
+    if (mod_handle == 0) {
+        return {};
+    }
+    const std::scoped_lock lock(g_native_mods_mutex);
+    if (const auto it = g_native_mods.find(mod_handle); it != g_native_mods.end()) {
+        return it->second.manifest.id;
+    }
+    return {};
+}
+
+NativeTaskPriority PageBridgeTaskPriority(std::string_view name) noexcept
+{
+    if (name == "ui.pageReady" || name == "ui.close" || name == "ui.setCursor" ||
+        name == "ui.setVisible" || name == "ui.focus" || name == "ui.setInputScope" ||
+        name == "game.itemAction" || name == "game.renameItem" ||
+        name == "game.barterTransaction" || name == "game.containerTransfer" ||
+        name == "game.equipSpell" || name == "game.renameSpell" ||
+        name == "game.deleteSpell" || name == "game.setFavorite" ||
+        name == "game.activateQuest" ||
+        name.starts_with("game.equip") || name.starts_with("game.unequip") ||
+        name.starts_with("game.use") || name.starts_with("game.drop") ||
+        name.starts_with("game.favorite")) {
+        return NativeTaskPriority::Interactive;
+    }
+    if (name == "game.getItemThumbnail" || name == "game.getActorThumbnail" ||
+        name == "ui.getDeveloperSnapshot" || name == "ui.getPerformanceSnapshot" ||
+        name == "ui.exportHudMod" || name == "ui.manageDiagnosticSample") {
+        return NativeTaskPriority::Background;
+    }
+    return NativeTaskPriority::Normal;
+}
+
 void OnBrowserPageBridgeMessage(skyultra::PageBridgeMessage message)
 {
+    const auto priority = PageBridgeTaskPriority(message.name);
+    const auto label = message.name;
+    const auto mod_id = ModIdForManagerViewId(message.view_id);
     if (!QueueNativeApiTask([message = std::move(message)]() mutable {
             ProcessPageBridgeMessage(std::move(message));
-        })) {
+        }, priority, label, mod_id)) {
         SKSE::log::warn("SkyUltra could not queue a page request for Skyrim's game thread.");
     }
 }
@@ -4859,6 +6217,10 @@ void CreateNativeApiViewOnGameThread(
         PublishOverlayViews();
         return;
     }
+    skyultra::RegisterTraceViewMetadata(
+        view_id,
+        actual_engine == skyultra::BrowserEngine::CEF ? "cef" : "ultralight",
+        ModIdForManagerViewId(view_id));
     if (suspend_on_create) {
         if (g_modal_menu_open) g_suspended_panel_views.insert(view_id);
         if (auto* view = g_view_manager->Find(view_id)) (void)view->SendEventJson("skyultra.visibility",R"({"visible":false})");
@@ -4950,7 +6312,209 @@ nlohmann::json ModBudgetJson(const std::shared_ptr<skyultra::ModResourceBudget>&
         {"replyBytes", stats.bytes[1]}, {"rejected", stats.rejected}, {"suspended", stats.suspended}};
 }
 
-std::string BuildDeveloperSnapshotJson()
+struct DevModDiskAudit {
+    std::string id;
+    std::string name;
+    std::string version;
+    std::string folder_name;
+    bool manifest_valid{};
+    std::string manifest_error;
+    std::string entry{ "index.html" };
+    bool entry_exists{};
+    bool hud_exists{};
+    std::uint32_t asset_count{};
+    std::uint64_t total_asset_bytes{};
+    std::vector<std::string> missing_assets;
+    bool storage{};
+    bool asset_access{};
+    std::vector<std::string> network_hosts;
+    std::vector<std::string> page_requests;
+};
+
+struct DevModAuditCacheState {
+    std::mutex mutex;
+    std::vector<DevModDiskAudit> entries;
+    bool valid{};
+    bool auditing{};
+    std::uint64_t generation{ 1 };
+    double updated_at_ms{};
+    std::jthread worker;
+};
+
+DevModAuditCacheState g_dev_mod_audit_cache;
+
+void InvalidateDevModAuditCache() noexcept
+{
+    const std::scoped_lock lock(g_dev_mod_audit_cache.mutex);
+    g_dev_mod_audit_cache.valid = false;
+    ++g_dev_mod_audit_cache.generation;
+}
+
+DevModDiskAudit BuildDiskAuditForManifest(
+    const skyultra::ModManifest* manifest,
+    const std::string& fallback_id,
+    const std::string& folder_name,
+    bool manifest_valid,
+    const std::string& manifest_error)
+{
+    DevModDiskAudit audit;
+    audit.id = manifest != nullptr && !manifest->id.empty() ? manifest->id : fallback_id;
+    audit.name = manifest != nullptr && !manifest->name.empty() ? manifest->name : audit.id;
+    audit.version = manifest != nullptr && !manifest->version.empty() ? manifest->version : "0.0.0";
+    audit.folder_name = folder_name;
+    audit.manifest_valid = manifest_valid;
+    audit.manifest_error = manifest_error;
+    if (manifest != nullptr) {
+        std::error_code ec;
+        const auto rel_entry = manifest->entry_file.lexically_relative(manifest->root_directory);
+        if (!rel_entry.empty()) {
+            audit.entry = PathUtf8(rel_entry);
+            std::replace(audit.entry.begin(), audit.entry.end(), '\\', '/');
+        }
+        audit.entry_exists = std::filesystem::is_regular_file(manifest->entry_file, ec) && !ec;
+        const auto hud_path = manifest->entry_file.parent_path() / L"hud.html";
+        audit.hud_exists = std::filesystem::is_regular_file(hud_path, ec) && !ec;
+        for (std::filesystem::recursive_directory_iterator it(
+                 manifest->root_directory, std::filesystem::directory_options::skip_permission_denied, ec),
+             end;
+             !ec && it != end && audit.asset_count < 512;
+             it.increment(ec)) {
+            const auto fname = PathUtf8(it->path().filename());
+            if (it->is_directory(ec) && (fname == "node_modules" || fname == ".git")) {
+                it.disable_recursion_pending();
+                continue;
+            }
+            if (it->is_regular_file(ec) && !ec) {
+                ++audit.asset_count;
+                const auto fsize = it->file_size(ec);
+                if (!ec) {
+                    audit.total_asset_bytes += fsize;
+                }
+            }
+        }
+        if (audit.entry_exists) {
+            CollectHtmlMissingAssets(manifest->root_directory, manifest->entry_file, audit.missing_assets);
+        }
+        if (audit.hud_exists) {
+            CollectHtmlMissingAssets(manifest->root_directory, hud_path, audit.missing_assets);
+        }
+        audit.storage = manifest->storage_enabled;
+        audit.asset_access = manifest->asset_access_enabled;
+        audit.network_hosts = manifest->network_hosts;
+        audit.page_requests.assign(
+            manifest->page_request_methods.begin(), manifest->page_request_methods.end());
+        std::sort(audit.page_requests.begin(), audit.page_requests.end());
+    }
+    return audit;
+}
+
+void StartBackgroundModAuditAsync(bool force)
+{
+    std::uint64_t audit_generation{};
+    std::jthread previous_worker;
+    {
+        const std::scoped_lock lock(g_dev_mod_audit_cache.mutex);
+        if (g_dev_mod_audit_cache.auditing || (g_dev_mod_audit_cache.valid && !force)) {
+            return;
+        }
+        g_dev_mod_audit_cache.auditing = true;
+        if (force) {
+            ++g_dev_mod_audit_cache.generation;
+        }
+        audit_generation = g_dev_mod_audit_cache.generation;
+        previous_worker = std::move(g_dev_mod_audit_cache.worker);
+    }
+    if (previous_worker.joinable()) {
+        previous_worker.join();
+    }
+
+    std::jthread next_worker([audit_generation](std::stop_token stop_token) {
+        if (stop_token.stop_requested()) {
+            const std::scoped_lock lock(g_dev_mod_audit_cache.mutex);
+            g_dev_mod_audit_cache.auditing = false;
+            return;
+        }
+        std::unordered_map<std::string, skyultra::ModManifest> registered_copy;
+        {
+            const std::scoped_lock lock(g_native_mods_mutex);
+            for (const auto& [m_handle, m_rec] : g_native_mods) {
+                (void)m_handle;
+                if (!m_rec.manifest.id.empty()) {
+                    registered_copy.emplace(m_rec.manifest.id, m_rec.manifest);
+                }
+            }
+        }
+        std::vector<DevModDiskAudit> scanned;
+        std::unordered_set<std::string> emitted;
+        if (const auto mods_dir = skyultra::GetInstalledWebModsDirectory(); !mods_dir.empty()) {
+            std::error_code ec;
+            for (std::filesystem::directory_iterator it(mods_dir, ec), end;
+                 !ec && it != end && !stop_token.stop_requested();
+                 it.increment(ec)) {
+                std::error_code dir_ec;
+                if (!it->is_directory(dir_ec) || dir_ec) continue;
+                const auto raw_folder = PathUtf8(it->path().filename());
+                if (raw_folder.empty() || raw_folder.front() == '.') continue;
+                auto lower_id = raw_folder;
+                for (auto& ch : lower_id) {
+                    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+                }
+                const bool has_manifest_file =
+                    std::filesystem::is_regular_file(it->path() / L"manifest.json", dir_ec) && !dir_ec;
+                const bool has_entry_html =
+                    (std::filesystem::is_regular_file(it->path() / L"index.html", dir_ec) && !dir_ec) ||
+                    (std::filesystem::is_regular_file(it->path() / L"Files" / L"index.html", dir_ec) && !dir_ec);
+                const bool reserved_output_folder =
+                    lower_id == "actors" || lower_id == "items" || lower_id == "exports" ||
+                    lower_id == "screenshots" || lower_id == "cache" || lower_id == "logs";
+                if (!has_manifest_file && !has_entry_html &&
+                    (reserved_output_folder || !skyultra::IsValidModIdentifier(lower_id))) {
+                    continue;
+                }
+                std::string manifest_err;
+                if (skyultra::IsValidModIdentifier(lower_id)) {
+                    if (const auto disk_manifest = skyultra::LoadModManifest(mods_dir, lower_id, manifest_err)) {
+                        emitted.insert(disk_manifest->id);
+                        scanned.push_back(BuildDiskAuditForManifest(
+                            &(*disk_manifest), disk_manifest->id, raw_folder, true, {}));
+                        continue;
+                    }
+                } else {
+                    manifest_err = "Folder name '" + raw_folder + "' is not a valid lowercase mod identifier.";
+                }
+                emitted.insert(lower_id);
+                scanned.push_back(BuildDiskAuditForManifest(
+                    nullptr, lower_id, raw_folder, false, manifest_err));
+            }
+        }
+        for (const auto& [reg_id, reg_manifest] : registered_copy) {
+            if (stop_token.stop_requested()) {
+                break;
+            }
+            if (emitted.insert(reg_id).second) {
+                scanned.push_back(BuildDiskAuditForManifest(
+                    &reg_manifest,
+                    reg_id,
+                    reg_manifest.folder_name.empty() ? reg_id : reg_manifest.folder_name,
+                    true,
+                    {}));
+            }
+        }
+        const std::scoped_lock lock(g_dev_mod_audit_cache.mutex);
+        g_dev_mod_audit_cache.auditing = false;
+        if (g_dev_mod_audit_cache.generation == audit_generation && !stop_token.stop_requested()) {
+            g_dev_mod_audit_cache.entries = std::move(scanned);
+            g_dev_mod_audit_cache.valid = true;
+            g_dev_mod_audit_cache.updated_at_ms = std::round(DevDiagnosticsNowMs() * 10.0) / 10.0;
+        }
+    });
+    {
+        const std::scoped_lock lock(g_dev_mod_audit_cache.mutex);
+        g_dev_mod_audit_cache.worker = std::move(next_worker);
+    }
+}
+
+std::string BuildDeveloperSnapshotJson(bool force_audit = false)
 {
     PROCESS_MEMORY_COUNTERS_EX pmc{};
     pmc.cb = sizeof(pmc);
@@ -5099,150 +6663,90 @@ std::string BuildDeveloperSnapshotJson()
         }
     }
 
-    const auto build_mod_json = [&](const skyultra::ModManifest* manifest,
-                                    const std::string& fallback_id,
-                                    const std::string& folder_name,
-                                    bool is_registered,
-                                    bool manifest_valid,
-                                    const std::string& manifest_error) {
-        const std::string id = manifest != nullptr && !manifest->id.empty() ? manifest->id : fallback_id;
-        std::string entry_rel = "index.html";
-        bool entry_exists = false;
-        bool hud_exists = false;
-        std::uint32_t asset_count = 0;
-        std::uint64_t total_asset_bytes = 0;
-        std::vector<std::string> missing_assets;
-        std::vector<std::string> page_reqs;
-        if (manifest != nullptr) {
-            std::error_code ec;
-            const auto rel_entry = manifest->entry_file.lexically_relative(manifest->root_directory);
-            if (!rel_entry.empty()) {
-                entry_rel = PathUtf8(rel_entry);
-                std::replace(entry_rel.begin(), entry_rel.end(), '\\', '/');
-            }
-            entry_exists = std::filesystem::is_regular_file(manifest->entry_file, ec) && !ec;
-            const auto hud_path = manifest->entry_file.parent_path() / L"hud.html";
-            hud_exists = std::filesystem::is_regular_file(hud_path, ec) && !ec;
-            for (std::filesystem::recursive_directory_iterator it(
-                     manifest->root_directory, std::filesystem::directory_options::skip_permission_denied, ec),
-                 end;
-                 !ec && it != end && asset_count < 512;
-                 it.increment(ec)) {
-                const auto fname = PathUtf8(it->path().filename());
-                if (it->is_directory(ec) && (fname == "node_modules" || fname == ".git")) {
-                    it.disable_recursion_pending();
-                    continue;
-                }
-                if (it->is_regular_file(ec) && !ec) {
-                    ++asset_count;
-                    const auto fsize = it->file_size(ec);
-                    if (!ec) total_asset_bytes += fsize;
-                }
-            }
-            if (entry_exists) {
-                CollectHtmlMissingAssets(manifest->root_directory, manifest->entry_file, missing_assets);
-            }
-            if (hud_exists) {
-                CollectHtmlMissingAssets(manifest->root_directory, hud_path, missing_assets);
-            }
-            page_reqs.assign(manifest->page_request_methods.begin(), manifest->page_request_methods.end());
-            std::sort(page_reqs.begin(), page_reqs.end());
-        }
-        const auto st_it = stats_copy.find(id);
+    const auto merge_audit_item = [&](const DevModDiskAudit& audit) {
+        const auto st_it = stats_copy.find(audit.id);
         const DevModRuntimeStats st = st_it != stats_copy.end() ? st_it->second : DevModRuntimeStats{};
         nlohmann::json item{
-            { "id", id },
-            { "name", manifest != nullptr && !manifest->name.empty() ? manifest->name : id },
-            { "version", manifest != nullptr && !manifest->version.empty() ? manifest->version : "0.0.0" },
-            { "folderName", folder_name },
-            { "registered", is_registered },
-            { "manifestValid", manifest_valid },
-            { "entry", entry_rel },
-            { "entryExists", entry_exists },
-            { "hudExists", hud_exists },
-            { "assetCount", asset_count },
-            { "totalAssetBytes", total_asset_bytes },
-            { "missingAssets", missing_assets },
-            { "storage", manifest != nullptr ? manifest->storage_enabled : false },
-            { "assetAccess", manifest != nullptr ? manifest->asset_access_enabled : false },
-            { "networkHosts", manifest != nullptr ? manifest->network_hosts : std::vector<std::string>{} },
-            { "pageRequests", page_reqs },
-            { "activeViewCount", mod_view_counts[id] },
-            { "estimatedSurfaceBytes", mod_surface_bytes[id] },
+            { "id", audit.id },
+            { "name", audit.name },
+            { "version", audit.version },
+            { "folderName", audit.folder_name },
+            { "registered", registered_by_id.contains(audit.id) },
+            { "manifestValid", audit.manifest_valid },
+            { "entry", audit.entry },
+            { "entryExists", audit.entry_exists },
+            { "hudExists", audit.hud_exists },
+            { "assetCount", audit.asset_count },
+            { "totalAssetBytes", audit.total_asset_bytes },
+            { "missingAssets", audit.missing_assets },
+            { "storage", audit.storage },
+            { "assetAccess", audit.asset_access },
+            { "networkHosts", audit.network_hosts },
+            { "pageRequests", audit.page_requests },
+            { "activeViewCount", mod_view_counts[audit.id] },
+            { "estimatedSurfaceBytes", mod_surface_bytes[audit.id] },
             { "bridgeRequestCount", st.bridge_requests },
             { "bridgeErrorCount", st.bridge_errors },
             { "deniedPermissionCount", st.denied_permissions },
             { "hotReloadCount", st.hot_reloads },
             { "findings", nlohmann::json::array() }
         };
-        if (const auto resources = registered_resources.find(id); resources != registered_resources.end()) item["resources"] = resources->second;
-        if (!manifest_error.empty()) {
-            item["manifestError"] = manifest_error;
+        if (const auto resources = registered_resources.find(audit.id); resources != registered_resources.end()) {
+            item["resources"] = resources->second;
+        }
+        if (!audit.manifest_error.empty()) {
+            item["manifestError"] = audit.manifest_error;
         }
         return item;
     };
 
+    std::vector<DevModDiskAudit> cached_audits;
+    bool audit_valid{};
+    bool audit_pending{};
+    double audit_updated_at_ms{};
+    {
+        const std::scoped_lock lock(g_dev_mod_audit_cache.mutex);
+        cached_audits = g_dev_mod_audit_cache.entries;
+        audit_valid = g_dev_mod_audit_cache.valid;
+        audit_pending = g_dev_mod_audit_cache.auditing;
+        audit_updated_at_ms = g_dev_mod_audit_cache.updated_at_ms;
+    }
+    if (!audit_valid || force_audit) {
+        StartBackgroundModAuditAsync(force_audit);
+        audit_pending = true;
+    }
+
     auto mods_json = nlohmann::json::array();
     std::unordered_set<std::string> emitted_mods;
-    if (const auto mods_dir = skyultra::GetInstalledWebModsDirectory(); !mods_dir.empty()) {
-        std::error_code ec;
-        for (std::filesystem::directory_iterator it(mods_dir, ec), end; !ec && it != end; it.increment(ec)) {
-            std::error_code dir_ec;
-            if (!it->is_directory(dir_ec) || dir_ec) continue;
-            const auto raw_folder = PathUtf8(it->path().filename());
-            if (raw_folder.empty() || raw_folder.front() == '.') continue;
-            auto lower_id = raw_folder;
-            for (auto& ch : lower_id) {
-                if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
-            }
-            const bool has_manifest_file =
-                std::filesystem::is_regular_file(it->path() / L"manifest.json", dir_ec) && !dir_ec;
-            const bool has_entry_html =
-                (std::filesystem::is_regular_file(it->path() / L"index.html", dir_ec) && !dir_ec) ||
-                (std::filesystem::is_regular_file(it->path() / L"Files" / L"index.html", dir_ec) && !dir_ec);
-            const bool reserved_output_folder =
-                lower_id == "actors" || lower_id == "items" || lower_id == "exports" ||
-                lower_id == "screenshots" || lower_id == "cache" || lower_id == "logs";
-            if (!has_manifest_file && !has_entry_html &&
-                (reserved_output_folder || !skyultra::IsValidModIdentifier(lower_id))) {
-                continue;
-            }
-            std::string manifest_err;
-            if (skyultra::IsValidModIdentifier(lower_id)) {
-                if (const auto disk_manifest = skyultra::LoadModManifest(mods_dir, lower_id, manifest_err)) {
-                    emitted_mods.insert(disk_manifest->id);
-                    mods_json.push_back(build_mod_json(
-                        &(*disk_manifest),
-                        disk_manifest->id,
-                        raw_folder,
-                        registered_by_id.contains(disk_manifest->id),
-                        true,
-                        {}));
-                    continue;
-                }
-            } else {
-                manifest_err = "Folder name '" + raw_folder + "' is not a valid lowercase mod identifier.";
-            }
-            emitted_mods.insert(lower_id);
-            mods_json.push_back(build_mod_json(
-                nullptr, lower_id, raw_folder, registered_by_id.contains(lower_id), false, manifest_err));
+    for (const auto& entry : cached_audits) {
+        if (emitted_mods.insert(entry.id).second) {
+            mods_json.push_back(merge_audit_item(entry));
         }
     }
     for (const auto& [reg_id, reg_manifest] : registered_by_id) {
-        if (emitted_mods.insert(reg_id).second) {
-            mods_json.push_back(build_mod_json(
-                &reg_manifest,
-                reg_id,
-                reg_manifest.folder_name.empty() ? reg_id : reg_manifest.folder_name,
-                true,
-                true,
-                {}));
+        if (!emitted_mods.insert(reg_id).second) {
+            continue;
         }
+        DevModDiskAudit fallback;
+        fallback.id = reg_id;
+        fallback.name = reg_manifest.name.empty() ? reg_id : reg_manifest.name;
+        fallback.version = reg_manifest.version.empty() ? "0.0.0" : reg_manifest.version;
+        fallback.folder_name = reg_manifest.folder_name.empty() ? reg_id : reg_manifest.folder_name;
+        fallback.manifest_valid = true;
+        fallback.storage = reg_manifest.storage_enabled;
+        fallback.asset_access = reg_manifest.asset_access_enabled;
+        fallback.network_hosts = reg_manifest.network_hosts;
+        fallback.page_requests.assign(
+            reg_manifest.page_request_methods.begin(), reg_manifest.page_request_methods.end());
+        std::sort(fallback.page_requests.begin(), fallback.page_requests.end());
+        mods_json.push_back(merge_audit_item(fallback));
     }
 
     return nlohmann::json{
         { "available", true },
         { "capturedAtMs", std::round(DevDiagnosticsNowMs() * 10.0) / 10.0 },
+        { "auditPending", audit_pending },
+        { "auditUpdatedAtMs", audit_updated_at_ms },
         { "processWorkingSetBytes", static_cast<std::uint64_t>(pmc.WorkingSetSize) },
         { "processPrivateBytes", static_cast<std::uint64_t>(pmc.PrivateUsage) },
         { "hotReloadEnabled", g_mod_hot_reload_enabled },
@@ -5339,6 +6843,7 @@ std::string HandleReloadModViewsJson(const nlohmann::json& params)
             RecordDevModHotReload(m_id);
         }
     }
+    InvalidateDevModAuditCache();
 
     return nlohmann::json{
         { "reloaded", reloaded_count > 0 },
@@ -5547,6 +7052,7 @@ std::string HandleExportHudModJson(const nlohmann::json& params)
         }
     }
 
+    InvalidateDevModAuditCache();
     return nlohmann::json{
         { "exported", true },
         { "modId", mod_id },
@@ -5619,6 +7125,7 @@ std::string HandleManageDiagnosticSampleJson(const nlohmann::json& params)
                 std::filesystem::remove_all(canon_sample, ec);
             }
         }
+        InvalidateDevModAuditCache();
         return nlohmann::json{
             { "accepted", true },
             { "action", action },
@@ -6317,7 +7824,10 @@ std::string HandleModRuntimeControl(const nlohmann::json& input)
             skyultra::RemoveActorPreview(*manager_id); skyultra::CancelOverlayPageLoad(*manager_id);
             g_suspended_panel_views.erase(*manager_id); (void)g_view_manager->Remove(*manager_id);
         }
-        g_game_subscriptions.erase(handle);
+        {
+            const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
+            g_game_subscriptions.erase(handle);
+        }
         for (const auto& [request_id, request] : cancelled) {
             if (request.callback) {
                 try { request.callback(request.user_data, handle, request_id.data(), static_cast<std::uint32_t>(request_id.size()),
@@ -6326,7 +7836,10 @@ std::string HandleModRuntimeControl(const nlohmann::json& input)
         }
         ++changed;
     }
-    g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+    {
+        const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
+        g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+    }
     PublishOverlayViews(); SyncSkyUltraWorldPause(); PublishBrowserCursor(HasVisibleInteractiveView());
     return nlohmann::json{{"accepted",true},{"modId",id},{"action",operation},{"affectedViews",changed},
         {"message",operation == "suspend" ? "Mod pages unloaded temporarily. Resume reloads fresh documents; native handles are retained." :
@@ -6370,7 +7883,9 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
     }
     if (message.name == "ui.getDeveloperSnapshot") {
         if (message.view_id != g_menu_view_id) { reject_non_menu(); return true; }
-        reply(BuildDeveloperSnapshotJson());
+        const auto params = nlohmann::json::parse(message.payload_json, nullptr, false);
+        const bool force_audit = params.is_object() && params.value("forceAudit", false);
+        reply(BuildDeveloperSnapshotJson(force_audit));
         return true;
     }
     if (message.name == "ui.manageModRuntime") {
@@ -6501,15 +8016,25 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
         }
         const auto initial_update_str=skyultra::CollectSharedGameDataUpdateJSON(sub.compact,sub.topics,sub.topic_signatures,sub.last_sequence,true);
         sub.last_push_ms=SubscriptionNowMs();
+        sub.last_snapshot_push_ms=sub.last_push_ms;
         sub.needs_catchup=false;
         const auto topics_copy=sub.topics;
         const auto compact_copy=sub.compact;
         const auto interval_copy=sub.interval_ms;
         const auto seq_copy=sub.last_sequence;
-        g_game_subscriptions[handle]=std::move(sub);
-        g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()),std::memory_order_relaxed);
-        StartGameDataSubscriptionTicker();
         auto parsed_update=nlohmann::json::parse(initial_update_str,nullptr,false);
+        if(parsed_update.is_object()){
+            const auto snap_it=parsed_update.find("snapshot");
+            if(snap_it!=parsed_update.end()&&snap_it->is_object()&&snap_it->contains("heading")&&(*snap_it)["heading"].is_number()){
+                sub.last_heading_deg=(*snap_it)["heading"].get<float>();
+            }
+        }
+        {
+            const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
+            g_game_subscriptions[handle]=std::move(sub);
+            g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()),std::memory_order_relaxed);
+        }
+        StartGameDataSubscriptionTicker();
         reply(nlohmann::json{
             {"subscribed",true},
             {"sequence",seq_copy},
@@ -6521,22 +8046,65 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
         return true;
     }
     if(message.name=="game.unsubscribe"){
-        g_game_subscriptions.erase(handle);
-        g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()),std::memory_order_relaxed);
+        {
+            const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
+            g_game_subscriptions.erase(handle);
+            g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()),std::memory_order_relaxed);
+        }
         reply(R"({"subscribed":false})");
+        return true;
+    }
+    if (message.name == "game.openNativeActiveBook") {
+        if (message.view_id != g_menu_view_id) {
+            reject_non_menu();
+            return true;
+        }
+        if (skyultra::HasActiveBookMenu()) {
+            reply(R"({"accepted":true,"openingNative":true})");
+            const auto open_native_fn = []() {
+                g_bypass_next_native_book_menu.store(true, std::memory_order_release);
+                const bool opened = skyultra::OpenCapturedBookNativeMenu();
+                SetBrowserVisible(false, "Open native Skyrim BookMenu");
+                if (!opened) {
+                    g_bypass_next_native_book_menu.store(false, std::memory_order_release);
+                }
+            };
+            if (std::this_thread::get_id() == g_skyrim_main_thread_id) {
+                open_native_fn();
+            } else if (!g_game_task_queue.PostUI(open_native_fn)) {
+                (void)g_game_task_queue.Post(open_native_fn);
+            }
+        } else {
+            reply(R"({"accepted":false,"message":"No active book is open."})");
+        }
         return true;
     }
     if (message.name.starts_with("game.")) {
         const auto response = skyultra::ReadGameDataJSON(message.name, message.payload_json);
         reply(response);
+        if (message.name == "game.renameEnchantment") {
+            const auto parsed_res = nlohmann::json::parse(response, nullptr, false);
+            if (parsed_res.is_object() && parsed_res.value("accepted", false)) {
+                g_extra_menus.enchantment_custom_names = skyultra::GetSavedEnchantmentCustomNames();
+                std::string save_err;
+                (void)WriteFrameworkSettingsDisk(save_err);
+            }
+        }
         if ((message.name == "game.equipItem" || message.name == "game.unequipItem" ||
                 message.name == "game.itemAction" || message.name == "game.renameItem" ||
                 message.name == "game.barterTransaction" ||
-                message.name == "game.containerTransfer" || message.name == "game.equipSpell" ||
-                message.name == "game.renameSpell" || message.name == "game.deleteSpell" ||
-                message.name == "game.setFavorite") &&
-            !g_game_subscriptions.empty()) {
-            PumpGameDataSubscriptions(true);
+                message.name == "game.containerTransfer" ||
+                message.name == "game.blacksmithCraft" ||
+                message.name == "game.blacksmithTemper" ||
+                message.name == "game.enchantItem" ||
+                message.name == "game.disenchantItem" ||
+                message.name == "game.renameEnchantment" ||
+                message.name == "game.alchemyCraft" ||
+                message.name == "game.eatIngredient" ||
+                message.name == "game.takeActiveBook" ||
+                message.name == "game.deleteSpell") &&
+            g_active_game_subscription_count.load(std::memory_order_relaxed) > 0) {
+            ScheduleGameDataSubscriptionPump(0);
         }
         return true;
     }
@@ -6564,18 +8132,119 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
         return true;
     }
     if (message.name == "ui.getPerformanceSnapshot") {
-        const auto snapshot=skyultra::GetOverlayPerformanceSnapshot();
-        const auto metric=[](const skyultra::OverlayTimingMetric& value) {
-            return nlohmann::json{{"samples",value.samples},{"totalMs",value.total_ms},{"lastMs",value.last_ms},
-                {"windowSamples",value.window_samples},{"meanMs",value.mean_ms},{"p95Ms",value.p95_ms},{"maxMs",value.max_ms},
-                {"ageMs",value.age_ms<0 ? nlohmann::json(nullptr) : nlohmann::json(value.age_ms)}};
+        const auto snapshot = skyultra::GetOverlayPerformanceSnapshot();
+        const auto trace = skyultra::GetFrameTraceSnapshot();
+        const auto metric = [](const skyultra::OverlayTimingMetric& value) {
+            return nlohmann::json{
+                { "samples", value.samples },
+                { "totalMs", value.total_ms },
+                { "lastMs", value.last_ms },
+                { "windowSamples", value.window_samples },
+                { "meanMs", value.mean_ms },
+                { "p50Ms", value.p50_ms },
+                { "p95Ms", value.p95_ms },
+                { "p99Ms", value.p99_ms },
+                { "maxMs", value.max_ms },
+                { "ageMs", value.age_ms < 0 ? nlohmann::json(nullptr) : nlohmann::json(value.age_ms) }
+            };
         };
-        reply(nlohmann::json{{"schemaVersion",1},{"available",snapshot.generation!=0 && !REL::Module::IsVR()},
-            {"scope","host-overlay"},{"generation",snapshot.generation},{"capturedAtMs",snapshot.captured_at_ms},
-            {"gpuTimingAvailable",snapshot.gpu_timing_available},{"skippedGpuFrames",snapshot.skipped_gpu_frames},
-            {"invalidGpuSamples",snapshot.invalid_gpu_samples},{"hostGpu",metric(snapshot.host_gpu)},
-            {"compositorGpu",metric(snapshot.compositor_gpu)},{"callbackCpu",metric(snapshot.callback_cpu)},
-            {"presentInterval",metric(snapshot.present_interval)}}.dump());
+        const auto percentile = [](const skyultra::PercentileSummary& s) {
+            return nlohmann::json{
+                { "samples", s.samples },
+                { "meanMs", s.mean_ms },
+                { "p50Ms", s.p50_ms },
+                { "p95Ms", s.p95_ms },
+                { "p99Ms", s.p99_ms },
+                { "maxMs", s.max_ms }
+            };
+        };
+        auto traces_json = nlohmann::json::array();
+        for (const auto& t : trace.recent_traces) {
+            traces_json.push_back({
+                { "id", t.id },
+                { "kind", skyultra::TraceKindName(t.kind) },
+                { "engine", t.engine },
+                { "viewId", t.view_id },
+                { "modId", t.mod_id },
+                { "visible", t.visible },
+                { "splashActive", t.splash_active },
+                { "baselinePaintSequence", t.baseline_paint_sequence },
+                { "paintSequence", t.paint_sequence },
+                { "compositeFrameSequence", t.composite_frame_sequence },
+                { "queueWaitMs", t.queue_wait_ms },
+                { "dispatchToPaintMs", t.dispatch_to_paint_ms },
+                { "paintToCompositeMs", t.paint_to_composite_ms },
+                { "totalMs", t.total_ms },
+                { "completedAtMs", t.completed_at_ms }
+            });
+        }
+        const nlohmann::json frame_trace_json{
+            { "summary", {
+                { "warmMenuOpen", percentile(trace.warm_menu_open) },
+                { "coldMenuOpen", percentile(trace.cold_menu_open) },
+                { "inputClick", percentile(trace.input_click) },
+                { "inputWheel", percentile(trace.input_wheel) },
+                { "inputKey", percentile(trace.input_key) },
+                { "inputFocus", percentile(trace.input_focus) }
+            } },
+            { "traces", std::move(traces_json) },
+            { "cefCopy", {
+                { "fullCopies", trace.cef_copy.full_copies },
+                { "dirtyCopies", trace.cef_copy.dirty_copies },
+                { "dirtyFallbacks", trace.cef_copy.dirty_fallbacks },
+                { "overlappingPixelsCopied", trace.cef_copy.overlapping_pixels_copied },
+                { "frameAge", percentile(trace.cef_copy.frame_age) }
+            } },
+            { "ultralightReplay", {
+                { "packetsReplayed", trace.ultralight_replay.packets_replayed },
+                { "backpressureWaits", trace.ultralight_replay.backpressure_waits },
+                { "maxCommandLists", trace.ultralight_replay.max_command_lists },
+                { "avgCommandLists", trace.ultralight_replay.avg_command_lists },
+                { "oldestPacketAgeMs", trace.ultralight_replay.oldest_packet_age_ms },
+                { "maxPacketAgeMs", trace.ultralight_replay.max_packet_age_ms },
+                { "replay", percentile(trace.ultralight_replay.replay) }
+            } },
+            { "nativeQueue", {
+                { "tasksExecuted", trace.native_queue.tasks_executed },
+                { "budgetOverruns", trace.native_queue.budget_overruns },
+                { "wait", percentile(trace.native_queue.wait) },
+                { "exec", percentile(trace.native_queue.exec) },
+                { "slowestTask", trace.native_queue.slowest_task },
+                { "slowestMod", trace.native_queue.slowest_mod },
+                { "slowestExecMs", trace.native_queue.slowest_exec_ms }
+            } },
+            { "thumbnails", {
+                { "memoryHits", trace.thumbnails.memory_hits },
+                { "diskHits", trace.thumbnails.disk_hits },
+                { "urlHits", trace.thumbnails.url_hits },
+                { "gpuCaptures", trace.thumbnails.gpu_captures },
+                { "diskRead", percentile(trace.thumbnails.disk_read) },
+                { "encode", percentile(trace.thumbnails.encode) },
+                { "pixelConvert", percentile(trace.thumbnails.pixel_convert) },
+                { "fullExport", percentile(trace.thumbnails.full_export) },
+                { "avx2Active", trace.thumbnails.avx2_active || skyultra::CpuSupportsAvx2ForPixelConvert() }
+            } },
+            { "benchmarkGuidance", {
+                { "presentMonUrl", "https://github.com/GameTechDev/PresentMon" },
+                { "windowsTraceNote", "Pair SkyUltra sampled traces with PresentMon CSV (msBetweenPresents / msUntilDisplayed) and WPR GeneralProfile + GPU ETW traces so CEF subprocess work and WDDM queue wait appear alongside SkyUltra timestamps." },
+                { "commandExample", "PresentMon.exe -process_name SkyrimSE.exe -output_file skyultra_presentmon.csv -timed 30" }
+            } }
+        };
+        reply(nlohmann::json{
+            { "schemaVersion", 1 },
+            { "available", snapshot.generation != 0 && !REL::Module::IsVR() },
+            { "scope", "host-overlay" },
+            { "generation", snapshot.generation },
+            { "capturedAtMs", snapshot.captured_at_ms },
+            { "gpuTimingAvailable", snapshot.gpu_timing_available },
+            { "skippedGpuFrames", snapshot.skipped_gpu_frames },
+            { "invalidGpuSamples", snapshot.invalid_gpu_samples },
+            { "hostGpu", metric(snapshot.host_gpu) },
+            { "compositorGpu", metric(snapshot.compositor_gpu) },
+            { "callbackCpu", metric(snapshot.callback_cpu) },
+            { "presentInterval", metric(snapshot.present_interval) },
+            { "frameTrace", std::move(frame_trace_json) }
+        }.dump());
         return true;
     }
     if (message.name == "ui.setInputScope") {
@@ -6667,6 +8336,9 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
             (void)NativeApiDestroyView(active->second.view);
             g_widget_overlays.erase(active);
         }
+        if (mod.manifest.id == "skyultra.menu") {
+            g_extra_menus.replace_compass = AnyPinnedCompassHudActive();
+        }
         PublishOverlayViews();
         SyncVanillaCompassVisibility(true);
         send_state(); return true;
@@ -6697,30 +8369,109 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
     config.id = mod.manifest.id + ".widgets." + std::to_string(g_next_native_view_handle.load());
     config.transparent = true; config.modal = false; config.click_through = true;
     config.enable_gamepad = false; config.visible = true; config.layer = skyultra::ViewLayer::Hud;
-    config.z_index = -100; config.max_fps = 60; config.clip = {};
+    config.z_index = -100; config.max_fps = g_performance_settings.main_fps; config.clip = {};
     const auto base_scale = static_cast<float>(ActorPreviewNumber(params, "scale", 1, .7, 1.5));
     const auto base_opacity = static_cast<float>(ActorPreviewNumber(params, "opacity", 1, .35, 1));
     config.scale = 1.0F;
     config.opacity = 1.0F;
     std::string anchor = "top-right";
     if (const auto value = params.find("anchor"); value != params.end() && value->is_string()) anchor = value->get<std::string>();
-    if (anchor != "top-left" && anchor != "top-center" && anchor != "top-right" &&
-        anchor != "bottom-left" && anchor != "bottom-center" && anchor != "bottom-right") {
+    const auto is_valid_hud_anchor = [](std::string_view cand) noexcept {
+        return cand == "top-left" || cand == "top-center" || cand == "top-right" ||
+               cand == "middle-left" || cand == "middle-center" || cand == "middle-right" ||
+               cand == "bottom-left" || cand == "bottom-center" || cand == "bottom-right";
+    };
+    if (!is_valid_hud_anchor(anchor)) {
         anchor = "top-right";
     }
     config.anchor = skyultra::Anchor::TopLeft;
     const auto screen = RE::BSGraphics::Renderer::GetScreenSize();
     const std::uint32_t hud_w = screen.width > 0 ? screen.width : 1920U;
     const std::uint32_t hud_h = screen.height > 0 ? screen.height : 1080U;
-    config.size = { hud_w, hud_h };
-    config.bounds = { 0.0F, 0.0F, static_cast<float>(hud_w), static_cast<float>(hud_h) };
+    const auto compute_hud_overlay_bounds = [&](
+        const std::vector<std::string>& hud_widgets,
+        std::string_view default_anchor,
+        double fallback_scale,
+        const nlohmann::json* placements_ptr) -> std::pair<skyultra::SizeU, skyultra::RectF> {
+        const auto full = std::make_pair(
+            skyultra::SizeU{ hud_w, hud_h },
+            skyultra::RectF{ 0.0F, 0.0F, static_cast<float>(hud_w), static_cast<float>(hud_h) });
+        if (custom_code_enabled || hud_widgets.empty() || hud_widgets.size() > 3) {
+            return full;
+        }
+        double max_scale = std::clamp(fallback_scale, 0.7, 1.5);
+        long max_offset_y = 0;
+        for (const auto& w : hud_widgets) {
+            std::string_view w_anchor = default_anchor;
+            double w_scale = fallback_scale;
+            double w_oy = 0.0;
+            if (placements_ptr != nullptr && placements_ptr->is_object()) {
+                if (const auto pit = placements_ptr->find(w); pit != placements_ptr->end() && pit->is_object()) {
+                    if (const auto a = pit->find("anchor"); a != pit->end() && a->is_string()) {
+                        const auto cand = a->get<std::string>();
+                        if (is_valid_hud_anchor(cand)) {
+                            w_anchor = a->get_ref<const std::string&>();
+                        }
+                    }
+                    w_scale = ActorPreviewNumber(*pit, "scale", fallback_scale, 0.7, 1.5);
+                    w_oy = ActorPreviewNumber(*pit, "offsetY", 0.0, -900.0, 900.0);
+                }
+            }
+            if (w_anchor != "top-left" && w_anchor != "top-center" && w_anchor != "top-right") {
+                return full;
+            }
+            if (w_oy < -60.0) {
+                return full;
+            }
+            max_scale = std::max(max_scale, w_scale);
+            max_offset_y = std::max(max_offset_y, static_cast<long>(std::ceil(w_oy)));
+        }
+        const double base_h = (hud_widgets.size() == 1 && hud_widgets[0] == "compass") ? 230.0 : 360.0;
+        const long raw_crop_h = static_cast<long>(std::lround(base_h * max_scale)) + std::max(0L, max_offset_y) + 48L;
+        const std::uint32_t crop_h = std::clamp<std::uint32_t>(
+            static_cast<std::uint32_t>(std::max(260L, raw_crop_h)),
+            260U,
+            hud_h);
+        if (crop_h >= hud_h) {
+            return full;
+        }
+        return {
+            skyultra::SizeU{ hud_w, crop_h },
+            skyultra::RectF{ 0.0F, 0.0F, static_cast<float>(hud_w), static_cast<float>(crop_h) }
+        };
+    };
+    const auto [hud_size, hud_bounds] = compute_hud_overlay_bounds(
+        widgets,
+        anchor,
+        base_scale,
+        (params.contains("placements") && params["placements"].is_object()) ? &params["placements"] : nullptr);
+    config.size = hud_size;
+    config.bounds = hud_bounds;
+    if (mod.manifest.id == "skyultra.menu") {
+        char hud_engine_env[32]{};
+        const DWORD env_len = GetEnvironmentVariableA("SKYULTRA_HUD_ENGINE", hud_engine_env, sizeof(hud_engine_env));
+        const bool force_cef = env_len == 3 &&
+            (hud_engine_env[0] == 'c' || hud_engine_env[0] == 'C') &&
+            (hud_engine_env[1] == 'e' || hud_engine_env[1] == 'E') &&
+            (hud_engine_env[2] == 'f' || hud_engine_env[2] == 'F');
+        const bool ultralight_ready = g_browser_settings.render_mode == BrowserRenderMode::Gpu &&
+            g_browser_runtime != nullptr &&
+            g_browser_runtime->SupportsEngine(skyultra::BrowserEngine::Ultralight);
+        if (!force_cef && !custom_code_enabled && ultralight_ready) {
+            config.browser_engine = skyultra::BrowserEngine::Ultralight;
+        }
+    }
     std::string url = LocalFileUrl(hud_file) + "?widgets=";
     for (const auto& widget : widgets) { if (url.back() != '=') url += ','; url += widget; }
     std::string theme = "dragonstone";
     if (const auto candidate = params.find("theme"); candidate != params.end() && candidate->is_string()) {
         const auto value = candidate->get<std::string>();
-        constexpr std::array<std::string_view,17> themes{"obsidian","dragonstone","aurora","ember","glacier","verdant","aether","dwemer","sunspire","frost","arcane","cyberneon","synthwave","venomneon","plasmaneon","crimsonneon","darkmode"};
-        if (std::ranges::find(themes,value) != themes.end()) theme = value;
+        constexpr std::array<std::string_view, 21> themes{
+            "obsidian", "dragonstone", "aurora", "ember", "glacier", "verdant", "aether",
+            "dwemer", "sunspire", "frost", "arcane", "cyberneon", "synthwave", "venomneon",
+            "plasmaneon", "crimsonneon", "darkmode", "warmdusk", "sagehaven", "twilightplum", "nordiclinen"
+        };
+        if (std::ranges::find(themes, value) != themes.end()) theme = value;
     }
     url += "&theme=" + theme;
     url += "&anchor=" + anchor;
@@ -6728,6 +8479,7 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
     url += "&opacity=" + std::to_string(static_cast<int>(std::lround(base_opacity * 100.0F)));
     url += anchor.ends_with("left") ? "&side=left" : (anchor.ends_with("center") ? "&side=center" : "&side=right");
     if (anchor.starts_with("bottom")) url += "&align=bottom";
+    else if (anchor.starts_with("middle")) url += "&align=middle";
     const auto glow = static_cast<int>(std::lround(ActorPreviewNumber(params, "glow", 100, 0, 150)));
     url += "&glow=" + std::to_string(glow);
     if (const auto colors_it = params.find("colors"); colors_it != params.end() && colors_it->is_object()) {
@@ -6745,6 +8497,7 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
         }
         if (!color_pairs.empty()) url += "&colors=" + color_pairs;
     }
+    int compass_radius_m = static_cast<int>(std::lround(ActorPreviewNumber(params, "compassRadius", 50.0, 50.0, 1000.0)));
     if (const auto placements_it = params.find("placements"); placements_it != params.end() && placements_it->is_object()) {
         std::string placement_entries;
         for (const auto& [k, raw] : placements_it->items()) {
@@ -6752,23 +8505,26 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
             std::string w_anchor = anchor;
             if (const auto a = raw.find("anchor"); a != raw.end() && a->is_string()) {
                 const auto cand = a->get<std::string>();
-                if (cand == "top-left" || cand == "top-center" || cand == "top-right" ||
-                    cand == "bottom-left" || cand == "bottom-center" || cand == "bottom-right") {
+                if (is_valid_hud_anchor(cand)) {
                     w_anchor = cand;
                 }
             }
             const int w_scale = static_cast<int>(std::lround(ActorPreviewNumber(raw, "scale", base_scale, 0.7, 1.5) * 100.0));
             const int w_opacity = static_cast<int>(std::lround(ActorPreviewNumber(raw, "opacity", base_opacity, 0.35, 1.0) * 100.0));
             const int w_glow = static_cast<int>(std::lround(ActorPreviewNumber(raw, "glow", glow, 0.0, 150.0)));
-            std::string w_hex;
-            if (const auto c = raw.find("color"); c != raw.end() && c->is_string()) {
-                for (const char ch : c->get<std::string>()) {
-                    if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
-                        w_hex.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+            const auto sanitize_hex = [&](const char* key) -> std::string {
+                std::string hex;
+                if (const auto c = raw.find(key); c != raw.end() && c->is_string()) {
+                    for (const char ch : c->get<std::string>()) {
+                        if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+                            hex.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+                        }
                     }
+                    if (hex.size() != 6 && hex.size() != 3) hex.clear();
                 }
-                if (w_hex.size() != 6) w_hex.clear();
-            }
+                return hex;
+            };
+            const std::string w_hex = sanitize_hex("color");
             std::string w_font = "theme";
             if (const auto f = raw.find("fontStyle"); f != raw.end() && f->is_string()) {
                 const auto cand = f->get<std::string>();
@@ -6776,8 +8532,8 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
                     w_font = cand;
                 }
             }
-            const int w_ox = static_cast<int>(std::lround(ActorPreviewNumber(raw, "offsetX", 0.0, -600.0, 600.0)));
-            const int w_oy = static_cast<int>(std::lround(ActorPreviewNumber(raw, "offsetY", 0.0, -400.0, 400.0)));
+            const int w_ox = static_cast<int>(std::lround(ActorPreviewNumber(raw, "offsetX", 0.0, -1600.0, 1600.0)));
+            const int w_oy = static_cast<int>(std::lround(ActorPreviewNumber(raw, "offsetY", 0.0, -900.0, 900.0)));
             std::string w_vis = "always";
             if (const auto vis = raw.find("visibilityRule"); vis != raw.end() && vis->is_string()) {
                 const auto cand = vis->get<std::string>();
@@ -6801,10 +8557,43 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
                     if (safe_bind) w_bind = cand;
                 }
             }
+            std::string w_crest;
+            if (const auto cs = raw.find("crestStyle"); cs != raw.end() && cs->is_string()) {
+                const auto cand = cs->get<std::string>();
+                if (cand == "dragonblade" || cand == "daedric" || cand == "dwemer" ||
+                    cand == "aetherial" || cand == "nordic") {
+                    w_crest = cand;
+                }
+            }
+            const std::string w_hp = sanitize_hex("hpColor");
+            const std::string w_mp = sanitize_hex("magickaColor");
+            const std::string w_sp = sanitize_hex("staminaColor");
+            const int w_radius = (k == "compass")
+                ? static_cast<int>(std::lround(ActorPreviewNumber(raw, "compassRadius", static_cast<double>(compass_radius_m), 50.0, 1000.0)))
+                : 0;
+            if (k == "compass") {
+                compass_radius_m = w_radius;
+            }
+            std::string w_theme;
+            if (const auto th = raw.find("theme"); th != raw.end() && th->is_string()) {
+                const auto& cand = th->get_ref<const std::string&>();
+                if (!cand.empty() && cand.size() <= 32 && cand.front() >= 'a' && cand.front() <= 'z') {
+                    bool safe_theme = true;
+                    for (const char ch : cand) {
+                        if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-')) {
+                            safe_theme = false;
+                            break;
+                        }
+                    }
+                    if (safe_theme) w_theme = cand;
+                }
+            }
             if (!placement_entries.empty()) placement_entries += ';';
             placement_entries += k + ":" + w_anchor + ":" + std::to_string(w_scale) + ":" +
                 std::to_string(w_opacity) + ":" + std::to_string(w_glow) + ":" + w_hex + ":" + w_font + ":" +
-                std::to_string(w_ox) + ":" + std::to_string(w_oy) + ":" + w_vis + ":" + w_bind;
+                std::to_string(w_ox) + ":" + std::to_string(w_oy) + ":" + w_vis + ":" + w_bind + ":" +
+                w_crest + ":" + w_hp + ":" + w_mp + ":" + w_sp + ":" +
+                (k == "compass" ? std::to_string(w_radius) : std::string{}) + ":" + w_theme;
         }
         if (!placement_entries.empty()) url += "&placements=" + placement_entries;
     }
@@ -6823,6 +8612,15 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
             const auto* live_config=g_view_manager->Config(active->second.manager_id);
             if (auto* live_view = g_view_manager->Find(active->second.manager_id);
                 live_view && live_config && live_config->browser_engine==config.browser_engine) {
+                if (live_config->size.width != config.size.width ||
+                    live_config->size.height != config.size.height ||
+                    live_config->bounds.width != config.bounds.width ||
+                    live_config->bounds.height != config.bounds.height) {
+                    auto resized_cfg = *live_config;
+                    resized_cfg.size = config.size;
+                    resized_cfg.bounds = config.bounds;
+                    (void)g_view_manager->UpdateConfig(active->second.manager_id, resized_cfg);
+                }
                 active->second.widgets = std::move(widgets);
                 active->second.anchor = anchor;
                 active->second.scale = base_scale;
@@ -6836,6 +8634,10 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
                 (void)live_view->SendEventJson("skyultra.hud.config", push_payload);
                 RecordDevBridgeEntry(active->second.manager_id, mod.manifest.id, "event",
                     "skyultra.hud.config", "ok", 0.1, push_payload.size());
+                if (mod.manifest.id == "skyultra.menu") {
+                    skyultra::SetCompassMarkerRadiusMeters(static_cast<float>(compass_radius_m));
+                    g_extra_menus.replace_compass = AnyPinnedCompassHudActive();
+                }
                 PublishOverlayViews();
                 SyncVanillaCompassVisibility(true);
                 send_state();
@@ -6874,6 +8676,16 @@ bool HandleHostUiRequest(SkyUltraViewHandle handle, const skyultra::PageBridgeMe
     next_rec.placements = saved_placements;
     next_rec.custom_code = std::move(custom_code_json);
     g_widget_overlays[mod_handle] = std::move(next_rec);
+    SKSE::log::info("SkyUltra pinned HUD surface {} ({}) at {}x{} for '{}'.",
+        next_rec.manager_id,
+        BrowserEngineName(config.browser_engine),
+        config.size.width,
+        config.size.height,
+        mod.manifest.id);
+    if (mod.manifest.id == "skyultra.menu") {
+        skyultra::SetCompassMarkerRadiusMeters(static_cast<float>(compass_radius_m));
+        g_extra_menus.replace_compass = AnyPinnedCompassHudActive();
+    }
     PublishOverlayViews();
     SyncVanillaCompassVisibility(true);
     send_state();
@@ -6932,6 +8744,10 @@ SkyUltraResult NativeApiCreateViewForMod(
         policy.entry_file = mod_record.manifest.entry_file;
         policy.asset_access_enabled = mod_record.manifest.asset_access_enabled;
         policy.network_hosts = mod_record.manifest.network_hosts;
+        if (mod_record.manifest.page_request_methods.contains("game.getItemThumbnail") ||
+            mod_record.manifest.page_request_methods.contains("game.getActorThumbnail")) {
+            policy.thumbnail_cache_directory = skyultra::GetThumbnailCacheRootDirectory();
+        }
         config.mod_content_policy = std::move(policy);
     }
     config.size = { source->pixel_width, source->pixel_height };
@@ -6942,7 +8758,7 @@ SkyUltraResult NativeApiCreateViewForMod(
     config.scale = source->scale;
     config.z_index = source->z_index;
     config.max_fps = source->max_fps == SKYULTRA_FPS_UNCAPPED ? 0U :
-        (source->max_fps == 0 ? 60U : std::min(source->max_fps, 240U));
+        (source->max_fps == 0 ? 0U : std::min(source->max_fps, 240U));
     config.visible = (source->flags & SKYULTRA_VIEW_VISIBLE) != 0;
     config.transparent = (source->flags & SKYULTRA_VIEW_TRANSPARENT) != 0;
     config.click_through = (source->flags & SKYULTRA_VIEW_CLICK_THROUGH) != 0;
@@ -7138,6 +8954,7 @@ SkyUltraResult SKYULTRA_CALL NativeApiRegisterMod(
         g_native_mods.emplace(handle, NativeApiModRecord{
             std::move(*manifest), std::move(storage_directory) });
     }
+    InvalidateDevModAuditCache();
     *out_mod = handle;
     return SKYULTRA_OK;
 }
@@ -7213,8 +9030,11 @@ SkyUltraResult SKYULTRA_CALL NativeApiDestroyView(SkyUltraViewHandle handle)
         it->second.bridge_responses->Close();
     }
     if (!QueueNativeApiTask([handle] {
-            g_game_subscriptions.erase(handle);
-            g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+            {
+                const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
+                g_game_subscriptions.erase(handle);
+                g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+            }
             std::erase_if(g_widget_overlays, [handle](const auto& entry) { return entry.second.view == handle; });
             { const std::scoped_lock lock(g_native_views_mutex);
               if (const auto record = g_native_views.find(handle); record != g_native_views.end() && record->second.pending_config)
@@ -7222,6 +9042,7 @@ SkyUltraResult SKYULTRA_CALL NativeApiDestroyView(SkyUltraViewHandle handle)
             if (const auto view_id = NativeManagerViewId(handle); view_id && g_view_manager != nullptr) {
                 if(const auto* config=g_view_manager->Config(*view_id))skyultra::CancelFrameworkSplash(config->id);
                 skyultra::RemoveActorPreview(*view_id);
+                skyultra::UnregisterTraceViewMetadata(*view_id);
                 skyultra::CancelOverlayPageLoad(*view_id);
                 g_suspended_panel_views.erase(*view_id);
                 if (g_view_manager->Remove(*view_id)) {
@@ -7303,13 +9124,18 @@ SkyUltraResult SKYULTRA_CALL NativeApiSetVisible(SkyUltraViewHandle handle, std:
                     skyultra::BeginFrameworkSplash(g_view_manager->Config(*view_id)->id,std::move(mod_id),!skyultra::OverlayPageAwaitingReady(*view_id));
                 }
                 if(!visible && g_view_manager->Config(*view_id))skyultra::CancelFrameworkSplash(g_view_manager->Config(*view_id)->id);
-                if (const auto sub = g_game_subscriptions.find(handle); sub != g_game_subscriptions.end()) {
-                    sub->second.needs_catchup = true;
+                bool should_pump = false;
+                {
+                    const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
+                    if (const auto sub = g_game_subscriptions.find(handle); sub != g_game_subscriptions.end()) {
+                        sub->second.needs_catchup = true;
+                    }
+                    should_pump = visible && !g_game_subscriptions.empty();
                 }
                 PublishOverlayViews();
                 SyncSkyUltraWorldPause();
                 PublishBrowserCursor(HasVisibleInteractiveView());
-                if (visible && !g_game_subscriptions.empty()) {
+                if (should_pump) {
                     PumpGameDataSubscriptions(true);
                 }
             }
@@ -7342,7 +9168,20 @@ SkyUltraResult SKYULTRA_CALL NativeApiSetBounds(SkyUltraViewHandle handle, SkyUl
             }
             auto updated = *current;
             updated.bounds = { bounds.x, bounds.y, bounds.width, bounds.height };
-            if (g_view_manager->UpdateConfig(*view_id, updated)) {
+            if ((updated.id == "skynet_webview_shielded" || updated.id == "skynet_webview") &&
+                bounds.width >= 320.0F && bounds.height >= 240.0F) {
+                updated.size = {
+                    std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::lround(bounds.width)), 320U, 3840U),
+                    std::clamp<std::uint32_t>(static_cast<std::uint32_t>(std::lround(bounds.height)), 240U, 2160U),
+                };
+            }
+            bool updated_ok = g_view_manager->UpdateConfig(*view_id, updated);
+            if (!updated_ok &&
+                (updated.size.width != current->size.width || updated.size.height != current->size.height)) {
+                updated.size = current->size;
+                updated_ok = g_view_manager->UpdateConfig(*view_id, updated);
+            }
+            if (updated_ok) {
                 PublishOverlayViews();
             }
         })) {
@@ -7369,8 +9208,11 @@ SkyUltraResult SKYULTRA_CALL NativeApiNavigate(
     }
     std::string navigation(url);
     if (!QueueNativeApiTask([handle, navigation = std::move(navigation)] {
-            g_game_subscriptions.erase(handle);
-            g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+            {
+                const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
+                g_game_subscriptions.erase(handle);
+                g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+            }
             const auto view_id = NativeManagerViewId(handle);
             auto* view = view_id && g_view_manager != nullptr ? g_view_manager->Find(*view_id) : nullptr;
             if (view != nullptr) {
@@ -7411,8 +9253,11 @@ SkyUltraResult SKYULTRA_CALL NativeApiReloadView(SkyUltraViewHandle handle)
         initial_url = view->second.initial_url;
     }
     if (!QueueNativeApiTask([handle, initial_url = std::move(initial_url)] {
-            g_game_subscriptions.erase(handle);
-            g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+            {
+                const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
+                g_game_subscriptions.erase(handle);
+                g_active_game_subscription_count.store(static_cast<std::uint32_t>(g_game_subscriptions.size()), std::memory_order_relaxed);
+            }
             const auto view_id = NativeManagerViewId(handle);
             auto* view = view_id && g_view_manager != nullptr ? g_view_manager->Find(*view_id) : nullptr;
             if (view != nullptr) {
@@ -7746,13 +9591,33 @@ void OnSKSEMessage(SKSE::MessagingInterface::Message* message)
                message->type == SKSE::MessagingInterface::kNewGame) {
         g_game_session_active.store(message->type == SKSE::MessagingInterface::kNewGame, std::memory_order_relaxed);
         skyultra::InvalidateSharedGameDataCache();
+        skyultra::ResetCompassDiscoveryState();
+        g_blacksmith_pending_open.store(false, std::memory_order_relaxed);
+        g_enchanting_pending_open.store(false, std::memory_order_relaxed);
+        g_alchemy_pending_open.store(false, std::memory_order_relaxed);
+        g_book_pending_open.store(false, std::memory_order_relaxed);
+        g_bypass_next_native_book_menu.store(false, std::memory_order_relaxed);
+        g_pending_blacksmith_furniture_exit.store(false, std::memory_order_relaxed);
+        skyultra::ClearActiveBlacksmithStation();
+        skyultra::ClearActiveEnchantingStation();
+        skyultra::ClearActiveAlchemyStation();
+        skyultra::ClearActiveBookMenu();
+        skyultra::ReleaseVirtualCraftingProxyNow();
         skyultra::ClearActorPreviews();
+        if (message->type == SKSE::MessagingInterface::kNewGame) {
+            skyultra::NotifyNewGameCharacterSession();
+        } else {
+            skyultra::InvalidatePlayerPortraitCache(false);
+        }
         for (const auto& [mod, widgets] : g_widget_overlays) { (void)mod; (void)NativeApiDestroyView(widgets.view); }
         g_widget_overlays.clear();
-        for (auto& [sub_handle, sub_record] : g_game_subscriptions) {
-            (void)sub_handle;
-            sub_record.topic_signatures.clear();
-            sub_record.needs_catchup = true;
+        {
+            const std::scoped_lock sub_lock(g_game_subscriptions_mutex);
+            for (auto& [sub_handle, sub_record] : g_game_subscriptions) {
+                (void)sub_handle;
+                sub_record.topic_signatures.clear();
+                sub_record.needs_catchup = true;
+            }
         }
         if (message->type == SKSE::MessagingInterface::kNewGame) {
             (void)QueueNativeApiTask([] {
@@ -7766,12 +9631,24 @@ void OnSKSEMessage(SKSE::MessagingInterface::Message* message)
                 }
                 PublishOverlayViews();
                 PumpGameDataSubscriptions(true);
+                ScheduleWearableLightDiagnostic("newGame", 2500);
             });
         }
     } else if (message->type == SKSE::MessagingInterface::kPostLoadGame) {
         g_game_session_active.store(true, std::memory_order_relaxed);
+        skyultra::NotifyLoadedGameCharacterSession();
+        skyultra::InvalidateSharedGameDataCache();
+        skyultra::ResetCompassDiscoveryState();
+        skyultra::ClearActiveBlacksmithStation();
+        skyultra::ClearActiveEnchantingStation();
+        skyultra::ClearActiveAlchemyStation();
+        skyultra::ClearActiveBookMenu();
+        skyultra::ReleaseVirtualCraftingProxyNow();
+        skyultra::ApplySavedEnchantmentCustomNames(g_extra_menus.enchantment_custom_names);
         (void)QueueNativeApiTask([] {
             g_game_session_active.store(true, std::memory_order_relaxed);
+            skyultra::NotifyLoadedGameCharacterSession();
+            skyultra::InvalidateSharedGameDataCache();
             g_modal_menu_open = IsModalOrBlockingMenuOpen(RE::UI::GetSingleton());
             SyncVanillaCompassVisibility();
             if (g_view_manager != nullptr && g_menu_view_id != 0) {
@@ -7781,6 +9658,7 @@ void OnSKSEMessage(SKSE::MessagingInterface::Message* message)
             }
             PublishOverlayViews();
             PumpGameDataSubscriptions(true);
+            ScheduleWearableLightDiagnostic("postLoadGame", 2500);
         });
     } else if (message->type == SKSE::MessagingInterface::kDataLoaded) {
         StartBrowser();
@@ -7837,7 +9715,9 @@ void RequestCloseInventoryReplacement(std::string_view reason)
     (void)QueueNativeApiTask([reason = std::string(reason)] {
         if ((g_inventory_replacement_active || g_favorites_replacement_active ||
              g_container_replacement_active || g_mannequin_replacement_active ||
-             g_loot_replacement_active || g_pickpocket_replacement_active) && HasVisibleInteractiveView()) {
+             g_loot_replacement_active || g_pickpocket_replacement_active ||
+             g_blacksmith_replacement_active || g_enchanting_replacement_active ||
+             g_alchemy_replacement_active || g_book_replacement_active) && HasVisibleInteractiveView()) {
             SetBrowserVisible(false, reason.c_str());
         }
     });
@@ -7880,6 +9760,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
 {
     SKSE::Init(skse);
 #if defined(SKYULTRA_WITH_CEF) || defined(SKYULTRA_WITH_ULTRALIGHT)
+    g_skyrim_main_thread_id = std::this_thread::get_id();
+    (void)skyultra::EnsureLiveCompassSharedMemory();
     g_game_task_queue.Bind(SKSE::GetTaskInterface());
 #endif
     g_runtime_name = RuntimeName(skse);

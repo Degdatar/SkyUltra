@@ -35,6 +35,7 @@ void CancelFrameworkSplash(std::string_view view_key = {});
 // Prefers a separate media device and zero-timeout keyed mutexes. If GPU sharing
 // fails before the first frame, reopens the same MP4 in WIC mode with native audio
 // and uploads its software frames only while the splash is active.
+void PrewarmFrameworkSplash(ID3D11Device* host);
 void WarmupFrameworkSplash(ID3D11Device* host, ID3D11DeviceContext* context);
 Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> TickFrameworkSplash(ID3D11Device* host, ID3D11DeviceContext* context);
 bool FrameworkSplashActive();

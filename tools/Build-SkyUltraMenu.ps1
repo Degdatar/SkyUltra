@@ -131,6 +131,10 @@ Copy-Item -LiteralPath (Join-Path $nativeRoot 'resources\skyultra_mannequin.swf'
 Copy-Item -LiteralPath (Join-Path $nativeRoot 'resources\skyultra_loot.swf') -Destination (Join-Path $interfaceOutput 'skyultra_loot.swf') -Force
 Copy-Item -LiteralPath (Join-Path $nativeRoot 'resources\skyultra_pickpocket.swf') -Destination (Join-Path $interfaceOutput 'skyultra_pickpocket.swf') -Force
 Copy-Item -LiteralPath (Join-Path $nativeRoot 'resources\skyultra_compass.swf') -Destination (Join-Path $interfaceOutput 'skyultra_compass.swf') -Force
+Copy-Item -LiteralPath (Join-Path $nativeRoot 'resources\skyultra_blacksmith.swf') -Destination (Join-Path $interfaceOutput 'skyultra_blacksmith.swf') -Force
+Copy-Item -LiteralPath (Join-Path $nativeRoot 'resources\skyultra_enchanting.swf') -Destination (Join-Path $interfaceOutput 'skyultra_enchanting.swf') -Force
+Copy-Item -LiteralPath (Join-Path $nativeRoot 'resources\skyultra_book.swf') -Destination (Join-Path $interfaceOutput 'skyultra_book.swf') -Force
+Copy-Item -LiteralPath (Join-Path $nativeRoot 'resources\skyultra_alchemy.swf') -Destination (Join-Path $interfaceOutput 'skyultra_alchemy.swf') -Force
 Write-Host "Package: $(Join-Path $nativeRoot 'build\package\Data')"
 Write-Host 'Copy the Data contents into your SkyUltra mod manually.'
 Write-Host 'No game or mod-manager files were changed.'

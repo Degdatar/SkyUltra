@@ -1,6 +1,10 @@
 export type Route = "overview" | "actors" | "inventory" | "character" | "components" | "performance" | "widgets" | "devtools" | "guide" | "settings";
 export type Palette =
   | "darkmode"
+  | "warmdusk"
+  | "sagehaven"
+  | "twilightplum"
+  | "nordiclinen"
   | "obsidian"
   | "dragonstone"
   | "aurora"
@@ -31,7 +35,11 @@ export interface PaletteInfo {
   styleTag: string;
 }
 export const palettes: PaletteInfo[] = [
-  { value: "darkmode", label: "Dark Mode", color: "#68b5ff", secondary: "#a38bf8", family: "darkmode", styleTag: "Eye-Comfort Matte · Velvet Slate UI" },
+  { value: "darkmode", label: "Velvet Slate", color: "#68b5ff", secondary: "#a38bf8", family: "darkmode", styleTag: "Eye-Comfort Matte · Cool Slate" },
+  { value: "warmdusk", label: "Warm Dusk", color: "#e6b87d", secondary: "#d4926a", family: "darkmode", styleTag: "Eye-Comfort Matte · Low-Blue Amber" },
+  { value: "sagehaven", label: "Sage Haven", color: "#7ec8a7", secondary: "#8db4e0", family: "darkmode", styleTag: "Eye-Comfort Matte · Calm Eucalyptus" },
+  { value: "twilightplum", label: "Twilight Mist", color: "#a5a0e8", secondary: "#d99ec2", family: "darkmode", styleTag: "Eye-Comfort Matte · Soft Lavender" },
+  { value: "nordiclinen", label: "Parchment Dusk", color: "#d4a373", secondary: "#b6c4a2", family: "darkmode", styleTag: "Eye-Comfort Matte · Reading Lamp" },
   { value: "obsidian", label: "Obsidian", color: "#d8c49c", secondary: "#70caff", family: "classic", styleTag: "Nordic Slate · Serif" },
   { value: "dragonstone", label: "Dragonstone", color: "#dfa84e", secondary: "#ff765f", family: "classic", styleTag: "Imperial Inlay · Engraved" },
   { value: "dwemer", label: "Dwemer", color: "#63e0c1", secondary: "#e4b363", family: "classic", styleTag: "Automaton Brass · Beveled" },

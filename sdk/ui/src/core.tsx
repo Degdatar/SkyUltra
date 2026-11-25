@@ -4,15 +4,26 @@ import { skyStatMaximum, skyStatFraction } from "./scales.js";
 export { SkyToggleSwitch, SkyRangeSlider, SkyFilterChips, SkyStatBar, skyStatMaximum, skyStatFraction } from "./controls.js";
 import { enterSkyInputScope } from "./interaction.js";
 
+function isEyeComfortTheme(theme: string): boolean {
+  return (
+    theme === "darkmode" ||
+    theme === "warmdusk" ||
+    theme === "sagehaven" ||
+    theme === "twilightplum" ||
+    theme === "nordiclinen"
+  );
+}
+
 /** Lightweight theme scope. This entry uses React and ReactDOM only, so game HUDs do not
  * load the optional dialog, menu, tooltip, or animation dependencies. */
 export function SkyThemeScope({ theme = "obsidian", className = "", ...props }: React.HTMLAttributes<HTMLDivElement> & { theme?: string }): React.JSX.Element {
+  const darkUi = isEyeComfortTheme(theme);
   return (
     <div
       {...props}
       data-sky-theme={theme}
-      data-sky-ui-style={theme === "darkmode" ? "velvet-dark" : "standard"}
-      className={"sky-theme" + (theme === "darkmode" ? " sky-theme--darkmode" : "") + (className ? " " + className : "")}
+      data-sky-ui-style={darkUi ? "velvet-dark" : "standard"}
+      className={"sky-theme" + (darkUi ? " sky-theme--darkmode" : "") + (className ? " " + className : "")}
     />
   );
 }

@@ -1,11 +1,18 @@
 #include "SkyUltra/ActorPreview.h"
+#include "SkyUltra/FrameTrace.h"
+#include "SkyUltra/PixelConvert.h"
 #include "SkyUltra/VideoSplash.h"
 #include "ActorAnimation.h"
 #include "ActorSkeleton.h"
 #include "ActorSkinWeights.h"
 
+#include <intrin.h>
+
 #include <SKSE/SKSE.h>
 #include <RE/A/Actor.h>
+#include <RE/B/BGSColorForm.h>
+#include <RE/B/BGSHeadPart.h>
+#include <RE/B/BGSSaveLoadManager.h>
 #include <RE/B/BSAtomic.h>
 #include <RE/B/BSDynamicTriShape.h>
 #include <RE/B/BSDismemberSkinInstance.h>
@@ -57,11 +64,13 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstring>
 #include <exception>
 #include <limits>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -76,6 +85,68 @@
 #include <iomanip>
 
 namespace skyultra {
+
+void UnpremultiplyBgraScalar(std::uint8_t* pixels, std::size_t byte_count) noexcept
+{
+    if (pixels == nullptr || byte_count < 4U) {
+        return;
+    }
+    const std::size_t aligned_bytes = (byte_count / 4U) * 4U;
+    for (std::size_t p = 0; p < aligned_bytes; p += 4U) {
+        const auto alpha = pixels[p + 3U];
+        if (alpha == 0U) {
+            pixels[p] = 0U;
+            pixels[p + 1U] = 0U;
+            pixels[p + 2U] = 0U;
+            continue;
+        }
+        if (alpha == 255U) {
+            continue;
+        }
+        for (unsigned c = 0; c < 3U; ++c) {
+            pixels[p + c] = static_cast<std::uint8_t>(
+                std::min(255U, (pixels[p + c] * 255U + alpha / 2U) / alpha));
+        }
+    }
+}
+
+bool CpuSupportsAvx2ForPixelConvert() noexcept
+{
+    static const bool supported = []() noexcept -> bool {
+        int cpu_info[4]{};
+        __cpuid(cpu_info, 0);
+        if (cpu_info[0] < 7) {
+            return false;
+        }
+        __cpuid(cpu_info, 1);
+        const bool osxsave = (cpu_info[2] & (1 << 27)) != 0;
+        const bool avx = (cpu_info[2] & (1 << 28)) != 0;
+        if (!osxsave || !avx) {
+            return false;
+        }
+        if ((_xgetbv(0) & 0x6ULL) != 0x6ULL) {
+            return false;
+        }
+        __cpuidex(cpu_info, 7, 0);
+        return (cpu_info[1] & (1 << 5)) != 0;
+    }();
+    return supported;
+}
+
+void UnpremultiplyBgraToStraight(
+    std::uint8_t* pixels, std::size_t byte_count, bool* out_used_avx2) noexcept
+{
+    const bool use_avx2 = CpuSupportsAvx2ForPixelConvert();
+    if (out_used_avx2 != nullptr) {
+        *out_used_avx2 = use_avx2;
+    }
+    if (use_avx2) {
+        UnpremultiplyBgraAvx2(pixels, byte_count);
+    } else {
+        UnpremultiplyBgraScalar(pixels, byte_count);
+    }
+}
+
 namespace {
 using Microsoft::WRL::ComPtr;
 using DirectX::XMFLOAT4X4;
@@ -164,6 +235,7 @@ struct SceneSnapshot {
     float portrait_yaw{};
     std::uint32_t reference_id{};
     std::size_t skipped{};
+    std::size_t filtered_effects{};
     // Render-thread-only cache. Camera/lighting changes and PNG jobs keep the
     // snapshot, so they use exactly the same private buffers without reloading.
     mutable std::shared_ptr<const ItemMeshBuffers> item_meshes;
@@ -234,9 +306,16 @@ struct PreviewState {
 
 std::mutex g_mutex;
 std::unordered_map<ViewId, PreviewState> g_previews;
+struct PreviewSplashGate {
+    bool held{};
+    std::uint64_t min_view_paint_sequence{};
+    std::chrono::steady_clock::time_point updated_at{};
+};
+std::unordered_map<ViewId, PreviewSplashGate> g_splash_gates;
 std::uint32_t g_full_view_export_size{4096},g_portrait_export_size{4096}; // protected by g_mutex
 std::atomic_bool g_tick_queued{};
 std::chrono::steady_clock::time_point g_last_tick_request{}; // render thread only
+std::atomic<std::int64_t> g_last_interactive_input_ms{ 0 };
 std::uint64_t g_animation_generation{}; // protected by g_mutex
 
 XMFLOAT4X4 Matrix(const RE::NiTransform& transform)
@@ -463,19 +542,18 @@ RE::Actor* FindActor(const ActorPreviewRequest& request)
     return match;
 }
 
-// Prefer the engine's world transform (keeps physics-driven bones such as SMP hair),
-// but fall back to the local chain whenever the world transform is stale or bogus.
+// Sample the live skeleton consistently from the local transform hierarchy when
+// available so all bones come from a single synchronous graph pass without
+// mid-frame local vs world transform desync.
 RE::NiTransform LiveRootLocal(RE::NiAVObject* object, RE::NiAVObject* root, const RE::NiTransform& root_inverse)
 {
-    const RE::NiTransform from_world = root_inverse * object->world;
+    bool any_hidden{};
     RE::NiTransform from_locals;
-    if (RootLocalFromLocals(object, root, from_locals) && FiniteTransform(from_locals)) {
-        if (!FiniteTransform(from_world)) return from_locals;
-        const auto delta = from_world.translate - from_locals.translate;
-        const float drift = std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
-        if (drift > 128.0F || std::abs(from_world.scale - from_locals.scale) > 0.25F) return from_locals;
+    const bool has_locals = RootLocalFromLocals(object, root, from_locals, &any_hidden) && FiniteTransform(from_locals);
+    if (has_locals) {
+        return from_locals;
     }
-    return from_world;
+    return root_inverse * object->world;
 }
 
 // Pose one captured skeleton. FaceGen, outfits and animation props can have
@@ -615,6 +693,12 @@ public:
         return result;
     }
     bool Active() const {return !animated_.empty() || !posed_.empty() || (pose_!=ActorPreviewPose::Current && Supported());}
+    const RE::NiTransform& CapturedTransform(RE::NiAVObject* object) const {
+        static const RE::NiTransform kIdentity{};
+        if (!object || object==root_) return kIdentity;
+        if (const auto found=captured_transforms_.find(object);found!=captured_transforms_.end()) return found->second;
+        return captured_transforms_.emplace(object, LiveRootLocal(object,root_,inverse_)).first->second;
+    }
 private:
     void PopulateBindPose(RE::NiAVObject* root) {
         for (const auto& [bone, transform] : detail::CaptureSkinBindPose(root)) {
@@ -636,7 +720,7 @@ private:
     DirectX::XMMATRIX CapturedWorld(RE::NiAVObject* object) const {
         if (!object || object==root_) return DirectX::XMMatrixIdentity();
         if (const auto found=captured_.find(object);found!=captured_.end()) return DirectX::XMLoadFloat4x4(&found->second);
-        const auto matrix=Matrix(LiveRootLocal(object,root_,inverse_));
+        const auto matrix=Matrix(CapturedTransform(object));
         captured_.emplace(object,matrix);
         return DirectX::XMLoadFloat4x4(&matrix);
     }
@@ -653,6 +737,7 @@ private:
         XMFLOAT4X4 delta;
     };
     std::unordered_map<RE::NiAVObject*,XMFLOAT4X4> posed_;
+    mutable std::unordered_map<RE::NiAVObject*,RE::NiTransform> captured_transforms_;
     mutable std::unordered_map<RE::NiAVObject*,XMFLOAT4X4> captured_;
     std::unordered_map<std::string,XMFLOAT4X4> animated_;
     std::unordered_map<std::string,XMFLOAT4X4> animated_deltas_;
@@ -772,7 +857,7 @@ bool FillPacket(DrawPacket& packet, RE::BSGeometry* geometry,
     if (pose.BindPose() && packet.skinned) {
         packet.world = identity;
     } else {
-        packet.world = Matrix(LiveRootLocal(geometry, root, root_inverse));
+        packet.world = Matrix(pose.CapturedTransform(geometry));
         if (pose.Active()) DirectX::XMStoreFloat4x4(&packet.world,pose.World(geometry));
     }
     if (!Finite(packet.world)) return false;
@@ -823,7 +908,7 @@ bool FillPacket(DrawPacket& packet, RE::BSGeometry* geometry,
                     const auto skin_to_bone=Matrix(skin_to_bone_t);
                     DirectX::XMStoreFloat4x4(&packet.bones[global],DirectX::XMLoadFloat4x4(&skin_to_bone)*pose.World(skin->bones[global]));
                 } else {
-                    packet.bones[global] = Matrix(LiveRootLocal(skin->bones[global], root, root_inverse) * skin_to_bone_t);
+                    packet.bones[global] = Matrix(pose.CapturedTransform(skin->bones[global]) * skin_to_bone_t);
                 }
                 if (!Finite(packet.bones[global])) packet.bones[global] = identity;
             }
@@ -902,6 +987,19 @@ bool IsEffectOrFlameGeometry(RE::BSGeometry* geometry, RE::NiAVObject* root) noe
     return false;
 }
 
+bool IsSkippedHiddenHelperNode(RE::NiAVObject* object) noexcept
+{
+    if (!object) return false;
+    const auto* raw = object->name.c_str();
+    const std::string_view name = raw ? raw : "";
+    return ContainsAsciiCaseInsensitive(name, "marker") ||
+        ContainsAsciiCaseInsensitive(name, "collision") ||
+        ContainsAsciiCaseInsensitive(name, "shadow") ||
+        ContainsAsciiCaseInsensitive(name, "camera") ||
+        ContainsAsciiCaseInsensitive(name, "blood") ||
+        ContainsAsciiCaseInsensitive(name, "scabbard");
+}
+
 void CollectGeometry(RE::NiAVObject* object, RE::NiAVObject* root,
     const RE::NiTransform& inverse, SceneSnapshot& scene, PreviewPose& pose,
     bool skip_effects = true, unsigned depth = 0, bool ignore_hidden_head = false,
@@ -909,25 +1007,17 @@ void CollectGeometry(RE::NiAVObject* object, RE::NiAVObject* root,
 {
     if (object == nullptr || depth > 128 || scene.packets.size() >= kMaxPackets) return;
     if (object != root && object->GetFlags().all(RE::NiAVObject::Flag::kHidden)) {
-        if (!ignore_hidden_head) return;
-        const auto* raw = object->name.c_str();
-        const std::string_view name = raw ? raw : "";
         // In 1st-person camera Skyrim marks the player's 3rd-person container
         // nodes, FaceGen head, and worn headgear kHidden while BSDismemberSkinInstance
         // still tracks partition visibility under helmets. Skip only hidden helper nodes.
-        if (ContainsAsciiCaseInsensitive(name, "marker") ||
-            ContainsAsciiCaseInsensitive(name, "collision") ||
-            ContainsAsciiCaseInsensitive(name, "shadow") ||
-            ContainsAsciiCaseInsensitive(name, "camera") ||
-            ContainsAsciiCaseInsensitive(name, "blood") ||
-            ContainsAsciiCaseInsensitive(name, "scabbard")) {
+        if (!ignore_hidden_head || IsSkippedHiddenHelperNode(object)) {
             return;
         }
     }
     if (auto* shape = object->AsTriShape()) {
         auto* geometry = static_cast<RE::BSGeometry*>(shape);
         if (skip_effects && IsEffectOrFlameGeometry(geometry, root)) {
-            ++scene.skipped;
+            ++scene.filtered_effects;
             return;
         }
         const auto shape_data = shape->GetTrishapeRuntimeData();
@@ -1046,11 +1136,13 @@ struct PortraitBounds {
     }
 };
 
-void CollectPortraitBounds(RE::NiAVObject* object, RE::NiAVObject* head,
+void CollectPortraitBounds(RE::NiAVObject* object, RE::NiAVObject* root, RE::NiAVObject* head,
     PreviewPose& pose, PortraitBounds& bounds, unsigned depth=0, bool ignore_hidden=false)
 {
-    if(!object||depth>128||(depth>0 && !ignore_hidden && object->GetFlags().all(RE::NiAVObject::Flag::kHidden)))return;
+    if(!object||depth>128)return;
+    if(depth>0 && object->GetFlags().all(RE::NiAVObject::Flag::kHidden) && (!ignore_hidden || IsSkippedHiddenHelperNode(object)))return;
     if(auto* geometry=object->AsGeometry()){
+        if(IsEffectOrFlameGeometry(geometry, root))return;
         auto* skin=geometry->GetGeometryRuntimeData().skinInstance.get();
         if(skin && skin->skinData && skin->bones){
             const auto count=skin->skinData->GetBoneCount();
@@ -1076,7 +1168,7 @@ void CollectPortraitBounds(RE::NiAVObject* object, RE::NiAVObject* head,
             bounds.Add(center,object->worldBound.radius/std::abs(object->world.scale)*scale);
         }
     }
-    if(auto* node=object->AsNode())for(const auto& child:node->GetChildren())CollectPortraitBounds(child.get(),head,pose,bounds,depth+1,ignore_hidden);
+    if(auto* node=object->AsNode())for(const auto& child:node->GetChildren())CollectPortraitBounds(child.get(),root,head,pose,bounds,depth+1,ignore_hidden);
 }
 
 // Tight body bounds from skinned bones, plus rigid attachments (weapons, lanterns,
@@ -1084,11 +1176,13 @@ void CollectPortraitBounds(RE::NiAVObject* object, RE::NiAVObject* head,
 // art, particle and camera-adjacent geometry whose world bounds are far larger than
 // the actor; using root->worldBound there shrinks the actor and makes it float.
 struct RigidBound { DirectX::XMFLOAT3 center; float radius; };
-void CollectActorBodyBounds(RE::NiAVObject* object, PreviewPose& pose, PortraitBounds& skinned,
+void CollectActorBodyBounds(RE::NiAVObject* object, RE::NiAVObject* root, PreviewPose& pose, PortraitBounds& skinned,
     std::vector<RigidBound>& rigid, unsigned depth=0, bool ignore_hidden=false)
 {
-    if(!object||depth>128||(depth>0 && !ignore_hidden && object->GetFlags().all(RE::NiAVObject::Flag::kHidden)))return;
+    if(!object||depth>128)return;
+    if(depth>0 && object->GetFlags().all(RE::NiAVObject::Flag::kHidden) && (!ignore_hidden || IsSkippedHiddenHelperNode(object)))return;
     if(auto* geometry=object->AsGeometry()){
+        if(IsEffectOrFlameGeometry(geometry, root))return;
         auto* skin=geometry->GetGeometryRuntimeData().skinInstance.get();
         if(skin && skin->skinData && skin->bones){
             const auto count=skin->skinData->GetBoneCount();
@@ -1114,7 +1208,7 @@ void CollectActorBodyBounds(RE::NiAVObject* object, PreviewPose& pose, PortraitB
             if(std::isfinite(r)&&r>0)rigid.push_back({center,r});
         }
     }
-    if(auto* node=object->AsNode())for(const auto& child:node->GetChildren())CollectActorBodyBounds(child.get(),pose,skinned,rigid,depth+1,ignore_hidden);
+    if(auto* node=object->AsNode())for(const auto& child:node->GetChildren())CollectActorBodyBounds(child.get(),root,pose,skinned,rigid,depth+1,ignore_hidden);
 }
 
 bool ComputeActorBodyBounds(RE::NiAVObject* root, PreviewPose& pose, bool ignore_hidden,
@@ -1122,7 +1216,7 @@ bool ComputeActorBodyBounds(RE::NiAVObject* root, PreviewPose& pose, bool ignore
 {
     PortraitBounds skinned;
     std::vector<RigidBound> rigid;
-    CollectActorBodyBounds(root,pose,skinned,rigid,0,ignore_hidden);
+    CollectActorBodyBounds(root,root,pose,skinned,rigid,0,ignore_hidden);
     if(!skinned.valid)return false;
     const DirectX::XMFLOAT3 c{(skinned.low.x+skinned.high.x)*.5F,(skinned.low.y+skinned.high.y)*.5F,(skinned.low.z+skinned.high.z)*.5F};
     const float dx=skinned.high.x-skinned.low.x,dy=skinned.high.y-skinned.low.y,dz=skinned.high.z-skinned.low.z;
@@ -1131,11 +1225,19 @@ bool ComputeActorBodyBounds(RE::NiAVObject* root, PreviewPose& pose, bool ignore
     PortraitBounds all=skinned;
     for(const auto& r:rigid){
         const float ox=r.center.x-c.x,oy=r.center.y-c.y,oz=r.center.z-c.z;
-        if(std::sqrt(ox*ox+oy*oy+oz*oz)<=body_r*1.15F && r.radius<=body_r*.7F)all.Add(r.center,r.radius);
+        if(std::sqrt(ox*ox+oy*oy+oz*oz)<=body_r*.95F && r.radius<=body_r*.45F)all.Add(r.center,r.radius);
     }
     out_center={(all.low.x+all.high.x)*.5F,(all.low.y+all.high.y)*.5F,(all.low.z+all.high.z)*.5F};
+    const float shift_x=out_center.x-c.x,shift_y=out_center.y-c.y,shift_z=out_center.z-c.z;
+    const float shift=std::sqrt(shift_x*shift_x+shift_y*shift_y+shift_z*shift_z);
+    const float max_shift=body_r*.12F;
+    if(std::isfinite(shift) && shift>max_shift && shift>0.0F){
+        const float scale=max_shift/shift;
+        out_center={c.x+shift_x*scale,c.y+shift_y*scale,c.z+shift_z*scale};
+    }
     const float ax=all.high.x-all.low.x,ay=all.high.y-all.low.y,az=all.high.z-all.low.z;
-    out_radius=std::sqrt(ax*ax+ay*ay+az*az)*.5F;
+    const float raw_radius=std::sqrt(ax*ax+ay*ay+az*az)*.5F;
+    out_radius=std::isfinite(raw_radius)?std::clamp(raw_radius,body_r*.95F,body_r*1.12F):body_r;
     return std::isfinite(out_radius)&&out_radius>1.0F;
 }
 
@@ -1215,7 +1317,7 @@ std::vector<RE::NiPointer<RE::NiTexture>> CaptureItemTextureSwaps(
     return textures;
 }
 
-std::shared_ptr<const SceneSnapshot> CaptureItemScene(const ActorPreviewRequest& request,ActorPreviewStatus& status)
+std::shared_ptr<SceneSnapshot> CaptureItemScene(const ActorPreviewRequest& request,ActorPreviewStatus& status)
 {
     status.item_preview=true;status.item_form_id=request.item_form_id;
     auto* form=RE::TESForm::LookupByID(request.item_form_id);
@@ -1226,8 +1328,7 @@ std::shared_ptr<const SceneSnapshot> CaptureItemScene(const ActorPreviewRequest&
     }else model=skyrim_cast<RE::TESModel*>(form);
     const auto* path=model?model->GetModel():nullptr;
     if(!path||!path[0]){status.message="This item has no world model to preview.";return {};}
-    auto* renderer=RE::BSGraphics::Renderer::GetSingleton();
-    if(!renderer){status.message="The game renderer is unavailable.";return {};}
+    if(!RE::BSGraphics::Renderer::GetSingleton()){status.message="The game renderer is unavailable.";return {};}
     RE::NiPointer<RE::NiNode> cached;
     const RE::BSModelDB::DBTraits::ArgsType args{};
     const auto loaded=RE::BSModelDB::Demand(path,cached,args);
@@ -1246,17 +1347,15 @@ std::shared_ptr<const SceneSnapshot> CaptureItemScene(const ActorPreviewRequest&
     scene->radius=std::clamp(bound.radius,.01F,4096.0F);scene->portrait_radius=scene->radius;
     PreviewPose pose(root.get(),RE::NiTransform{},ActorPreviewPose::Current);
     std::vector<RE::NiPointer<RE::NiTexture>> retained_textures;
-    {
-        struct RendererGuard {RE::BSGraphics::Renderer* renderer;~RendererGuard(){renderer->Unlock();}} guard{renderer};
-        renderer->Lock();
-        CollectGeometry(root.get(),root.get(),RE::NiTransform{},*scene,pose,true,0,false,&retained_textures);
-        if(scene->packets.empty()){
-            scene->skipped=0;
-            retained_textures.clear();
-            CollectGeometry(root.get(),root.get(),RE::NiTransform{},*scene,pose,false,0,false,&retained_textures);
-        }
+    // Traverse CPU scene-graph snapshots without holding Skyrim's global BSGraphics renderer lock.
+    CollectGeometry(root.get(),root.get(),RE::NiTransform{},*scene,pose,true,0,false,&retained_textures);
+    if(scene->packets.empty()){
+        scene->skipped=0;
+        scene->filtered_effects=0;
+        retained_textures.clear();
+        CollectGeometry(root.get(),root.get(),RE::NiTransform{},*scene,pose,false,0,false,&retained_textures);
     }
-    if(!scene->packets.empty() && scene->skipped>0){
+    if(!scene->packets.empty() && (scene->skipped>0 || scene->filtered_effects>0)){
         PortraitBounds item_bounds;
         for(const auto& pkt:scene->packets)item_bounds.Add(pkt.sort_center,std::max(.5F,bound.radius*.35F));
         if(item_bounds.valid){
@@ -1274,13 +1373,12 @@ std::shared_ptr<const SceneSnapshot> CaptureItemScene(const ActorPreviewRequest&
     return status.available?scene:nullptr;
 }
 
-std::shared_ptr<const SceneSnapshot> CaptureUnloadedNpcScene(const ActorPreviewRequest& request, ActorPreviewStatus& status)
+std::shared_ptr<SceneSnapshot> CaptureUnloadedNpcScene(const ActorPreviewRequest& request, ActorPreviewStatus& status)
 {
     if (!request.base_form_id) return {};
     auto* npc = RE::TESForm::LookupByID<RE::TESNPC>(request.base_form_id);
     if (!npc) return {};
-    auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
-    if (!renderer) return {};
+    if (!RE::BSGraphics::Renderer::GetSingleton()) return {};
     std::string candidate_path;
     if (const auto* file = npc->GetFile(0); file && file->GetFilename().data() && file->GetFilename()[0]) {
         const std::uint32_t local_id = file->IsLight() ? (npc->GetFormID() & 0x00000FFFU) : (npc->GetFormID() & 0x00FFFFFFU);
@@ -1326,15 +1424,13 @@ std::shared_ptr<const SceneSnapshot> CaptureUnloadedNpcScene(const ActorPreviewR
     scene->portrait_radius = scene->radius * 0.72F;
     PreviewPose pose(root.get(), RE::NiTransform{}, ActorPreviewPose::Current);
     std::vector<RE::NiPointer<RE::NiTexture>> retained_textures;
-    {
-        struct RendererGuard { RE::BSGraphics::Renderer* renderer; ~RendererGuard() { renderer->Unlock(); } } guard{ renderer };
-        renderer->Lock();
-        CollectGeometry(root.get(), root.get(), RE::NiTransform{}, *scene, pose, true, 0, true, &retained_textures);
-        if (scene->packets.empty()) {
-            scene->skipped = 0;
-            retained_textures.clear();
-            CollectGeometry(root.get(), root.get(), RE::NiTransform{}, *scene, pose, false, 0, true, &retained_textures);
-        }
+    // Traverse CPU scene-graph snapshots without holding Skyrim's global BSGraphics renderer lock.
+    CollectGeometry(root.get(), root.get(), RE::NiTransform{}, *scene, pose, true, 0, true, &retained_textures);
+    if (scene->packets.empty()) {
+        scene->skipped = 0;
+        scene->filtered_effects = 0;
+        retained_textures.clear();
+        CollectGeometry(root.get(), root.get(), RE::NiTransform{}, *scene, pose, false, 0, true, &retained_textures);
     }
     if (scene->packets.empty()) return {};
     scene->item_sources = LeaseItemSources(cached, root, std::move(retained_textures));
@@ -1347,8 +1443,9 @@ std::shared_ptr<const SceneSnapshot> CaptureUnloadedNpcScene(const ActorPreviewR
     return scene;
 }
 
-std::shared_ptr<const SceneSnapshot> CaptureScene(const ActorPreviewRequest& request, ActorPreviewStatus& status,
-    const std::shared_ptr<const detail::CapturedActorAnimations>& animations={})
+std::shared_ptr<SceneSnapshot> CaptureScene(const ActorPreviewRequest& request, ActorPreviewStatus& status,
+    const std::shared_ptr<const detail::CapturedActorAnimations>& animations={},
+    const SceneSnapshot* reuse_scene = nullptr)
 {
     if(request.item_preview)return CaptureItemScene(request,status);
     auto* actor = FindActor(request);
@@ -1394,87 +1491,106 @@ std::shared_ptr<const SceneSnapshot> CaptureScene(const ActorPreviewRequest& req
         !animation->skin_diagnostic_written->load();
     PreviewPose pose(root.get(),inverse,request.pose,animation,request.animation_frame,true,is_humanoid_npc,trace_capture);
     scene->bind_pose=pose.BindPose();
-    if(animation || pose.BindPose()){
-        PortraitBounds bounds;
-        CollectPortraitBounds(root.get(),root.get(),pose,bounds,0,is_player);
-        if(bounds.valid){
-            scene->center={(bounds.low.x+bounds.high.x)*.5F,(bounds.low.y+bounds.high.y)*.5F,(bounds.low.z+bounds.high.z)*.5F};
-            const auto x=bounds.high.x-bounds.low.x,y=bounds.high.y-bounds.low.y,z=bounds.high.z-bounds.low.z;
-            scene->radius=std::clamp(std::sqrt(x*x+y*y+z*z)*.5F,16.0F,4096.0F);
-            scene->head=scene->center;scene->portrait_radius=scene->radius;
-        }
-    }else{
-        DirectX::XMFLOAT3 body_center{};
-        float body_radius{};
-        if(ComputeActorBodyBounds(root.get(),pose,is_player,body_center,body_radius)){
-            scene->center=body_center;
-            scene->radius=std::clamp(body_radius,16.0F,4096.0F);
-            scene->head=scene->center;scene->portrait_radius=scene->radius;
-        }
-    }
-    status.poses_available=pose.Supported();
-    if(!status.poses_available){
-        // In actor root-local space, +Y is always forward. Give non-humanoid portraits a clean 3/4 studio angle.
-        scene->facing_yaw=0.0F;
-        scene->portrait_yaw=0.22F;
-        scene->portrait_radius=std::clamp(scene->radius*0.72F, 18.0F, 4096.0F);
-    }
-    if(auto* head=FindPortraitHead(actor,root.get())){
-        DirectX::XMFLOAT3 head_pos{};
-        DirectX::XMStoreFloat3(&head_pos,pose.World(head).r[3]);
-        if (status.poses_available) {
-            // Bust portrait framing: include head, shoulders, and upper chest.
-            const float bust_drop_z = std::clamp(scene->radius * 0.055F, 3.0F, 4.8F);
-            scene->head = { head_pos.x, head_pos.y, head_pos.z - bust_drop_z };
-            const float min_radius = std::clamp(scene->radius * 0.31F, 19.5F, 25.0F);
-            const float max_radius = std::clamp(scene->radius * 0.40F, 24.0F, 31.0F);
-            scene->portrait_radius = std::clamp(scene->radius * 0.34F, min_radius, max_radius);
+    const bool can_reuse_framing = reuse_scene != nullptr && !reuse_scene->item_preview &&
+        reuse_scene->reference_id == actor->GetFormID() && !reuse_scene->bind_pose &&
+        !animation && !pose.BindPose();
+    if (can_reuse_framing) {
+        scene->center = reuse_scene->center;
+        scene->radius = reuse_scene->radius;
+        scene->head = reuse_scene->head;
+        scene->portrait_radius = reuse_scene->portrait_radius;
+        scene->facing_yaw = reuse_scene->facing_yaw;
+        scene->portrait_yaw = reuse_scene->portrait_yaw;
+        status.poses_available = pose.Supported();
+    } else {
+        if(animation || pose.BindPose()){
             PortraitBounds bounds;
-            CollectPortraitBounds(root.get(), head, pose, bounds, 0, is_player);
-            if (bounds.valid) {
-                const float bx = (bounds.low.x + bounds.high.x) * 0.5F;
-                const float by = (bounds.low.y + bounds.high.y) * 0.5F;
-                scene->head.x = std::clamp(bx, head_pos.x - 3.0F, head_pos.x + 3.0F);
-                scene->head.y = std::clamp(by, head_pos.y - 3.0F, head_pos.y + 3.0F);
-                const auto span = std::max({ bounds.high.x - bounds.low.x, bounds.high.y - bounds.low.y, bounds.high.z - bounds.low.z });
-                scene->portrait_radius = std::clamp(span * 0.78F, min_radius, max_radius);
+            CollectPortraitBounds(root.get(),root.get(),root.get(),pose,bounds,0,is_player);
+            if(bounds.valid){
+                scene->center={(bounds.low.x+bounds.high.x)*.5F,(bounds.low.y+bounds.high.y)*.5F,(bounds.low.z+bounds.high.z)*.5F};
+                const auto x=bounds.high.x-bounds.low.x,y=bounds.high.y-bounds.low.y,z=bounds.high.z-bounds.low.z;
+                scene->radius=std::clamp(std::sqrt(x*x+y*y+z*z)*.5F,16.0F,4096.0F);
+                scene->head=scene->center;scene->portrait_radius=scene->radius;
             }
-        } else {
-            // Non-humanoids (creatures, animals, giants, mudcrabs): blend between body center and head
-            // with generous radius so the creature's head and upper body silhouette are clearly framed.
-            const float hx = head_pos.x - scene->center.x;
-            const float hy = head_pos.y - scene->center.y;
-            const float hz = head_pos.z - scene->center.z;
-            const float head_dist = std::sqrt(hx * hx + hy * hy + hz * hz);
-            if (std::isfinite(head_dist) && head_dist <= scene->radius * 1.5F) {
-                scene->head = {
-                    scene->center.x * 0.45F + head_pos.x * 0.55F,
-                    scene->center.y * 0.45F + head_pos.y * 0.55F,
-                    scene->center.z * 0.38F + head_pos.z * 0.62F
-                };
+        }else{
+            DirectX::XMFLOAT3 body_center{};
+            float body_radius{};
+            if(ComputeActorBodyBounds(root.get(),pose,is_player,body_center,body_radius)){
+                scene->center=body_center;
+                scene->radius=std::clamp(body_radius,16.0F,4096.0F);
+                scene->head=scene->center;scene->portrait_radius=scene->radius;
             }
-            scene->portrait_radius = std::clamp(scene->radius * 0.72F, 18.0F, 4096.0F);
+        }
+        status.poses_available=pose.Supported();
+        if(!status.poses_available){
+            // In actor root-local space, +Y is always forward. Give non-humanoid portraits a clean 3/4 studio angle.
+            scene->facing_yaw=0.0F;
+            scene->portrait_yaw=0.22F;
+            scene->portrait_radius=std::clamp(scene->radius*0.72F, 18.0F, 4096.0F);
+        }
+        if(auto* head=FindPortraitHead(actor,root.get())){
+            DirectX::XMFLOAT3 head_pos{};
+            DirectX::XMStoreFloat3(&head_pos,pose.World(head).r[3]);
+            if (status.poses_available) {
+                // Bust portrait framing: include head, shoulders, and upper chest.
+                const float bust_drop_z = std::clamp(scene->radius * 0.055F, 3.0F, 4.8F);
+                scene->head = { head_pos.x, head_pos.y, head_pos.z - bust_drop_z };
+                const float min_radius = std::clamp(scene->radius * 0.31F, 19.5F, 25.0F);
+                const float max_radius = std::clamp(scene->radius * 0.40F, 24.0F, 31.0F);
+                scene->portrait_radius = std::clamp(scene->radius * 0.34F, min_radius, max_radius);
+                PortraitBounds bounds;
+                CollectPortraitBounds(root.get(), root.get(), head, pose, bounds, 0, is_player);
+                if (bounds.valid) {
+                    const float bx = (bounds.low.x + bounds.high.x) * 0.5F;
+                    const float by = (bounds.low.y + bounds.high.y) * 0.5F;
+                    scene->head.x = std::clamp(bx, head_pos.x - 3.0F, head_pos.x + 3.0F);
+                    scene->head.y = std::clamp(by, head_pos.y - 3.0F, head_pos.y + 3.0F);
+                    const auto span = std::max({ bounds.high.x - bounds.low.x, bounds.high.y - bounds.low.y, bounds.high.z - bounds.low.z });
+                    scene->portrait_radius = std::clamp(span * 0.78F, min_radius, max_radius);
+                }
+            } else {
+                // Non-humanoids (creatures, animals, giants, mudcrabs): blend between body center and head
+                // with generous radius so the creature's head and upper body silhouette are clearly framed.
+                const float hx = head_pos.x - scene->center.x;
+                const float hy = head_pos.y - scene->center.y;
+                const float hz = head_pos.z - scene->center.z;
+                const float head_dist = std::sqrt(hx * hx + hy * hy + hz * hz);
+                if (std::isfinite(head_dist) && head_dist <= scene->radius * 1.5F) {
+                    scene->head = {
+                        scene->center.x * 0.45F + head_pos.x * 0.55F,
+                        scene->center.y * 0.45F + head_pos.y * 0.55F,
+                        scene->center.z * 0.38F + head_pos.z * 0.62F
+                    };
+                }
+                scene->portrait_radius = std::clamp(scene->radius * 0.72F, 18.0F, 4096.0F);
+            }
         }
     }
-    auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
-    if (!renderer) {
+    if (!RE::BSGraphics::Renderer::GetSingleton()) {
         status.message = "The game renderer is unavailable.";
         return {};
     }
     std::vector<RE::NiPointer<RE::NiTexture>> retained_textures;
-    {
-        struct RendererGuard { RE::BSGraphics::Renderer* renderer; ~RendererGuard() { renderer->Unlock(); } } guard{ renderer };
-        renderer->Lock();
-        CollectGeometry(root.get(), root.get(), inverse, *scene, pose, true, 0, is_player, &retained_textures);
-        if(scene->packets.empty()){
-            scene->skipped=0;
-            retained_textures.clear();
-            CollectGeometry(root.get(), root.get(), inverse, *scene, pose, false, 0, true, &retained_textures);
-        }
+    // Traverse CPU scene-graph snapshots without holding Skyrim's global BSGraphics renderer lock.
+    CollectGeometry(root.get(), root.get(), inverse, *scene, pose, true, 0, is_player, &retained_textures);
+    if(scene->packets.empty()){
+        scene->skipped=0;
+        scene->filtered_effects=0;
+        retained_textures.clear();
+        CollectGeometry(root.get(), root.get(), inverse, *scene, pose, false, 0, true, &retained_textures);
     }
     status.available = !scene->packets.empty();
     if (status.available) {
-        scene->actor_sources = LeaseItemSources({}, root, std::move(retained_textures));
+        if (reuse_scene != nullptr && reuse_scene->actor_sources != nullptr &&
+            reuse_scene->actor_sources->clone.get() == root.get() &&
+            std::equal(reuse_scene->actor_sources->alternate_textures.begin(),
+                reuse_scene->actor_sources->alternate_textures.end(),
+                retained_textures.begin(), retained_textures.end(),
+                [](const auto& a, const auto& b) { return a.get() == b.get(); })) {
+            scene->actor_sources = reuse_scene->actor_sources;
+        } else {
+            scene->actor_sources = LeaseItemSources({}, root, std::move(retained_textures));
+        }
     }
     status.reference_id = scene->reference_id;
     status.geometry_count = scene->packets.size();
@@ -1539,6 +1655,7 @@ struct PngExport {
 };
 std::vector<std::shared_ptr<PngExport>> g_exports; // protected by g_mutex
 std::vector<std::future<void>> g_export_workers; // protected by g_mutex
+std::vector<std::future<void>> g_thumbnail_read_workers; // protected by g_mutex
 
 std::string EncodePngBytesToDataUrl(const unsigned char* encoded, std::size_t size)
 {
@@ -1557,9 +1674,11 @@ std::string EncodePngBytesToDataUrl(const unsigned char* encoded, std::size_t si
     return result;
 }
 
-std::string ReadCachedThumbnailDataUrl(const std::filesystem::path& path)
+std::string ReadCachedThumbnailDataUrl(const std::filesystem::path& path,
+    double* out_read_ms = nullptr, double* out_encode_ms = nullptr)
 {
     if (path.empty()) return {};
+    const auto read_start = std::chrono::steady_clock::now();
     std::error_code ec;
     if (!std::filesystem::is_regular_file(path, ec) || ec) return {};
     const auto file_size = std::filesystem::file_size(path, ec);
@@ -1569,9 +1688,53 @@ std::string ReadCachedThumbnailDataUrl(const std::filesystem::path& path)
     std::vector<unsigned char> encoded(static_cast<std::size_t>(file_size));
     in.read(reinterpret_cast<char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
     if (!in || static_cast<std::size_t>(in.gcount()) != encoded.size()) return {};
+    const auto read_end = std::chrono::steady_clock::now();
     static constexpr unsigned char kPngSig[8]{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
     if (std::memcmp(encoded.data(), kPngSig, sizeof(kPngSig)) != 0) return {};
-    return EncodePngBytesToDataUrl(encoded.data(), encoded.size());
+    auto data_url = EncodePngBytesToDataUrl(encoded.data(), encoded.size());
+    const auto encode_end = std::chrono::steady_clock::now();
+    if (out_read_ms != nullptr) {
+        *out_read_ms = std::chrono::duration<double, std::milli>(read_end - read_start).count();
+    }
+    if (out_encode_ms != nullptr) {
+        *out_encode_ms = std::chrono::duration<double, std::milli>(encode_end - read_end).count();
+    }
+    return data_url;
+}
+
+std::string BuildCachedThumbnailFileUrlIfExists(
+    const std::filesystem::path& path, std::string_view subfolder, std::string_view url_prefix)
+{
+    if (path.empty() || url_prefix.empty()) return {};
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec) || ec) return {};
+    const auto file_size = std::filesystem::file_size(path, ec);
+    if (ec || file_size < 64 || file_size > 45000) return {};
+    const auto fname_u8 = path.filename().u8string();
+    std::string fname(reinterpret_cast<const char*>(fname_u8.data()), fname_u8.size());
+    if (fname.empty()) return {};
+    std::string prefix(url_prefix);
+    while (!prefix.empty() && prefix.back() == '/') {
+        prefix.pop_back();
+    }
+    std::string url = prefix + "/" + std::string(subfolder) + "/" + fname;
+    const auto write_time = std::filesystem::last_write_time(path, ec);
+    if (!ec) {
+        const auto version_ticks = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                write_time.time_since_epoch()).count());
+        url += "?v=" + std::to_string(version_ticks);
+    }
+    return url;
+}
+
+bool CachedThumbnailFileReadyOnDisk(const std::filesystem::path& path)
+{
+    if (path.empty()) return false;
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec) || ec) return false;
+    const auto file_size = std::filesystem::file_size(path, ec);
+    return !ec && file_size >= 64 && file_size <= 45000;
 }
 
 void WriteBytesToCacheFile(const std::filesystem::path& path, const std::vector<unsigned char>& bytes)
@@ -1589,6 +1752,7 @@ void WriteBytesToCacheFile(const std::filesystem::path& path, const std::vector<
 std::string WriteActorPng(std::vector<std::uint8_t> pixels, SizeU size, const std::filesystem::path& path,
     bool thumbnail_cache = false, const std::filesystem::path& secondary_cache_path = {})
 {
+    const auto export_start = std::chrono::steady_clock::now();
     struct Apartment {
         HRESULT result=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
         ~Apartment(){if(SUCCEEDED(result))CoUninitialize();}
@@ -1596,10 +1760,13 @@ std::string WriteActorPng(std::vector<std::uint8_t> pixels, SizeU size, const st
     if(FAILED(apartment.result))throw std::runtime_error("Could not initialize the PNG encoder.");
     const auto check=[](HRESULT hr){if(FAILED(hr))throw std::runtime_error("PNG encoding failed (HRESULT "+std::to_string(static_cast<std::uint32_t>(hr))+").");};
     // The UI render target is premultiplied BGRA; PNG stores straight alpha.
-    for(std::size_t p=0;p<pixels.size();p+=4){
-        const auto alpha=pixels[p+3];
-        for(unsigned c=0;c<3;++c)pixels[p+c]=alpha?static_cast<std::uint8_t>(std::min(255U,(pixels[p+c]*255U+alpha/2U)/alpha)):0;
-    }
+    bool used_avx2 = false;
+    const auto convert_start = std::chrono::steady_clock::now();
+    UnpremultiplyBgraToStraight(pixels.data(), pixels.size(), &used_avx2);
+    const auto convert_end = std::chrono::steady_clock::now();
+    const double convert_ms = std::chrono::duration<double, std::milli>(convert_end - convert_start).count();
+
+    const auto encode_start = convert_end;
     ComPtr<IWICImagingFactory> factory;ComPtr<IWICStream> stream;
     ComPtr<IWICBitmapEncoder> encoder;ComPtr<IWICBitmapFrameEncode> frame;
     check(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&factory)));
@@ -1614,7 +1781,15 @@ std::string WriteActorPng(std::vector<std::uint8_t> pixels, SizeU size, const st
     if(!IsEqualGUID(format,GUID_WICPixelFormat32bppBGRA))throw std::runtime_error("The PNG encoder cannot preserve transparency.");
     check(frame->WritePixels(size.height,size.width*4,static_cast<UINT>(pixels.size()),pixels.data()));
     check(frame->Commit());check(encoder->Commit());
-    if(!memory)return {};
+    if(!memory) {
+        const auto export_end = std::chrono::steady_clock::now();
+        RecordThumbnailTiming(-1.0,
+            std::chrono::duration<double, std::milli>(export_end - encode_start).count(),
+            convert_ms,
+            std::chrono::duration<double, std::milli>(export_end - export_start).count(),
+            used_avx2);
+        return {};
+    }
     STATSTG stat{};check(memory->Stat(&stat,STATFLAG_NONAME));
     // Thumbnail replies share the bridge's 64 KiB response budget.
     if(stat.cbSize.QuadPart>45000)throw std::runtime_error("The item thumbnail exceeds the response budget.");
@@ -1626,7 +1801,14 @@ std::string WriteActorPng(std::vector<std::uint8_t> pixels, SizeU size, const st
         WriteBytesToCacheFile(path, encoded);
         WriteBytesToCacheFile(secondary_cache_path, encoded);
     }
-    return EncodePngBytesToDataUrl(encoded.data(), encoded.size());
+    auto data_url = EncodePngBytesToDataUrl(encoded.data(), encoded.size());
+    const auto export_end = std::chrono::steady_clock::now();
+    RecordThumbnailTiming(-1.0,
+        std::chrono::duration<double, std::milli>(export_end - encode_start).count(),
+        convert_ms,
+        std::chrono::duration<double, std::milli>(export_end - export_start).count(),
+        used_avx2);
+    return data_url;
 }
 
 std::filesystem::path ThumbnailCacheDirectory(bool item)
@@ -1697,6 +1879,107 @@ std::filesystem::path ItemThumbnailCachePath(std::uint32_t form_id)
     return dir / (std::string("item-form-") + hex_buf + ".png");
 }
 
+struct PlayerIdentityKeys {
+    std::string character_key;
+    std::string portrait_key;
+};
+
+std::atomic<std::uint64_t> g_player_portrait_revision{ 1ULL };
+std::atomic<std::uint64_t> g_new_game_session_nonce{ 0ULL };
+std::atomic<std::uint64_t> g_new_game_counter{ 0ULL };
+std::atomic<std::uint32_t> g_new_game_inherited_char_id{ 0U };
+
+PlayerIdentityKeys ComputePlayerIdentity(RE::PlayerCharacter* player)
+{
+    PlayerIdentityKeys keys{ "player", "portrait-v2-player" };
+    const auto nonce = g_new_game_session_nonce.load(std::memory_order_acquire);
+    if (player == nullptr) {
+        if (nonce != 0ULL) {
+            char nonce_buf[24]{};
+            std::snprintf(nonce_buf, sizeof(nonce_buf), "-ng%08X", static_cast<unsigned int>(nonce & 0xFFFFFFFFULL));
+            keys.character_key += nonce_buf;
+            keys.portrait_key = "portrait-v2-player-" + keys.character_key;
+        }
+        return keys;
+    }
+
+    std::string name_token;
+    if (const auto* name = player->GetName(); name != nullptr && name[0] != '\0') {
+        name_token = SanitizeCacheToken(name);
+    }
+    if (name_token.empty()) {
+        name_token = "player";
+    }
+
+    std::uint64_t appearance_hash = 14695981039346656037ULL;
+    const auto mix_bytes = [&](const void* data, std::size_t size) noexcept {
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        for (std::size_t i = 0; i < size; ++i) {
+            appearance_hash ^= bytes[i];
+            appearance_hash *= 1099511628211ULL;
+        }
+    };
+    const auto mix_u32 = [&](std::uint32_t v) noexcept {
+        mix_bytes(&v, sizeof(v));
+    };
+
+    if (const auto* race = player->GetRace()) {
+        mix_u32(race->GetFormID());
+    }
+    if (const auto* npc = player->GetActorBase()) {
+        mix_u32(static_cast<std::uint32_t>(npc->GetSex()));
+        const auto weight_tenths = static_cast<std::int32_t>(std::lround(npc->weight * 10.0F));
+        mix_bytes(&weight_tenths, sizeof(weight_tenths));
+        if (npc->headRelatedData != nullptr && npc->headRelatedData->hairColor != nullptr) {
+            mix_u32(npc->headRelatedData->hairColor->GetFormID());
+        }
+        if (npc->headParts != nullptr && npc->numHeadParts > 0) {
+            mix_u32(static_cast<std::uint32_t>(npc->numHeadParts));
+            for (std::int8_t idx = 0; idx < npc->numHeadParts; ++idx) {
+                if (const auto* part = npc->headParts[idx]) {
+                    mix_u32(part->GetFormID());
+                }
+            }
+        }
+        if (npc->faceData != nullptr) {
+            mix_bytes(npc->faceData, sizeof(RE::TESNPC::FaceData));
+        }
+    }
+
+    std::uint32_t save_char_id = 0U;
+    if (const auto* save_mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+        save_char_id = save_mgr->currentCharacterID;
+    }
+    const auto inherited_id = g_new_game_inherited_char_id.load(std::memory_order_acquire);
+    if (nonce != 0ULL && save_char_id == inherited_id) {
+        save_char_id = 0U;
+    }
+
+    const std::uint32_t app_short = static_cast<std::uint32_t>(
+        (appearance_hash ^ (appearance_hash >> 32U)) & 0xFFFFFFFFULL);
+
+    char suffix_buf[48]{};
+    if (save_char_id != 0U) {
+        std::snprintf(suffix_buf, sizeof(suffix_buf), "%08X", save_char_id);
+    } else if (nonce != 0ULL) {
+        std::snprintf(
+            suffix_buf,
+            sizeof(suffix_buf),
+            "ng%08X-%08X",
+            static_cast<unsigned int>(nonce & 0xFFFFFFFFULL),
+            app_short);
+    } else {
+        std::snprintf(suffix_buf, sizeof(suffix_buf), "%08X", app_short);
+    }
+
+    char app_buf[16]{};
+    std::snprintf(app_buf, sizeof(app_buf), "%08X", app_short);
+
+    keys.character_key = name_token + "-" + suffix_buf;
+    keys.portrait_key = "portrait-v2-player-" + keys.character_key + "-" + app_buf;
+    return keys;
+}
+
 struct ActorPortraitCachePaths {
     std::filesystem::path primary;
     std::filesystem::path fallback;
@@ -1710,18 +1993,10 @@ ActorPortraitCachePaths ResolveActorPortraitCachePaths(std::uint32_t reference_i
     if (dir.empty()) return result;
     const bool is_player = (reference_id == 0x14U) || (reference_id == 0 && base_form_id == 0x07U);
     if (is_player) {
-        result.fallback = dir / "portrait-bust-player.png";
-        result.primary = result.fallback;
-        result.key = "portrait-bust-player";
-        if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-            if (const auto* name = player->GetName(); name && name[0]) {
-                const auto token = SanitizeCacheToken(name);
-                if (!token.empty()) {
-                    result.primary = dir / ("portrait-bust-player-" + token + ".png");
-                    result.key = "portrait-bust-player-" + token;
-                }
-            }
-        }
+        const auto identity = ComputePlayerIdentity(RE::PlayerCharacter::GetSingleton());
+        result.key = identity.portrait_key;
+        result.primary = dir / (identity.portrait_key + ".png");
+        result.fallback = result.primary;
         return result;
     }
     RE::Actor* actor = nullptr;
@@ -2045,6 +2320,361 @@ float4 ResolvePS(ResolveOutput input) : SV_TARGET {
 }
 )hlsl";
 
+class ShaderBytecodeCache final {
+public:
+    void Start()
+    {
+        if (stop_requested_.load(std::memory_order_acquire) ||
+            started_.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
+        const std::scoped_lock thread_lock(thread_mutex_);
+        if (stop_requested_.load(std::memory_order_acquire)) {
+            return;
+        }
+        worker_ = std::thread([this] { Run(); });
+    }
+
+    void Shutdown() noexcept
+    {
+        stop_requested_.store(true, std::memory_order_release);
+        std::thread worker_to_join;
+        {
+            const std::scoped_lock thread_lock(thread_mutex_);
+            if (worker_.joinable()) {
+                worker_to_join = std::move(worker_);
+            }
+        }
+        if (worker_to_join.joinable() && worker_to_join.get_id() != std::this_thread::get_id()) {
+            worker_to_join.join();
+        }
+        const std::scoped_lock data_lock(data_mutex_);
+        ps_main_.Reset();
+        resolve_vs_.Reset();
+        resolve_ps_.Reset();
+        for (auto& blob : vs_variants_) {
+            blob.Reset();
+        }
+    }
+
+    enum class Lookup { Pending, Ready, Failed };
+
+    [[nodiscard]] Lookup TryGetBase(
+        ComPtr<ID3DBlob>& out_ps, ComPtr<ID3DBlob>& out_resolve_vs, ComPtr<ID3DBlob>& out_resolve_ps)
+    {
+        const std::scoped_lock lock(data_mutex_);
+        if (!base_done_) {
+            return Lookup::Pending;
+        }
+        if (base_failed_ || !ps_main_ || !resolve_vs_ || !resolve_ps_) {
+            return Lookup::Failed;
+        }
+        out_ps = ps_main_;
+        out_resolve_vs = resolve_vs_;
+        out_resolve_ps = resolve_ps_;
+        return Lookup::Ready;
+    }
+
+    [[nodiscard]] Lookup TryGetVariant(unsigned index, ComPtr<ID3DBlob>& out_vs)
+    {
+        if (index >= vs_variants_.size()) {
+            return Lookup::Failed;
+        }
+        const std::scoped_lock lock(data_mutex_);
+        if (!variant_done_[index]) {
+            return Lookup::Pending;
+        }
+        if (variant_failed_[index] || !vs_variants_[index]) {
+            return Lookup::Failed;
+        }
+        out_vs = vs_variants_[index];
+        return Lookup::Ready;
+    }
+
+    void RequestVariant(unsigned index) noexcept
+    {
+        if (index < vs_variants_.size()) {
+            priority_variant_.store(static_cast<int>(index), std::memory_order_relaxed);
+        }
+    }
+
+private:
+    static constexpr UINT kCompileFlags = D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL1;
+    static constexpr std::uint32_t kCacheMagic = 0x53554150U;  // "SUAP"
+    static constexpr std::uint32_t kCacheVersion = 1U;
+    static constexpr std::size_t kTotalBlobs = 3U + 16U;
+
+    [[nodiscard]] static std::uint64_t ShaderSourceHash() noexcept
+    {
+        std::uint64_t hash = 14695981039346656037ULL;
+        const auto mix = [&hash](std::uint8_t byte) noexcept {
+            hash ^= byte;
+            hash *= 1099511628211ULL;
+        };
+        for (std::size_t i = 0; i < sizeof(kShader) - 1; ++i) {
+            mix(static_cast<std::uint8_t>(kShader[i]));
+        }
+        const auto flags = kCompileFlags;
+        for (unsigned shift = 0; shift < 32; shift += 8) {
+            mix(static_cast<std::uint8_t>((flags >> shift) & 0xFFU));
+        }
+        return hash;
+    }
+
+    [[nodiscard]] static std::filesystem::path CacheFilePath()
+    {
+        const auto item_cache = ThumbnailCacheDirectory(true);
+        if (item_cache.empty()) {
+            return {};
+        }
+        return item_cache.parent_path() / L"ActorPreviewShaders.dxbc.bin";
+    }
+
+    bool TryLoadDiskCache(const std::filesystem::path& path, std::uint64_t expected_hash)
+    {
+        if (path.empty()) {
+            return false;
+        }
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(path, ec) || ec) {
+            return false;
+        }
+        const auto file_size = std::filesystem::file_size(path, ec);
+        if (ec || file_size < 20 || file_size > 16ULL * 1024ULL * 1024ULL) {
+            return false;
+        }
+        std::ifstream input(path, std::ios::binary);
+        if (!input) {
+            return false;
+        }
+        std::uint32_t magic{};
+        std::uint32_t version{};
+        std::uint64_t hash{};
+        std::uint32_t count{};
+        input.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+        input.read(reinterpret_cast<char*>(&version), sizeof(version));
+        input.read(reinterpret_cast<char*>(&hash), sizeof(hash));
+        input.read(reinterpret_cast<char*>(&count), sizeof(count));
+        if (!input || magic != kCacheMagic || version != kCacheVersion ||
+            hash != expected_hash || count != kTotalBlobs) {
+            return false;
+        }
+
+        std::array<ComPtr<ID3DBlob>, kTotalBlobs> loaded{};
+        for (std::size_t index = 0; index < kTotalBlobs; ++index) {
+            if (stop_requested_.load(std::memory_order_acquire)) {
+                return false;
+            }
+            std::uint32_t size{};
+            input.read(reinterpret_cast<char*>(&size), sizeof(size));
+            if (!input || size == 0 || size > 4U * 1024U * 1024U) {
+                return false;
+            }
+            ComPtr<ID3DBlob> blob;
+            if (FAILED(D3DCreateBlob(size, blob.GetAddressOf())) || !blob) {
+                return false;
+            }
+            input.read(static_cast<char*>(blob->GetBufferPointer()), static_cast<std::streamsize>(size));
+            if (!input || static_cast<std::size_t>(input.gcount()) != size) {
+                return false;
+            }
+            loaded[index] = std::move(blob);
+        }
+
+        const std::scoped_lock lock(data_mutex_);
+        ps_main_ = std::move(loaded[0]);
+        resolve_vs_ = std::move(loaded[1]);
+        resolve_ps_ = std::move(loaded[2]);
+        base_failed_ = false;
+        base_done_ = true;
+        for (std::size_t index = 0; index < 16; ++index) {
+            vs_variants_[index] = std::move(loaded[3 + index]);
+            variant_failed_[index] = false;
+            variant_done_[index] = true;
+        }
+        return true;
+    }
+
+    void SaveDiskCache(const std::filesystem::path& path, std::uint64_t expected_hash)
+    {
+        if (path.empty() || stop_requested_.load(std::memory_order_acquire)) {
+            return;
+        }
+        std::array<ComPtr<ID3DBlob>, kTotalBlobs> blobs{};
+        {
+            const std::scoped_lock lock(data_mutex_);
+            if (!base_done_ || base_failed_ || !ps_main_ || !resolve_vs_ || !resolve_ps_) {
+                return;
+            }
+            blobs[0] = ps_main_;
+            blobs[1] = resolve_vs_;
+            blobs[2] = resolve_ps_;
+            for (std::size_t index = 0; index < 16; ++index) {
+                if (!variant_done_[index] || variant_failed_[index] || !vs_variants_[index]) {
+                    return;
+                }
+                blobs[3 + index] = vs_variants_[index];
+            }
+        }
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        if (ec) {
+            return;
+        }
+        auto temp_path = path;
+        temp_path += L".tmp";
+        {
+            std::ofstream output(temp_path, std::ios::binary | std::ios::trunc);
+            if (!output) {
+                return;
+            }
+            const std::uint32_t magic = kCacheMagic;
+            const std::uint32_t version = kCacheVersion;
+            const std::uint32_t count = static_cast<std::uint32_t>(kTotalBlobs);
+            output.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+            output.write(reinterpret_cast<const char*>(&version), sizeof(version));
+            output.write(reinterpret_cast<const char*>(&expected_hash), sizeof(expected_hash));
+            output.write(reinterpret_cast<const char*>(&count), sizeof(count));
+            for (const auto& blob : blobs) {
+                const auto size = static_cast<std::uint32_t>(blob->GetBufferSize());
+                output.write(reinterpret_cast<const char*>(&size), sizeof(size));
+                output.write(static_cast<const char*>(blob->GetBufferPointer()),
+                    static_cast<std::streamsize>(size));
+            }
+            output.flush();
+            if (!output) {
+                std::filesystem::remove(temp_path, ec);
+                return;
+            }
+        }
+        if (!MoveFileExW(temp_path.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            std::filesystem::remove(temp_path, ec);
+        }
+    }
+
+    void CompileVariant(unsigned index)
+    {
+        if (index >= 16 || stop_requested_.load(std::memory_order_acquire)) {
+            return;
+        }
+        {
+            const std::scoped_lock lock(data_mutex_);
+            if (variant_done_[index]) {
+                return;
+            }
+        }
+        const D3D_SHADER_MACRO macros[]{
+            {"SKINNED", (index & 1U) ? "1" : "0"},
+            {"HAS_UV", (index & 2U) ? "1" : "0"},
+            {"HAS_NORMAL", (index & 4U) ? "1" : "0"},
+            {"HAS_COLOR", (index & 8U) ? "1" : "0"},
+            {nullptr, nullptr}
+        };
+        ComPtr<ID3DBlob> bytecode;
+        ComPtr<ID3DBlob> errors;
+        const auto result = D3DCompile(kShader, sizeof(kShader) - 1, "SkyUltraActorPreview",
+            macros, nullptr, "VSMain", "vs_5_0", kCompileFlags, 0,
+            bytecode.GetAddressOf(), errors.GetAddressOf());
+        if (FAILED(result) || !bytecode) {
+            if (errors) {
+                SKSE::log::error("SkyUltra actor vertex shader {} failed: {}",
+                    index, static_cast<const char*>(errors->GetBufferPointer()));
+            }
+            const std::scoped_lock lock(data_mutex_);
+            variant_failed_[index] = true;
+            variant_done_[index] = true;
+            return;
+        }
+        const std::scoped_lock lock(data_mutex_);
+        vs_variants_[index] = std::move(bytecode);
+        variant_failed_[index] = false;
+        variant_done_[index] = true;
+    }
+
+    void Run()
+    {
+        const auto hash = ShaderSourceHash();
+        const auto cache_path = CacheFilePath();
+        if (TryLoadDiskCache(cache_path, hash)) {
+            SKSE::log::info("SkyUltra loaded precompiled actor preview shaders from disk cache.");
+            return;
+        }
+
+        const auto compile_base = [this](const char* name, const char* entry, const char* target,
+                                         ComPtr<ID3DBlob>& out_blob) {
+            if (stop_requested_.load(std::memory_order_acquire)) {
+                return false;
+            }
+            ComPtr<ID3DBlob> errors;
+            const auto hr = D3DCompile(kShader, sizeof(kShader) - 1, name, nullptr, nullptr,
+                entry, target, kCompileFlags, 0, out_blob.GetAddressOf(), errors.GetAddressOf());
+            if (FAILED(hr) || !out_blob) {
+                if (errors) {
+                    SKSE::log::error("SkyUltra actor shader {} failed: {}",
+                        entry, static_cast<const char*>(errors->GetBufferPointer()));
+                }
+                return false;
+            }
+            return true;
+        };
+
+        ComPtr<ID3DBlob> ps_blob;
+        ComPtr<ID3DBlob> rvs_blob;
+        ComPtr<ID3DBlob> rps_blob;
+        const bool base_ok =
+            compile_base("SkyUltraActorPreview", "PSMain", "ps_5_0", ps_blob) &&
+            compile_base("SkyUltraActorResolve", "ResolveVS", "vs_5_0", rvs_blob) &&
+            compile_base("SkyUltraActorResolve", "ResolvePS", "ps_5_0", rps_blob);
+        {
+            const std::scoped_lock lock(data_mutex_);
+            if (base_ok) {
+                ps_main_ = std::move(ps_blob);
+                resolve_vs_ = std::move(rvs_blob);
+                resolve_ps_ = std::move(rps_blob);
+            }
+            base_failed_ = !base_ok;
+            base_done_ = true;
+        }
+        if (!base_ok || stop_requested_.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        constexpr std::array<unsigned, 16> kPriorityOrder{
+            7U, 15U, 6U, 14U, 3U, 11U, 2U, 10U, 5U, 13U, 4U, 12U, 1U, 9U, 0U, 8U
+        };
+        for (const auto default_index : kPriorityOrder) {
+            if (stop_requested_.load(std::memory_order_acquire)) {
+                return;
+            }
+            const auto requested = priority_variant_.exchange(-1, std::memory_order_relaxed);
+            if (requested >= 0 && static_cast<unsigned>(requested) < 16U) {
+                CompileVariant(static_cast<unsigned>(requested));
+            }
+            CompileVariant(default_index);
+        }
+        if (!stop_requested_.load(std::memory_order_acquire)) {
+            SaveDiskCache(cache_path, hash);
+        }
+    }
+
+    std::atomic_bool started_{ false };
+    std::atomic_bool stop_requested_{ false };
+    std::atomic<int> priority_variant_{ -1 };
+    std::mutex thread_mutex_;
+    std::thread worker_;
+    std::mutex data_mutex_;
+    bool base_done_{};
+    bool base_failed_{};
+    ComPtr<ID3DBlob> ps_main_;
+    ComPtr<ID3DBlob> resolve_vs_;
+    ComPtr<ID3DBlob> resolve_ps_;
+    std::array<bool, 16> variant_done_{};
+    std::array<bool, 16> variant_failed_{};
+    std::array<ComPtr<ID3DBlob>, 16> vs_variants_{};
+};
+
+ShaderBytecodeCache g_shader_cache;
+
 struct alignas(16) PreviewLightingConstants {
     // Camera coordinates: right, up, toward the camera (+z is toward camera). w is view-direction bias.
     DirectX::XMFLOAT4 key_direction{-.42F,.52F,.74F,.48F};
@@ -2124,48 +2754,53 @@ struct ShaderVariant {
 
 class PreviewRenderer {
 public:
-    bool Ensure(ID3D11Device* device)
+    enum class EnsureResult { Ready, Pending, Failed };
+
+    EnsureResult Ensure(ID3D11Device* device)
     {
-        if (device_.Get() == device && attempted_) return ready_;
+        if (device_.Get() == device && attempted_) {
+            return ready_ ? EnsureResult::Ready : EnsureResult::Failed;
+        }
+        g_shader_cache.Start();
+        ComPtr<ID3DBlob> pixel;
+        ComPtr<ID3DBlob> resolve_vertex;
+        ComPtr<ID3DBlob> resolve_pixel;
+        const auto cache_state = g_shader_cache.TryGetBase(pixel, resolve_vertex, resolve_pixel);
+        if (cache_state == ShaderBytecodeCache::Lookup::Pending) {
+            return EnsureResult::Pending;
+        }
         Reset();
         device_ = device;
         attempted_ = true;
-        const auto flags = D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL1;
-        ComPtr<ID3DBlob> pixel, errors;
-        const auto compile_result = D3DCompile(kShader, sizeof(kShader)-1, "SkyUltraActorPreview", nullptr, nullptr,
-                "PSMain", "ps_5_0", flags, 0, pixel.GetAddressOf(), errors.GetAddressOf());
-        if (!Check(compile_result, "compile actor pixel shader")) {
-            if (errors) SKSE::log::error("SkyUltra actor pixel shader failed: {}", static_cast<const char*>(errors->GetBufferPointer()));
-            return false;
+        if (cache_state == ShaderBytecodeCache::Lookup::Failed) {
+            SKSE::log::error("SkyUltra actor preview base shader compilation failed.");
+            return EnsureResult::Failed;
         }
         if (!Check(device->CreatePixelShader(pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr,
-                pixel_shader_.GetAddressOf()), "create actor pixel shader")) return false;
+                pixel_shader_.GetAddressOf()), "create actor pixel shader")) return EnsureResult::Failed;
         D3D11_BUFFER_DESC cb{};
         cb.ByteWidth = static_cast<UINT>(sizeof(DrawConstants));
         cb.Usage = D3D11_USAGE_DYNAMIC;
         cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        if (!Check(device->CreateBuffer(&cb, nullptr, constants_.GetAddressOf()), "create actor constants")) return false;
-        ComPtr<ID3DBlob> resolve_vertex,resolve_pixel;
-        if (!Check(D3DCompile(kShader,sizeof(kShader)-1,"SkyUltraActorResolve",nullptr,nullptr,
-                "ResolveVS","vs_5_0",flags,0,resolve_vertex.GetAddressOf(),nullptr),"compile actor resolve vertex shader") ||
-            !Check(D3DCompile(kShader,sizeof(kShader)-1,"SkyUltraActorResolve",nullptr,nullptr,
-                "ResolvePS","ps_5_0",flags,0,resolve_pixel.GetAddressOf(),nullptr),"compile actor resolve pixel shader") ||
-            !Check(device->CreateVertexShader(resolve_vertex->GetBufferPointer(),resolve_vertex->GetBufferSize(),nullptr,resolve_vertex_.GetAddressOf()),"create actor resolve vertex shader") ||
-            !Check(device->CreatePixelShader(resolve_pixel->GetBufferPointer(),resolve_pixel->GetBufferSize(),nullptr,resolve_pixel_.GetAddressOf()),"create actor resolve pixel shader")) return false;
+        if (!Check(device->CreateBuffer(&cb, nullptr, constants_.GetAddressOf()), "create actor constants")) return EnsureResult::Failed;
+        if (!Check(device->CreateVertexShader(resolve_vertex->GetBufferPointer(), resolve_vertex->GetBufferSize(), nullptr, resolve_vertex_.GetAddressOf()), "create actor resolve vertex shader") ||
+            !Check(device->CreatePixelShader(resolve_pixel->GetBufferPointer(), resolve_pixel->GetBufferSize(), nullptr, resolve_pixel_.GetAddressOf()), "create actor resolve pixel shader")) {
+            return EnsureResult::Failed;
+        }
         for (unsigned index=0;index<raster_.size();++index) {
             D3D11_RASTERIZER_DESC raster{};
             raster.FillMode = D3D11_FILL_SOLID;
             raster.CullMode = index == 0 ? D3D11_CULL_BACK : D3D11_CULL_NONE;
             raster.DepthClipEnable = TRUE;
-            if (!Check(device->CreateRasterizerState(&raster,raster_[index].GetAddressOf()),"create actor rasterizer")) return false;
+            if (!Check(device->CreateRasterizerState(&raster,raster_[index].GetAddressOf()),"create actor rasterizer")) return EnsureResult::Failed;
         }
         for (unsigned index=0;index<depth_.size();++index) {
             D3D11_DEPTH_STENCIL_DESC depth{};
             depth.DepthEnable = (index & 1U) != 0;
             depth.DepthWriteMask = (index & 2U) != 0 ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
             depth.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
-            if (!Check(device->CreateDepthStencilState(&depth,depth_[index].GetAddressOf()),"create actor depth state")) return false;
+            if (!Check(device->CreateDepthStencilState(&depth,depth_[index].GetAddressOf()),"create actor depth state")) return EnsureResult::Failed;
         }
         D3D11_BLEND_DESC blend{};
         auto& rt = blend.RenderTarget[0];
@@ -2177,7 +2812,7 @@ public:
         rt.DestBlendAlpha = D3D11_BLEND_ZERO;
         rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
         rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-        if (!Check(device->CreateBlendState(&blend, blend_.GetAddressOf()), "create actor blend state")) return false;
+        if (!Check(device->CreateBlendState(&blend, blend_.GetAddressOf()), "create actor blend state")) return EnsureResult::Failed;
         for (unsigned index=0;index<sampler_.size();++index) {
             D3D11_SAMPLER_DESC sampler{};
             sampler.Filter = D3D11_FILTER_ANISOTROPIC;
@@ -2186,32 +2821,34 @@ public:
             sampler.AddressV = (index & 1U) ? D3D11_TEXTURE_ADDRESS_WRAP : D3D11_TEXTURE_ADDRESS_CLAMP;
             sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
             sampler.MaxLOD = D3D11_FLOAT32_MAX;
-            if (!Check(device->CreateSamplerState(&sampler,sampler_[index].GetAddressOf()),"create actor sampler")) return false;
+            if (!Check(device->CreateSamplerState(&sampler,sampler_[index].GetAddressOf()),"create actor sampler")) return EnsureResult::Failed;
         }
         ready_ = true;
-        return ready_;
+        return EnsureResult::Ready;
     }
 
-    void WarmupStep(ID3D11Device* device)
+    bool Draw(ID3D11DeviceContext* context, const WorkItem& work, RenderedFrame& frame,
+        bool one_shot_export = false, bool* out_shaders_pending = nullptr)
     {
-        if (device == nullptr) return;
-        if (device_.Get() != device || !attempted_) {
-            (void)Ensure(device);
-            warmup_variant_ = 0;
-            return;
+        if (out_shaders_pending != nullptr) {
+            *out_shaders_pending = false;
         }
-        if (!ready_) return;
-        while (warmup_variant_ < variants_.size()) {
-            const auto index = warmup_variant_++;
-            if (!variants_[index].shader && !variants_[index].attempted) {
-                (void)EnsureVariant(index);
-                return;
+        bool any_shader_pending{};
+        for (const auto& packet : work.scene->packets) {
+            const auto variant = static_cast<unsigned>(packet.skinned) |
+                (packet.has_uv ? 2U : 0U) | (packet.has_normal ? 4U : 0U) |
+                (packet.has_colors ? 8U : 0U);
+            bool variant_pending{};
+            if (!EnsureVariant(variant, variant_pending) && variant_pending) {
+                any_shader_pending = true;
             }
         }
-    }
-
-    bool Draw(ID3D11DeviceContext* context, const WorkItem& work, RenderedFrame& frame, bool one_shot_export = false)
-    {
+        if (any_shader_pending) {
+            if (out_shaders_pending != nullptr) {
+                *out_shaders_pending = true;
+            }
+            return false;
+        }
         if (!CreateTarget(frame, work.request.size)) return false;
         const bool is_item = work.request.item_preview || work.scene->item_sources != nullptr;
         const bool private_meshes = !one_shot_export && is_item;
@@ -2460,25 +3097,29 @@ private:
         context->PSSetSamplers(0,1,sampler_[packet.clamp_mode].GetAddressOf());
         return true;
     }
-    bool EnsureVariant(unsigned index)
+    bool EnsureVariant(unsigned index, bool& pending)
     {
+        pending = false;
+        if (index >= variants_.size()) return false;
         auto& variant = variants_[index];
         if (variant.shader) return true;
         if (variant.attempted) return false;
-        variant.attempted = true;
-        const D3D_SHADER_MACRO macros[]{{"SKINNED", (index & 1U) ? "1" : "0"},
-            {"HAS_UV", (index & 2U) ? "1" : "0"}, {"HAS_NORMAL", (index & 4U) ? "1" : "0"},
-            {"HAS_COLOR", (index & 8U) ? "1" : "0"}, {nullptr,nullptr}};
-        ComPtr<ID3DBlob> errors;
-        const auto result = D3DCompile(kShader,sizeof(kShader)-1,"SkyUltraActorPreview",macros,nullptr,
-            "VSMain","vs_5_0",D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL1,0,
-            variant.bytecode.GetAddressOf(),errors.GetAddressOf());
-        if (!Check(result,"compile actor vertex shader")) {
-            if (errors) SKSE::log::error("SkyUltra actor vertex shader failed: {}",static_cast<const char*>(errors->GetBufferPointer()));
+        g_shader_cache.Start();
+        ComPtr<ID3DBlob> bytecode;
+        const auto cache_state = g_shader_cache.TryGetVariant(index, bytecode);
+        if (cache_state == ShaderBytecodeCache::Lookup::Pending) {
+            g_shader_cache.RequestVariant(index);
+            pending = true;
             return false;
         }
-        return Check(device_->CreateVertexShader(variant.bytecode->GetBufferPointer(),variant.bytecode->GetBufferSize(),
-            nullptr,variant.shader.GetAddressOf()),"create actor vertex shader");
+        variant.attempted = true;
+        if (cache_state == ShaderBytecodeCache::Lookup::Failed || !bytecode) {
+            SKSE::log::error("SkyUltra actor vertex shader {} compilation failed.", index);
+            return false;
+        }
+        variant.bytecode = std::move(bytecode);
+        return Check(device_->CreateVertexShader(variant.bytecode->GetBufferPointer(), variant.bytecode->GetBufferSize(),
+            nullptr, variant.shader.GetAddressOf()), "create actor vertex shader");
     }
     bool Check(HRESULT result, const char* operation)
     {
@@ -2562,7 +3203,8 @@ private:
     }
     ComPtr<ID3D11InputLayout> InputLayout(const DrawPacket& packet, unsigned variant, bool dynamic)
     {
-        if (!EnsureVariant(variant)) return {};
+        bool pending{};
+        if (!EnsureVariant(variant, pending)) return {};
         const auto key = packet.descriptor ^ (dynamic ? (1ULL<<63U) : 0) ^ (packet.skin_vertices ? (1ULL<<62U) : 0);
         if (const auto found=layouts_.find(key); found!=layouts_.end()) return found->second;
         std::vector<D3D11_INPUT_ELEMENT_DESC> elements;
@@ -2594,10 +3236,10 @@ private:
     }
     bool CreateTarget(RenderedFrame& frame, SizeU size)
     {
-        ComPtr<ID3D11Device> owner;
-        if (frame.color) frame.color->GetDevice(owner.GetAddressOf());
         const bool same = frame.target_device==device_.Get() && frame.size.width==size.width && frame.size.height==size.height;
         if (same && frame.target_failed) return false;
+        ComPtr<ID3D11Device> owner;
+        if (same && frame.color) frame.color->GetDevice(owner.GetAddressOf());
         if (same && frame.color && frame.rtv && frame.srv && frame.linear_color && frame.linear_rtv && frame.linear_srv && frame.depth && frame.dsv && owner.Get()==device_.Get()) return true;
         frame=RenderedFrame{};
         frame.size=size;
@@ -2643,19 +3285,21 @@ private:
     std::unordered_map<std::uint64_t,ComPtr<ID3D11InputLayout>> layouts_;
     bool ready_{};
     bool attempted_{};
-    unsigned warmup_variant_{};
     bool logged_buffer_failure_{}, logged_upload_failure_{}, logged_item_constants_{};
 };
 
 PreviewRenderer g_renderer;
 
 void ProcessActorExports(ID3D11Device* device, ID3D11DeviceContext* context,
-    const std::vector<std::shared_ptr<PngExport>>& exports)
+    const std::vector<std::shared_ptr<PngExport>>& exports, bool allow_new_render_override = true)
 {
     static std::shared_ptr<RenderedFrame> s_thumbnail_frame;
+    static ComPtr<ID3D11Texture2D> s_thumbnail_staging;
+    static ID3D11Device* s_thumbnail_staging_device = nullptr;
+    static SizeU s_thumbnail_staging_size{};
     static std::uint32_t s_splash_export_frame_counter = 0;
     const bool splash_active = FrameworkSplashActive();
-    const bool allow_new_render = !splash_active || ((++s_splash_export_frame_counter % 3U) == 0U);
+    const bool allow_new_render = allow_new_render_override && (!splash_active || ((++s_splash_export_frame_counter % 3U) == 0U));
     bool rendered_new_this_frame = !allow_new_render;
     for(const auto& job:exports){
         if(job->canceled.load())continue;
@@ -2681,10 +3325,42 @@ void ProcessActorExports(ID3D11Device* device, ID3D11DeviceContext* context,
                 }else{
                     job->work.frame=std::make_shared<RenderedFrame>();
                 }
-                if(!g_renderer.Draw(context,job->work,*job->work.frame,job->thumbnail))throw std::runtime_error("Could not render the actor for saving.");
+                bool shaders_pending{};
+                if(!g_renderer.Draw(context,job->work,*job->work.frame,job->thumbnail,&shaders_pending)){
+                    if(shaders_pending){
+                        job->work.frame.reset();
+                        rendered_new_this_frame=false;
+                        continue;
+                    }
+                    throw std::runtime_error("Could not render the actor for saving.");
+                }
                 D3D11_TEXTURE2D_DESC desc{};job->work.frame->color->GetDesc(&desc);
                 desc.BindFlags=0;desc.MiscFlags=0;desc.Usage=D3D11_USAGE_STAGING;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
-                if(FAILED(device->CreateTexture2D(&desc,nullptr,&job->staging)))throw std::runtime_error("Could not create the PNG capture buffer.");
+                if(job->thumbnail){
+                    if(s_thumbnail_staging_device!=device){
+                        s_thumbnail_staging.Reset();
+                        s_thumbnail_staging_device=device;
+                        s_thumbnail_staging_size={};
+                    }
+                    const bool staging_in_use=std::any_of(exports.begin(),exports.end(),[&](const auto& other){
+                        return other->staging&&other->staging.Get()==s_thumbnail_staging.Get();
+                    });
+                    if(!staging_in_use&&s_thumbnail_staging&&
+                        s_thumbnail_staging_size.width==desc.Width&&s_thumbnail_staging_size.height==desc.Height){
+                        job->staging=s_thumbnail_staging;
+                    }else{
+                        ComPtr<ID3D11Texture2D> created_staging;
+                        if(FAILED(device->CreateTexture2D(&desc,nullptr,&created_staging)))throw std::runtime_error("Could not create the PNG capture buffer.");
+                        job->staging=created_staging;
+                        if(!staging_in_use){
+                            s_thumbnail_staging=created_staging;
+                            s_thumbnail_staging_device=device;
+                            s_thumbnail_staging_size={desc.Width,desc.Height};
+                        }
+                    }
+                }else{
+                    if(FAILED(device->CreateTexture2D(&desc,nullptr,&job->staging)))throw std::runtime_error("Could not create the PNG capture buffer.");
+                }
                 context->CopyResource(job->staging.Get(),job->work.frame->color.Get());
                 job->work.frame.reset();
                 continue;
@@ -2701,8 +3377,9 @@ void ProcessActorExports(ID3D11Device* device, ID3D11DeviceContext* context,
                 pixels.resize(static_cast<std::size_t>(size.width)*size.height*4);
                 for(std::uint32_t y=0;y<size.height;++y)std::memcpy(pixels.data()+static_cast<std::size_t>(y)*size.width*4,
                     static_cast<const std::uint8_t*>(mapped.pData)+static_cast<std::size_t>(y)*mapped.RowPitch,size.width*4);
-            } catch (...) {context->Unmap(job->staging.Get(),0);throw;}
+            } catch (...) {context->Unmap(job->staging.Get(),0);job->staging.Reset();throw;}
             context->Unmap(job->staging.Get(),0);
+            job->staging.Reset();
             const auto folder=job->thumbnail?std::filesystem::path{}:ActorExportDirectory(job->work.request.item_preview);
             const auto filename=std::string(job->work.request.item_preview?"item-":"actor-")+std::to_string(job->work.scene->reference_id)+(job->work.request.portrait?"-portrait-":"-full-")+
                 std::to_string(job->work.owner)+"-"+std::to_string(std::chrono::system_clock::now().time_since_epoch().count())+".png";
@@ -2758,6 +3435,18 @@ ActorPreviewStatus SetActorPreview(ViewId owner, const ActorPreviewRequest& sour
         found->second.compositor_visible = false;
         ++found->second.revision;
         return found->second.status;
+    }
+    {
+        const std::scoped_lock lock(g_mutex);
+        if (const auto gate = g_splash_gates.find(owner); gate != g_splash_gates.end()) {
+            const auto elapsed = std::chrono::steady_clock::now() - gate->second.updated_at;
+            if (gate->second.held && elapsed < std::chrono::milliseconds(1500)) {
+                return {false, false, 0, 0, 0, "Actor preview is held during splash transition."};
+            }
+            if (gate->second.held && elapsed >= std::chrono::milliseconds(1500)) {
+                g_splash_gates.erase(gate);
+            }
+        }
     }
     auto request=source;
     if(request.item_preview){request.live=false;request.portrait=false;request.pose=ActorPreviewPose::Current;request.animation_id.clear();request.animation_frame=0;}
@@ -2925,12 +3614,20 @@ ActorPreviewAnimations CaptureActorPreviewAnimations(ViewId owner,bool pose_libr
     return result;
 }
 
+void NoteActorPreviewInteractiveInput() noexcept
+{
+    g_last_interactive_input_ms.store(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count(),
+        std::memory_order_relaxed);
+}
+
 void TickActorPreviews()
 {
     // Paused actors have no advancing animation. Explicit refresh/equipment
     // changes still call SetActorPreview and capture immediately.
     if (auto* ui=RE::UI::GetSingleton(); ui && ui->GameIsPaused()) return;
-    struct Pending {ViewId owner;ActorPreviewRequest request;std::uint64_t revision;};
+    struct Pending {ViewId owner;ActorPreviewRequest request;std::uint64_t revision;std::shared_ptr<const SceneSnapshot> existing_scene;};
     std::vector<Pending> pending;
     const auto now=std::chrono::steady_clock::now();
     {
@@ -2940,12 +3637,12 @@ void TickActorPreviews()
             // changes at 1 Hz instead of rebuilding identical meshes at 30 Hz.
             if(state.scene && state.scene->bind_pose && now-state.last_pose_capture<std::chrono::seconds(1))continue;
             state.last_pose_capture=now;
-            pending.push_back({owner,state.request,state.revision});
+            pending.push_back({owner,state.request,state.revision,state.scene});
         }
     }
     for (const auto& item:pending) {
         ActorPreviewStatus status;
-        auto scene=CaptureScene(item.request,status);
+        auto scene=CaptureScene(item.request,status,{},item.existing_scene.get());
         std::shared_ptr<const SceneSnapshot> old_scene;
         std::shared_ptr<RenderedFrame> old_frame;
         {
@@ -2953,6 +3650,24 @@ void TickActorPreviews()
             const auto found=g_previews.find(item.owner);
             if (found==g_previews.end()||found->second.revision!=item.revision) continue;
             auto& state=found->second;
+            if (scene && state.scene && !state.scene->item_preview && !scene->item_preview &&
+                state.scene->reference_id == scene->reference_id &&
+                !state.scene->bind_pose && !scene->bind_pose) {
+                const float anchor_r = std::max(state.scene->radius, 16.0F);
+                const float dx = scene->center.x - state.scene->center.x;
+                const float dy = scene->center.y - state.scene->center.y;
+                const float dz = scene->center.z - state.scene->center.z;
+                const float center_shift = std::sqrt(dx * dx + dy * dy + dz * dz);
+                const float radius_ratio = scene->radius / anchor_r;
+                if (!(center_shift > anchor_r * 0.45F || radius_ratio < 0.60F || radius_ratio > 1.55F)) {
+                    scene->center = state.scene->center;
+                    scene->radius = state.scene->radius;
+                    scene->head = state.scene->head;
+                    scene->portrait_radius = state.scene->portrait_radius;
+                    scene->facing_yaw = state.scene->facing_yaw;
+                    scene->portrait_yaw = state.scene->portrait_yaw;
+                }
+            }
             if (scene && state.scene && SameScenePose(*state.scene,*scene)) continue;
             status.ready=state.status.ready&&status.available;
             old_scene=std::move(state.scene);
@@ -2969,10 +3684,35 @@ ActorPreviewStatus GetActorPreviewStatus(ViewId owner)
     return {false,false,0,0,0,"No actor preview is attached to this view."};
 }
 
+void SetActorPreviewSplashHold(ViewId owner, bool hold, std::uint64_t release_after_paint_sequence) noexcept
+{
+    if (owner == 0) return;
+    std::shared_ptr<RenderedFrame> discarded_frame;
+    {
+        const std::scoped_lock lock(g_mutex);
+        auto& gate = g_splash_gates[owner];
+        gate.updated_at = std::chrono::steady_clock::now();
+        if (hold) {
+            gate.held = true;
+            gate.min_view_paint_sequence = 0;
+            if (const auto it = g_previews.find(owner); it != g_previews.end()) {
+                it->second.request.visible = false;
+                it->second.compositor_visible = false;
+                discarded_frame = std::move(it->second.frame);
+                it->second.status.ready = false;
+            }
+        } else {
+            gate.held = false;
+            gate.min_view_paint_sequence = release_after_paint_sequence;
+        }
+    }
+}
+
 void HideActorPreviewImmediate(ViewId owner) noexcept {
     std::shared_ptr<RenderedFrame> discarded_frame;
     {
         const std::scoped_lock lock(g_mutex);
+        g_splash_gates.erase(owner);
         if (const auto it = g_previews.find(owner); it != g_previews.end()) {
             it->second.request.visible = false;
             it->second.compositor_visible = false;
@@ -2996,9 +3736,25 @@ void ClearActorPreviews() noexcept {
     std::unordered_map<ViewId, PreviewState> cleared_previews;
     std::vector<std::shared_ptr<PngExport>> canceled;
     std::vector<std::future<void>> workers;
-    {const std::scoped_lock lock(g_mutex);cleared_previews.swap(g_previews);canceled.swap(g_exports);workers.swap(g_export_workers);for(const auto& job:canceled)job->canceled=true;}
+    std::vector<std::future<void>> read_workers;
+    {
+        const std::scoped_lock lock(g_mutex);
+        cleared_previews.swap(g_previews);
+        g_splash_gates.clear();
+        canceled.swap(g_exports);
+        workers.swap(g_export_workers);
+        read_workers.swap(g_thumbnail_read_workers);
+        for(const auto& job:canceled)job->canceled=true;
+    }
     for(const auto& job:canceled)try {job->callback(false,"The model preview was closed before PNG capture completed.");}catch(...){}
     for(auto& worker:workers)if(worker.valid())worker.wait();
+    for(auto& rw:read_workers)if(rw.valid())rw.wait();
+}
+
+std::filesystem::path GetThumbnailCacheRootDirectory()
+{
+    const auto items_dir = ThumbnailCacheDirectory(true);
+    return items_dir.empty() ? std::filesystem::path{} : items_dir.parent_path();
 }
 
 void ConfigureActorPreviewExport(std::uint32_t full_view, std::uint32_t portrait)
@@ -3011,11 +3767,79 @@ void ConfigureActorPreviewExport(std::uint32_t full_view, std::uint32_t portrait
 std::unordered_map<std::uint32_t, std::string> g_item_thumbnail_cache;
 std::unordered_map<std::string, std::string> g_actor_thumbnail_cache;
 
-void CaptureItemThumbnail(ViewId owner,std::uint32_t form_id,ActorPreviewSaveCallback callback,bool use_preview)
+std::string GetPlayerCharacterKey()
+{
+    return ComputePlayerIdentity(RE::PlayerCharacter::GetSingleton()).character_key;
+}
+
+std::uint64_t GetPlayerPortraitRevision() noexcept
+{
+    return g_player_portrait_revision.load(std::memory_order_acquire);
+}
+
+void InvalidatePlayerPortraitCache(bool delete_disk_cache)
+{
+    g_player_portrait_revision.fetch_add(1ULL, std::memory_order_release);
+    {
+        const std::scoped_lock lock(g_mutex);
+        for (auto it = g_actor_thumbnail_cache.begin(); it != g_actor_thumbnail_cache.end();) {
+            if (it->first.find("player") != std::string::npos) {
+                it = g_actor_thumbnail_cache.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    if (delete_disk_cache) {
+        const auto cache_paths = ResolveActorPortraitCachePaths(0x14U, 0x07U);
+        std::error_code ignored;
+        if (!cache_paths.primary.empty()) {
+            std::filesystem::remove(cache_paths.primary, ignored);
+        }
+        if (const auto dir = ThumbnailCacheDirectory(false); !dir.empty()) {
+            std::filesystem::remove(dir / "portrait-bust-player.png", ignored);
+        }
+    }
+}
+
+void NotifyNewGameCharacterSession() noexcept
+{
+    std::uint32_t current_id = 0U;
+    if (const auto* save_mgr = RE::BGSSaveLoadManager::GetSingleton()) {
+        current_id = save_mgr->currentCharacterID;
+    }
+    g_new_game_inherited_char_id.store(current_id, std::memory_order_release);
+    const auto seq = g_new_game_counter.fetch_add(1ULL, std::memory_order_relaxed) + 1ULL;
+    const auto tick = static_cast<std::uint64_t>(::GetTickCount64());
+    g_new_game_session_nonce.store(
+        ((tick & 0xFFFFFFFFULL) ^ (seq * 0x9E3779B9ULL)) | 1ULL,
+        std::memory_order_release);
+    try {
+        InvalidatePlayerPortraitCache(true);
+    } catch (...) {
+    }
+}
+
+void NotifyLoadedGameCharacterSession() noexcept
+{
+    g_new_game_session_nonce.store(0ULL, std::memory_order_release);
+    g_new_game_inherited_char_id.store(0U, std::memory_order_release);
+    try {
+        InvalidatePlayerPortraitCache(false);
+    } catch (...) {
+    }
+}
+
+void CaptureItemThumbnail(ViewId owner,std::uint32_t form_id,ActorPreviewSaveCallback callback,bool use_preview,std::string_view preferred_cache_url_prefix)
 {
     if(!owner||REL::Module::IsVR()){callback(false,"Item thumbnails require a flat Skyrim view.");return;}
     const auto cache_path = ItemThumbnailCachePath(form_id);
     if (!use_preview) {
+        if (auto file_url = BuildCachedThumbnailFileUrlIfExists(cache_path, "Items", preferred_cache_url_prefix); !file_url.empty()) {
+            RecordThumbnailHit(false, false, true, false);
+            callback(true, std::move(file_url));
+            return;
+        }
         std::string cached_data_url;
         {
             const std::scoped_lock lock(g_mutex);
@@ -3024,21 +3848,47 @@ void CaptureItemThumbnail(ViewId owner,std::uint32_t form_id,ActorPreviewSaveCal
             }
         }
         if (!cached_data_url.empty()) {
+            RecordThumbnailHit(true, false, false, false);
             callback(true, std::move(cached_data_url));
             return;
         }
-        if (auto disk_data_url = ReadCachedThumbnailDataUrl(cache_path); !disk_data_url.empty()) {
-            {
-                const std::scoped_lock lock(g_mutex);
-                if (g_item_thumbnail_cache.size() >= 16384) {
-                    g_item_thumbnail_cache.erase(g_item_thumbnail_cache.begin());
+        if (CachedThumbnailFileReadyOnDisk(cache_path)) {
+            std::vector<std::future<void>> finished_readers;
+            const std::scoped_lock lock(g_mutex);
+            for (auto it = g_thumbnail_read_workers.begin(); it != g_thumbnail_read_workers.end();) {
+                if (it->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                    finished_readers.push_back(std::move(*it));
+                    it = g_thumbnail_read_workers.erase(it);
+                } else {
+                    ++it;
                 }
-                g_item_thumbnail_cache[form_id] = disk_data_url;
             }
-            callback(true, std::move(disk_data_url));
+            g_thumbnail_read_workers.push_back(std::async(std::launch::async,
+                [form_id, cache_path, cb = std::move(callback)]() mutable {
+                    double read_ms = -1.0;
+                    double encode_ms = -1.0;
+                    auto disk_data_url = ReadCachedThumbnailDataUrl(cache_path, &read_ms, &encode_ms);
+                    if (!disk_data_url.empty()) {
+                        RecordThumbnailHit(false, true, false, false);
+                        RecordThumbnailTiming(read_ms, encode_ms, -1.0, -1.0, CpuSupportsAvx2ForPixelConvert());
+                        {
+                            const std::scoped_lock cache_lock(g_mutex);
+                            if (g_item_thumbnail_cache.size() >= 16384) {
+                                g_item_thumbnail_cache.erase(g_item_thumbnail_cache.begin());
+                            }
+                            g_item_thumbnail_cache[form_id] = disk_data_url;
+                        }
+                        cb(true, std::move(disk_data_url));
+                    } else {
+                        std::error_code ignored;
+                        std::filesystem::remove(cache_path, ignored);
+                        cb(false, "Cached item thumbnail could not be read.");
+                    }
+                }));
             return;
         }
     }
+    RecordThumbnailHit(false, false, false, true);
     bool busy{};
     ActorPreviewRequest request;
     std::shared_ptr<const SceneSnapshot> scene;
@@ -3086,11 +3936,23 @@ void CaptureItemThumbnail(ViewId owner,std::uint32_t form_id,ActorPreviewSaveCal
     const std::scoped_lock lock(g_mutex);g_exports.push_back(std::move(job));
 }
 
-void CaptureActorThumbnail(ViewId owner,std::uint32_t reference_id,std::uint32_t base_form_id,ActorPreviewSaveCallback callback,bool use_preview)
+void CaptureActorThumbnail(ViewId owner,std::uint32_t reference_id,std::uint32_t base_form_id,ActorPreviewSaveCallback callback,bool use_preview,std::string_view preferred_cache_url_prefix)
 {
     if(!owner||REL::Module::IsVR()){callback(false,"Actor thumbnails require a flat Skyrim view.");return;}
     const auto cache_paths = ResolveActorPortraitCachePaths(reference_id, base_form_id);
     if (!use_preview && !cache_paths.key.empty()) {
+        if (auto file_url = BuildCachedThumbnailFileUrlIfExists(cache_paths.primary, "Portraits", preferred_cache_url_prefix); !file_url.empty()) {
+            RecordThumbnailHit(false, false, true, false);
+            callback(true, std::move(file_url));
+            return;
+        }
+        if (cache_paths.fallback != cache_paths.primary) {
+            if (auto file_url = BuildCachedThumbnailFileUrlIfExists(cache_paths.fallback, "Portraits", preferred_cache_url_prefix); !file_url.empty()) {
+                RecordThumbnailHit(false, false, true, false);
+                callback(true, std::move(file_url));
+                return;
+            }
+        }
         std::string cached_data_url;
         {
             const std::scoped_lock lock(g_mutex);
@@ -3099,25 +3961,50 @@ void CaptureActorThumbnail(ViewId owner,std::uint32_t reference_id,std::uint32_t
             }
         }
         if (!cached_data_url.empty()) {
+            RecordThumbnailHit(true, false, false, false);
             callback(true, std::move(cached_data_url));
             return;
         }
-        auto disk_data_url = ReadCachedThumbnailDataUrl(cache_paths.primary);
-        if (disk_data_url.empty() && !cache_paths.fallback.empty() && cache_paths.fallback != cache_paths.primary) {
-            disk_data_url = ReadCachedThumbnailDataUrl(cache_paths.fallback);
-        }
-        if (!disk_data_url.empty()) {
-            {
-                const std::scoped_lock lock(g_mutex);
-                if (g_actor_thumbnail_cache.size() >= 1024) {
-                    g_actor_thumbnail_cache.erase(g_actor_thumbnail_cache.begin());
+        const bool has_primary = CachedThumbnailFileReadyOnDisk(cache_paths.primary);
+        const bool has_fallback = !has_primary && cache_paths.fallback != cache_paths.primary && CachedThumbnailFileReadyOnDisk(cache_paths.fallback);
+        if (has_primary || has_fallback) {
+            const auto target_path = has_primary ? cache_paths.primary : cache_paths.fallback;
+            std::vector<std::future<void>> finished_readers;
+            const std::scoped_lock lock(g_mutex);
+            for (auto it = g_thumbnail_read_workers.begin(); it != g_thumbnail_read_workers.end();) {
+                if (it->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                    finished_readers.push_back(std::move(*it));
+                    it = g_thumbnail_read_workers.erase(it);
+                } else {
+                    ++it;
                 }
-                g_actor_thumbnail_cache[cache_paths.key] = disk_data_url;
             }
-            callback(true, std::move(disk_data_url));
+            g_thumbnail_read_workers.push_back(std::async(std::launch::async,
+                [cache_key = cache_paths.key, target_path, cb = std::move(callback)]() mutable {
+                    double read_ms = -1.0;
+                    double encode_ms = -1.0;
+                    auto disk_data_url = ReadCachedThumbnailDataUrl(target_path, &read_ms, &encode_ms);
+                    if (!disk_data_url.empty()) {
+                        RecordThumbnailHit(false, true, false, false);
+                        RecordThumbnailTiming(read_ms, encode_ms, -1.0, -1.0, CpuSupportsAvx2ForPixelConvert());
+                        {
+                            const std::scoped_lock cache_lock(g_mutex);
+                            if (g_actor_thumbnail_cache.size() >= 1024) {
+                                g_actor_thumbnail_cache.erase(g_actor_thumbnail_cache.begin());
+                            }
+                            g_actor_thumbnail_cache[cache_key] = disk_data_url;
+                        }
+                        cb(true, std::move(disk_data_url));
+                    } else {
+                        std::error_code ignored;
+                        std::filesystem::remove(target_path, ignored);
+                        cb(false, "Cached portrait thumbnail could not be read.");
+                    }
+                }));
             return;
         }
     }
+    RecordThumbnailHit(false, false, false, true);
     bool busy{};
     ActorPreviewRequest request;
     std::shared_ptr<const SceneSnapshot> scene;
@@ -3207,13 +4094,22 @@ void SaveActorPreviewPng(ViewId owner, ActorPreviewSaveCallback callback, std::u
     callback(false,std::move(error));
 }
 
+void PrewarmActorPreviewShaders()
+{
+    g_shader_cache.Start();
+}
+
+void ShutdownActorPreviewShaders() noexcept
+{
+    g_shader_cache.Shutdown();
+}
+
 void WarmupActorPreviewRenderer(void* raw_device)
 {
-    auto* device = static_cast<ID3D11Device*>(raw_device);
-    if (device == nullptr || FrameworkSplashActive()) {
+    if (raw_device == nullptr || FrameworkSplashActive()) {
         return;
     }
-    g_renderer.WarmupStep(device);
+    g_shader_cache.Start();
 }
 
 void RenderActorPreviews(void* raw_device, void* raw_context, std::span<const ViewId> visible_owners)
@@ -3235,7 +4131,10 @@ void RenderActorPreviews(void* raw_device, void* raw_context, std::span<const Vi
         }
     }
     const auto now=std::chrono::steady_clock::now();
-    if (live&&!FrameworkSplashActive()&&now-g_last_tick_request>=std::chrono::milliseconds(33)&&!g_tick_queued.exchange(true)) {
+    const auto now_ms=std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    const auto last_input_ms=g_last_interactive_input_ms.load(std::memory_order_relaxed);
+    const bool input_quiet=last_input_ms==0||(now_ms-last_input_ms)>=320;
+    if (live&&input_quiet&&!FrameworkSplashActive()&&exports.empty()&&now-g_last_tick_request>=std::chrono::milliseconds(400)&&!g_tick_queued.exchange(true)) {
         g_last_tick_request=now;
         if (auto* tasks=SKSE::GetTaskInterface()) tasks->AddTask([] {
             try {TickActorPreviews();} catch (const std::exception& error) {SKSE::log::warn("SkyUltra actor pose snapshot failed: {}",error.what());}
@@ -3243,7 +4142,11 @@ void RenderActorPreviews(void* raw_device, void* raw_context, std::span<const Vi
         }); else g_tick_queued.store(false);
     }
     if (work.empty()&&exports.empty()) return;
-    if (!g_renderer.Ensure(device)) {
+    const auto ensure_result = g_renderer.Ensure(device);
+    if (ensure_result == PreviewRenderer::EnsureResult::Pending) {
+        return;
+    }
+    if (ensure_result == PreviewRenderer::EnsureResult::Failed) {
         std::vector<std::shared_ptr<RenderedFrame>> old_frames;
         std::vector<std::shared_ptr<PngExport>> removed_exports;
         {
@@ -3259,12 +4162,18 @@ void RenderActorPreviews(void* raw_device, void* raw_context, std::span<const Vi
         for(const auto& job:exports)if(!job->canceled.load())job->callback(false,"Could not initialize the model GPU pipeline for PNG capture.");
         return;
     }
+    bool rendered_stage_this_frame = false;
     for (auto& item:work) {
         auto frame=item.frame?item.frame:std::make_shared<RenderedFrame>();
-        ComPtr<ID3D11Device> owner_device;
-        if (frame->color) frame->color->GetDevice(owner_device.GetAddressOf());
-        if (frame->rendered_revision==item.revision&&owner_device.Get()==device) continue;
-        const auto rendered=g_renderer.Draw(context,item,*frame);
+        if (frame->rendered_revision==item.revision&&frame->target_device==device&&frame->color) continue;
+        bool shaders_pending{};
+        const auto rendered=g_renderer.Draw(context,item,*frame,false,&shaders_pending);
+        if (shaders_pending) {
+            continue;
+        }
+        if (rendered) {
+            rendered_stage_this_frame = true;
+        }
         std::shared_ptr<RenderedFrame> old_frame;
         {
             const std::scoped_lock lock(g_mutex);
@@ -3300,12 +4209,30 @@ void RenderActorPreviews(void* raw_device, void* raw_context, std::span<const Vi
             else {old_frame=std::move(state.frame);state.frame=std::move(frame);state.status.message="The actor snapshot had no drawable GPU packets on the current device; inspect SkyUltra.log for GPU diagnostics.";}
         }
     }
-    ProcessActorExports(device,context,exports);
+    ProcessActorExports(device,context,exports,!rendered_stage_this_frame);
 }
 
-std::optional<ActorPreviewFrame> GetActorPreviewFrame(ViewId owner)
+std::optional<ActorPreviewFrame> GetActorPreviewFrame(ViewId owner, std::uint64_t current_view_paint_sequence)
 {
     const std::scoped_lock lock(g_mutex);
+    if (const auto gate = g_splash_gates.find(owner); gate != g_splash_gates.end()) {
+        const auto elapsed = std::chrono::steady_clock::now() - gate->second.updated_at;
+        if (gate->second.held) {
+            if (elapsed < std::chrono::milliseconds(1500)) {
+                return std::nullopt;
+            }
+            g_splash_gates.erase(gate);
+        } else if (gate->second.min_view_paint_sequence > 0 && current_view_paint_sequence > 0) {
+            if (current_view_paint_sequence <= gate->second.min_view_paint_sequence &&
+                elapsed < std::chrono::milliseconds(650)) {
+                return std::nullopt;
+            }
+            g_splash_gates.erase(gate);
+        } else if (gate->second.min_view_paint_sequence == 0 ||
+                   elapsed >= std::chrono::milliseconds(650)) {
+            g_splash_gates.erase(gate);
+        }
+    }
     const auto found=g_previews.find(owner);
     if (found==g_previews.end()||!found->second.request.visible||!found->second.status.ready||!found->second.frame) return std::nullopt;
     const auto& state=found->second;

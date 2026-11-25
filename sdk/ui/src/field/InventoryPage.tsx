@@ -16,10 +16,16 @@ const pageSize = 64;
 const categoryOrder = ['weapon','armor','potion','ingredient','ammo','book','scroll','soul gem','key','miscellaneous'];
 const categoryLabels: Record<string, string> = {all:'All items',weapon:'Weapons',armor:'Armor',potion:'Potions',ingredient:'Ingredients',ammo:'Ammo',book:'Books',scroll:'Scrolls','soul gem':'Soul gems',key:'Keys',miscellaneous:'Misc.'};
 type Drag = { item: Item; pointer: number; x: number; y: number; active: boolean };
-type SmartChip = 'all' | 'enchanted' | 'tempered' | 'books' | 'unread' | 'stolen' | 'poisoned';
+type SmartChip = 'all' | 'favorites' | 'enchanted' | 'tempered' | 'books' | 'unread' | 'stolen' | 'poisoned';
 type OutfitLoadout = { name: string; slots: Array<{ slot: SkyUltraEquipmentSlot; id: string; itemName: string }> };
 
-const LOADOUT_STORAGE_KEY = 'skyultra.loadouts.v1';
+const LOADOUT_STORAGE_PREFIX = 'skyultra.loadouts.v2.';
+
+function loadoutStorageKey(characterScopeKey?: string | null): string {
+  const raw = typeof characterScopeKey === 'string' ? characterScopeKey.trim().toLowerCase() : '';
+  const cleaned = raw.replace(/[^a-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64);
+  return LOADOUT_STORAGE_PREFIX + (cleaned || 'global');
+}
 
 function readLocalInventoryPrefs(): {
   defaultTheme?: string;
@@ -45,9 +51,10 @@ function readLocalInventoryPrefs(): {
   return {};
 }
 
-function readOutfitLoadouts(): Array<OutfitLoadout | null> {
+function readOutfitLoadouts(characterScopeKey?: string | null): Array<OutfitLoadout | null> {
+  if (!characterScopeKey) return [null, null, null, null];
   try {
-    const raw = window.localStorage?.getItem(LOADOUT_STORAGE_KEY);
+    const raw = window.localStorage?.getItem(loadoutStorageKey(characterScopeKey));
     if (!raw) return [null, null, null, null];
     const parsed = JSON.parse(raw) as unknown;
     if (Array.isArray(parsed)) {
@@ -59,15 +66,16 @@ function readOutfitLoadouts(): Array<OutfitLoadout | null> {
   return [null, null, null, null];
 }
 
-function writeOutfitLoadouts(next: Array<OutfitLoadout | null>): void {
+function writeOutfitLoadouts(next: Array<OutfitLoadout | null>, characterScopeKey?: string | null): void {
+  if (!characterScopeKey) return;
   try {
-    window.localStorage?.setItem(LOADOUT_STORAGE_KEY, JSON.stringify(next));
+    window.localStorage?.setItem(loadoutStorageKey(characterScopeKey), JSON.stringify(next));
   } catch {
     // Ignore storage errors
   }
 }
 
-export default function InventoryPage({ player, bridge, obscured = false, initialCategory = 'all', initialId = '', standalone = false, displayMode = 'fullscreen', pauseWorld = false, onToggleDisplayMode, onTogglePauseWorld, onClose }: {
+export default function InventoryPage({ player, bridge, obscured = false, initialCategory = 'all', initialId = '', standalone = false, displayMode = 'fullscreen', pauseWorld = true, onToggleDisplayMode, onTogglePauseWorld, onClose }: {
   player: Player | null; bridge?: SkyWebViewAPI; obscured?: boolean; initialCategory?: string; initialId?: string; standalone?: boolean; displayMode?: 'fullscreen' | 'windowed'; pauseWorld?: boolean; onToggleDisplayMode?: () => void; onTogglePauseWorld?: () => void; onClose?: () => void;
 }): React.JSX.Element {
   const game = useMemo(() => bridge ? createSkyUltraGame(bridge) : null, [bridge]);
@@ -86,21 +94,37 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
   const [renamingItem, setRenamingItem] = useState<Item | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [pendingDropItem, setPendingDropItem] = useState<Item | null>(null);
-  const [loadouts, setLoadouts] = useState<Array<OutfitLoadout | null>>(() => readOutfitLoadouts());
+  const characterScopeKey = player?.characterKey || player?.playerName || '';
+  const [loadouts, setLoadouts] = useState<Array<OutfitLoadout | null>>(() => readOutfitLoadouts(characterScopeKey));
   const [outfitPlayer, setOutfitPlayer] = useState(player), [busy, setBusy] = useState(false), [revision, setRevision] = useState(0);
   const localPrefs = useMemo(() => readLocalInventoryPrefs(), [revision, readingBook]);
   const action = useRef<AbortController | null>(null), locked = useRef(false);
   const drag = useRef<Drag | null>(null), suppressClick = useRef(false);
   const [dragging, setDragging] = useState<Item | null>(null), [hoverSlot, setHoverSlot] = useState('');
+  const hoverSlotRef = useRef('');
+  const lastDragEventRef = useRef<unknown>(null);
+  const lastHitPointRef = useRef({ x: -1, y: -1 });
   const ghostRef = useRef<HTMLDivElement>(null);
   const ghostPoint = useRef({ x: 0, y: 0 });
   const dragImage = useRef<string | undefined>(undefined);
   const selectItem = (item: Item): void => { setSelectedId(item.id); if (!locked.current) setActionMessage(''); };
+  const selectItemRef = useRef(selectItem);
+  selectItemRef.current = selectItem;
   useEffect(() => { setOutfitPlayer(player); }, [player]);
+  useEffect(() => { setLoadouts(readOutfitLoadouts(characterScopeKey)); }, [characterScopeKey]);
   useEffect(() => { setCategory(initialCategory); setSelectedId(initialId); setOffset(0); if (initialId && !standalone) setTab('studio'); }, [initialCategory, initialId, standalone]);
   useEffect(() => { setOffset(0); }, [query, category, wearFilter, sort]);
   useEffect(() => () => { action.current?.abort(); }, [bridge]);
-  useEffect(() => { if (obscured) { drag.current = null; setDragging(null); setHoverSlot(''); } }, [obscured]);
+  useEffect(() => {
+    if (obscured) {
+      drag.current = null;
+      lastDragEventRef.current = null;
+      lastHitPointRef.current = { x: -1, y: -1 };
+      hoverSlotRef.current = '';
+      setDragging(null);
+      setHoverSlot('');
+    }
+  }, [obscured]);
   useEffect(() => {
     if (!game || !bridge || obscured) return;
     let active = true, pending = false;
@@ -115,7 +139,7 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
       finally { pending = false; if (active) setLoading(false); }
     };
     const timer = window.setTimeout(() => void refresh(), query ? 220 : 0);
-    const interval = window.setInterval(() => void refresh(), 5000);
+    const interval = window.setInterval(() => void refresh(), 15000);
     const visibility = (): void => { void refresh(); };
     const unsubscribe = bridge.on('skyultra.visibility', visibility); document.addEventListener('visibilitychange', visibility);
     return () => { active = false; controller.abort(); window.clearTimeout(timer); window.clearInterval(interval); unsubscribe(); document.removeEventListener('visibilitychange', visibility); };
@@ -124,7 +148,12 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
     const trimmed = item.name?.trim() ?? '';
     if (!trimmed) return false;
     const lower = trimmed.toLowerCase();
-    return !lower.startsWith('<missing name') && lower !== 'missing name';
+    return (
+      !lower.startsWith('<missing name') &&
+      lower !== 'missing name' &&
+      !lower.includes('genitalcover') &&
+      !lower.includes('genital cover')
+    );
   };
   const fallback = useMemo(() => (player?.inventory ?? [])
     .filter(isValidNamedItem)
@@ -135,6 +164,7 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
   [player, category, wearFilter, query, sort]);
   const rawItems = (remote?.available ? remote.results : fallback.slice(offset, offset + pageSize)).filter(isValidNamedItem);
   const items = rawItems.filter((item) => {
+    if (smartChip === 'favorites') return Boolean(item.favorite);
     if (smartChip === 'enchanted') return Boolean(item.enchanted || item.enchantments?.length);
     if (smartChip === 'tempered') return Boolean(item.temperTier);
     if (smartChip === 'books') return item.category.toLowerCase() === 'book';
@@ -144,6 +174,17 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
     return true;
   });
   const total = remote?.available ? remote.totalMatches : fallback.length;
+  const filteredWeight = useMemo(
+    () => items.reduce((sum, item) => sum + (Number.isFinite(item.weight) ? item.weight : 0) * Math.max(1, item.count || 1), 0),
+    [items],
+  );
+  const filteredValue = useMemo(
+    () => items.reduce((sum, item) => sum + (Number.isFinite(item.value) ? item.value : 0) * Math.max(1, item.count || 1), 0),
+    [items],
+  );
+  const carryCurrent = Math.max(0, Math.round(outfitPlayer?.carryWeight?.current ?? 0));
+  const carryMax = Math.max(1, Math.round(outfitPlayer?.carryWeight?.max ?? 300));
+  const carryPct = Math.min(100, Math.round((carryCurrent / carryMax) * 100));
   const categories = remote?.available ? remote.categories : [...new Set((player?.inventory ?? []).map(item => item.category))].sort();
   const categoryTabs = ['all', ...[...new Set([...categories, ...(category === 'all' ? [] : [category])])].sort((a,b) => {
     const ai=categoryOrder.indexOf(a),bi=categoryOrder.indexOf(b);return (ai<0?99:ai)-(bi<0?99:bi)||a.localeCompare(b);
@@ -205,6 +246,7 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
       setActionMessage(item.name + (unequip ? ' unequipped.' : ' equipped.'));
       window.setTimeout(() => {
         if (controller.signal.aborted) return;
+        setRevision(value => value + 1);
         void game.player('full', { signal: controller.signal }).then(snapshot => {
           if (!controller.signal.aborted && snapshot.available) setOutfitPlayer(snapshot);
         }).catch(() => undefined);
@@ -299,7 +341,7 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
     const next = [...loadouts];
     next[slotIndex] = { name: `Loadout ${slotIndex + 1} (${entries.length})`, slots: entries };
     setLoadouts(next);
-    writeOutfitLoadouts(next);
+    writeOutfitLoadouts(next, characterScopeKey);
     setActionMessage(`Saved ${entries.length} equipped slots to Loadout ${slotIndex + 1}.`);
   }
   async function applySavedLoadout(slotIndex: number): Promise<void> {
@@ -330,7 +372,12 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
   }
   const endDragAtPoint = (pointerId: number, clientX: number, clientY: number, cancel = false, targetEl?: HTMLButtonElement | null): void => {
     const current = drag.current; if (!current || current.pointer !== pointerId) return;
-    drag.current = null; setDragging(null); setHoverSlot('');
+    drag.current = null;
+    lastDragEventRef.current = null;
+    lastHitPointRef.current = { x: -1, y: -1 };
+    hoverSlotRef.current = '';
+    setDragging(null);
+    setHoverSlot('');
     try { if (targetEl?.hasPointerCapture?.(pointerId)) targetEl.releasePointerCapture(pointerId); } catch { /* ignore */ }
     if (!current.active) return;
     suppressClick.current = true;
@@ -338,29 +385,51 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
     if (fitsEquipmentSlot(current.item, target)) void changeEquipment(current.item, target as SkyUltraEquipmentSlot);
     else setActionMessage(target ? 'This item does not fit that equipment slot.' : 'Drop the item onto a matching equipment slot.');
   };
+  const endDragAtPointRef = useRef(endDragAtPoint);
+  endDragAtPointRef.current = endDragAtPoint;
   const endDrag = (event: React.PointerEvent<HTMLButtonElement>, cancel = false): void => {
     endDragAtPoint(event.pointerId, event.clientX, event.clientY, cancel, event.currentTarget);
   };
+  const handleDragMove = (
+    pointerId: number,
+    clientX: number,
+    clientY: number,
+    nativeEvent?: unknown,
+    preventDefaultFn?: () => void,
+  ): void => {
+    if (nativeEvent != null && lastDragEventRef.current === nativeEvent) return;
+    const current = drag.current;
+    if (!current || current.pointer !== pointerId) return;
+    if (!current.active && Math.hypot(clientX - current.x, clientY - current.y) < 6) return;
+    lastDragEventRef.current = nativeEvent ?? null;
+    const starting = !current.active;
+    current.active = true;
+    preventDefaultFn?.();
+    if (starting) { setDragging(current.item); selectItemRef.current(current.item); }
+    ghostPoint.current = itemDragPosition(clientX, clientY, window.innerWidth, window.innerHeight);
+    if (ghostRef.current) ghostRef.current.style.transform = 'translate3d(' + ghostPoint.current.x + 'px,' + ghostPoint.current.y + 'px,0)';
+    const lastHit = lastHitPointRef.current;
+    if (starting || Math.abs(clientX - lastHit.x) >= 3 || Math.abs(clientY - lastHit.y) >= 3) {
+      lastHitPointRef.current = { x: clientX, y: clientY };
+      const nextSlot = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('[data-equip-slot]')?.dataset.equipSlot ?? '';
+      if (nextSlot !== hoverSlotRef.current) {
+        hoverSlotRef.current = nextSlot;
+        setHoverSlot(nextSlot);
+      }
+    }
+  };
   useEffect(() => {
     const onWindowPointerMove = (event: PointerEvent): void => {
-      const current = drag.current;
-      if (!current || current.pointer !== event.pointerId) return;
-      if (!current.active && Math.hypot(event.clientX - current.x, event.clientY - current.y) < 6) return;
-      const starting = !current.active;
-      current.active = true;
-      if (starting) { setDragging(current.item); selectItem(current.item); }
-      ghostPoint.current = itemDragPosition(event.clientX, event.clientY, window.innerWidth, window.innerHeight);
-      if (ghostRef.current) ghostRef.current.style.transform = 'translate3d(' + ghostPoint.current.x + 'px,' + ghostPoint.current.y + 'px,0)';
-      setHoverSlot(document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-equip-slot]')?.dataset.equipSlot ?? '');
+      handleDragMove(event.pointerId, event.clientX, event.clientY, event);
     };
     const onWindowPointerUp = (event: PointerEvent): void => {
       if (drag.current && drag.current.pointer === event.pointerId) {
-        endDragAtPoint(event.pointerId, event.clientX, event.clientY, false);
+        endDragAtPointRef.current(event.pointerId, event.clientX, event.clientY, false);
       }
     };
     const onWindowPointerCancel = (event: PointerEvent): void => {
       if (drag.current && drag.current.pointer === event.pointerId) {
-        endDragAtPoint(event.pointerId, event.clientX, event.clientY, true);
+        endDragAtPointRef.current(event.pointerId, event.clientX, event.clientY, true);
       }
     };
     window.addEventListener?.('pointermove', onWindowPointerMove, { passive: true });
@@ -371,7 +440,7 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
       window.removeEventListener?.('pointerup', onWindowPointerUp);
       window.removeEventListener?.('pointercancel', onWindowPointerCancel);
     };
-  });
+  }, []);
   const browser = <section className="surface inventory-surface" aria-label="Carried items" aria-busy={loading}>
     <div className="inventory-toolbar"><label className="page-search"><Icon name="search" size={16} /><input aria-label="Search inventory" value={query} onChange={event => setQuery(event.currentTarget.value)} placeholder="Search your belongings…" />{query ? <button type="button" aria-label="Clear inventory search" onClick={() => setQuery('')}><Icon name="close" size={12} /></button> : <kbd>Space</kbd>}</label><SkySegmentedControl label="Inventory layout" value={layout} onValueChange={setLayout} options={[{ value: 'grid', label: <Icon name="grid" size={14} />, ariaLabel: 'Grid view' }, { value: 'list', label: <Icon name="list" size={14} />, ariaLabel: 'List view' }]} /></div>
     <div className="pack-categories" role="group" aria-label="Inventory categories">{categoryTabs.map(value => <button type="button" key={value} aria-pressed={category === value} onClick={() => setCategory(value)} title={categoryLabels[value] ?? value}><Icon name={value === 'all' ? 'inventory' : itemIcon(value)} size={18} /><span>{categoryLabels[value] ?? value}</span></button>)}</div>
@@ -384,6 +453,7 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
       <div className="smart-filter-chips" role="group" aria-label="Quick item traits">
         {([
           { id: 'all', label: 'All Traits' },
+          { id: 'favorites', label: 'Favorites' },
           { id: 'enchanted', label: 'Enchanted' },
           { id: 'tempered', label: 'Tempered' },
           { id: 'poisoned', label: 'Poisoned' },
@@ -395,7 +465,7 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
         ))}
       </div>
       <div className="loadout-strip" role="group" aria-label="Quick outfit loadouts">
-        <small className="eyebrow">OUTFITS</small>
+        <small className="eyebrow"><Icon name="outfit" size={11} /> OUTFITS</small>
         {[0, 1, 2, 3].map(idx => {
           const preset = loadouts[idx];
           return (
@@ -420,22 +490,71 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
           : typeof item.armorRating === 'number' && item.armorRating > 0
             ? `AR ${Math.round(item.armorRating)}`
             : null;
-      return <button type="button" aria-pressed={item.id === selected?.id} key={item.id} title={(isEnchanted ? `${item.name} (${enchantSummary})` : item.name) + (isStolen ? ' [STOLEN]' : '') + (item.isRead === true ? ' [Already read]' : '')} data-category={item.category} data-enchanted={isEnchanted ? 'true' : undefined} data-stolen={isStolen ? 'true' : undefined} className={'item-tile' + (item.id === selected?.id ? ' is-active' : '') + (item.equipped ? ' is-equipped' : '') + (isEnchanted ? ' is-enchanted' : '') + (isStolen ? ' is-stolen' : '') + (activeTab === 'inventory' && item.equipSlots?.length ? ' can-equip' : '')}
+      const ingredientEffects = Array.isArray(item.ingredientEffects) && item.ingredientEffects.length > 0
+        ? item.ingredientEffects.slice(0, 4)
+        : null;
+      const ingredientTotal = ingredientEffects
+        ? (typeof item.totalEffectCount === 'number' && item.totalEffectCount > 0 ? item.totalEffectCount : ingredientEffects.length)
+        : 0;
+      const ingredientKnown = ingredientEffects
+        ? (typeof item.knownEffectCount === 'number' ? item.knownEffectCount : ingredientEffects.filter(e => e.known).length)
+        : 0;
+      const ingredientSummary = ingredientEffects
+        ? `${ingredientKnown}/${ingredientTotal} learned: ${ingredientEffects.map(e => (e.known && e.name ? e.name : 'Unlearned')).join(', ')}`
+        : '';
+      return <button type="button" aria-pressed={item.id === selected?.id} key={item.id} title={(isEnchanted ? `${item.name} (${enchantSummary})` : ingredientSummary ? `${item.name} (${ingredientSummary})` : item.name) + (isStolen ? ' [STOLEN]' : '') + (item.isRead === true ? ' [Already read]' : '')} data-category={item.category} data-enchanted={isEnchanted ? 'true' : undefined} data-stolen={isStolen ? 'true' : undefined} className={'item-tile' + (item.id === selected?.id ? ' is-active' : '') + (item.equipped ? ' is-equipped' : '') + (isEnchanted ? ' is-enchanted' : '') + (isStolen ? ' is-stolen' : '') + (activeTab === 'inventory' && item.equipSlots?.length ? ' can-equip' : '')}
         onClick={() => { if (suppressClick.current) { suppressClick.current = false; return; } selectItem(item); }}
         onDragStart={event => event.preventDefault()}
         onPointerDown={event => { suppressClick.current = false; if (activeTab !== 'inventory' || event.button !== 0 || busy || obscured || !item.equipSlots?.length) return; try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ignore */ } const image = event.currentTarget.querySelector?.<HTMLImageElement>('.item-thumbnail img'); dragImage.current = image?.getAttribute('src') || undefined; ghostPoint.current = itemDragPosition(event.clientX, event.clientY, window.innerWidth, window.innerHeight); drag.current = { item, pointer: event.pointerId, x: event.clientX, y: event.clientY, active: false }; }}
-        onPointerMove={event => { const current = drag.current; if (!current || current.pointer !== event.pointerId) return; if (!current.active && Math.hypot(event.clientX - current.x, event.clientY - current.y) < 6) return; const starting = !current.active; current.active = true; event.preventDefault(); if (starting) { setDragging(item); selectItem(item); } ghostPoint.current = itemDragPosition(event.clientX, event.clientY, window.innerWidth, window.innerHeight); if (ghostRef.current) ghostRef.current.style.transform = 'translate3d(' + ghostPoint.current.x + 'px,' + ghostPoint.current.y + 'px,0)'; setHoverSlot(document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-equip-slot]')?.dataset.equipSlot ?? ''); }}
+        onPointerMove={event => handleDragMove(event.pointerId, event.clientX, event.clientY, event.nativeEvent, () => event.preventDefault())}
         onPointerUp={event => endDrag(event)} onPointerCancel={event => endDrag(event, true)}>
-        <span className="item-tile__top"><small>{item.equipped ? <><Icon name="check" size={10} />WORN</> : isStolen ? <span className="item-tile__stolen-tag"><Icon name="stolen" size={10} />STOLEN</span> : (item.armorTypeLabel || item.weaponType || item.category)}</small><span>{isEnchanted && <em className="item-tile__enchant-mark" title={enchantSummary}><Icon name="flame" size={10} /></em>}{item.value.toLocaleString()}<Icon name="gold" size={10} /></span></span>
-        <span className="item-tile__image"><ItemThumbnail item={item} bridge={bridge} paused={obscured} />{isEnchanted && <span className="item-tile__enchant-badge" title={enchantSummary} aria-label="Enchanted item"><Icon name="flame" size={11} /></span>}
+        <span className="item-tile__top"><small>{item.equipped ? <><Icon name="check" size={10} />WORN</> : isStolen ? <span className="item-tile__stolen-tag"><Icon name="stolen" size={10} />STOLEN</span> : (item.armorTypeLabel || item.weaponType || item.category)}</small><span>{isEnchanted && <em className="item-tile__enchant-mark" title={enchantSummary}><Icon name="enchant" size={10} /></em>}{item.value.toLocaleString()}<Icon name="gold" size={10} /></span></span>
+        <span className="item-tile__image"><ItemThumbnail item={item} bridge={bridge} paused={obscured} />{isEnchanted && <span className="item-tile__enchant-badge" title={enchantSummary} aria-label="Enchanted item"><Icon name="enchant" size={11} /></span>}
           {item.isRead === true && <span className="item-tile__read-seal" role="img" title="Already read" aria-label="Already read"><Icon name="bookRead" size={22} /></span>}
           {isStolen && <span className="item-tile__stolen-pill" title="Stolen item"><Icon name="stolen" size={10} />STOLEN</span>}
           {combatBadgeLabel && <b className="item-tile__stat-chip">{combatBadgeLabel}</b>}
+          {ingredientEffects && (
+            <span
+              className={`item-tile__alch-chip${ingredientKnown >= ingredientTotal ? ' is-complete' : ingredientKnown === 0 ? ' is-unlearned' : ''}`}
+              title={ingredientSummary}
+              aria-label={`${ingredientKnown} of ${ingredientTotal} effects learned`}
+            >
+              <span className="item-tile__alch-pips" aria-hidden="true">
+                {ingredientEffects.map((eff, pipIdx) => (
+                  <span
+                    key={`${item.id}-alch-pip-${pipIdx}`}
+                    className={`item-tile__alch-pip${eff.known ? (eff.isHostile || eff.isDetrimental ? ' is-poison' : ' is-potion') : ' is-unknown'}`}
+                  />
+                ))}
+              </span>
+              <span>{ingredientKnown}/{ingredientTotal}</span>
+            </span>
+          )}
           {item.count > 1 && <b className="item-tile__quantity">×{item.count.toLocaleString()}</b>}</span>
-        <span className="item-tile__copy"><strong>{isEnchanted && <Icon name="flame" size={10} />}{item.name}</strong><small>{isStolen ? 'Stolen · ' : ''}{item.armorTypeLabel || item.weaponType || item.category}<ItemCombatBadges item={item} compact /><span className="item-meta-pills">{item.temperTier && <b className="item-meta-pill">{item.temperTier}</b>}{item.poisonName && <b className="item-meta-pill is-poison">Poisoned</b>}{item.soulSize && <b className="item-meta-pill">{item.soulSize}</b>}{item.teachesSkill && <b className="item-meta-pill">+1 {item.teachesSkill}</b>}{localPrefs.showValuePerWeight !== false && vwRatio !== null && item.value > 0 && <b className="item-meta-pill">{vwRatio} V/W</b>}</span><span>{item.weight} wt</span></small></span>
+        <span className="item-tile__copy"><strong>{isEnchanted && <Icon name="enchant" size={10} />}{item.name}</strong><small>{isStolen ? 'Stolen · ' : ''}{item.armorTypeLabel || item.weaponType || item.category}<ItemCombatBadges item={item} compact /><span className="item-meta-pills">{ingredientEffects && <b className={`item-meta-pill is-alch-status${ingredientKnown >= ingredientTotal ? ' is-complete' : ingredientKnown === 0 ? ' is-unlearned' : ''}`}>{ingredientKnown === 0 ? `0/${ingredientTotal} Unlearned` : `${ingredientKnown}/${ingredientTotal} Learned`}</b>}{item.temperTier && <b className="item-meta-pill">{item.temperTier}</b>}{item.poisonName && <b className="item-meta-pill is-poison">Poisoned</b>}{item.soulSize && <b className="item-meta-pill">{item.soulSize}</b>}{item.teachesSkill && <b className="item-meta-pill">+1 {item.teachesSkill}</b>}{localPrefs.showValuePerWeight !== false && vwRatio !== null && item.value > 0 && <b className="item-meta-pill">{vwRatio} V/W</b>}</span><span>{item.weight} wt</span></small></span>
       </button>;
     }) : <Empty title={loading ? 'Reading inventory' : 'No items matched'} detail="Try a different filter or search." icon="inventory" />}</div>
-    <div className="roster-footer inventory-pagination"><span>{loading ? 'Refreshing…' : total ? `${offset + 1}–${offset + items.length} of ${total.toLocaleString()}` : '0 items'}{!bridge && player?.inventoryTruncated ? ' · Snapshot is partial' : ''}</span><div><button className="control-button" disabled={offset === 0 || loading} onClick={() => setOffset(value => Math.max(0, value - pageSize))}>Previous</button><button className="control-button" disabled={offset + items.length >= total || loading} onClick={() => setOffset(value => value + items.length)}>Next</button></div></div>
+    <div className="roster-footer inventory-pagination">
+      <span>{loading ? 'Refreshing…' : total ? `${offset + 1}–${offset + items.length} of ${total.toLocaleString()}` : '0 items'}{!bridge && player?.inventoryTruncated ? ' · Snapshot is partial' : ''}</span>
+      <div className="inventory-pack-telemetry" aria-label="Filtered inventory weight and carry capacity">
+        <span className="inventory-pack-telemetry__pill">
+          <Icon name="weight" size={11} />
+          <b>{Math.round(filteredWeight * 10) / 10} wt</b>
+          <small>shown</small>
+        </span>
+        <span className="inventory-pack-telemetry__pill is-gold">
+          <Icon name="gold" size={11} />
+          <b>{Math.round(filteredValue).toLocaleString()}</b>
+        </span>
+        <span className="inventory-pack-telemetry__carry" title={`Carry Weight: ${carryCurrent} / ${carryMax} wt (${carryPct}%)`}>
+          <small>{carryCurrent}/{carryMax} wt</small>
+          <i className="inventory-pack-telemetry__bar">
+            <b style={{ width: `${carryPct}%` }} className={carryPct >= 90 ? 'is-heavy' : ''} />
+          </i>
+        </span>
+      </div>
+      <div><button className="control-button" disabled={offset === 0 || loading} onClick={() => setOffset(value => Math.max(0, value - pageSize))}>Previous</button><button className="control-button" disabled={offset + items.length >= total || loading} onClick={() => setOffset(value => value + items.length)}>Next</button></div>
+    </div>
     {activeTab === 'inventory' && <EquipmentSelection player={outfitPlayer} selected={selected} bridge={bridge} obscured={obscured} onInspect={standalone ? undefined : () => { if (selected) setSelectedId(selected.id); setTab('studio'); }} enabled={!!bridge && !busy && !obscured} onChange={(item, slot, unequip) => { void changeEquipment(item, slot, unequip); }} onItemAction={(item, act, count) => { if (act === 'drop' && item.stolen && localPrefs.stolenProtection !== false) { setPendingDropItem(item); return; } void performItemAction(item, act, count); }} onToggleFavorite={(item) => { void toggleFavorite(item); }} onRenameItem={(item) => { setRenamingItem(item); setRenameDraft(item.name); }} />}
     {renamingItem && (
       <form className="inventory-inline-modal" onSubmit={ev => { ev.preventDefault(); void submitRenameItem(renamingItem, renameDraft); }}>
@@ -459,6 +578,13 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
     <header className="armory-masthead"><div className="armory-heading"><span className="eyebrow">{standalone ? 'SKYRIM PLAYER INVENTORY · LIVE 3D LOADOUT' : 'EQUIPMENT & BELONGINGS'}</span><h1>{activeTab === 'studio' ? 'Item studio' : standalone ? 'Player Inventory' : 'Inventory'}</h1></div>
       {!standalone && <div className="armory-workspaces"><SkySegmentedControl label="Inventory workspace" value={tab} onValueChange={value => { drag.current = null; setDragging(null); setTab(value); }} options={[{ value: 'inventory', label: 'Inventory' }, { value: 'studio', label: 'Item studio' }]} /></div>}
       <div className="armory-masthead__end">
+        {standalone && outfitPlayer?.available && (
+          <div className="armory-standalone-telemetry" aria-label="Character inventory telemetry">
+            <span className="armory-telemetry-chip"><Icon name="shield" size={11} /><b>{Math.round(outfitPlayer.armorRating ?? 0).toLocaleString()}</b><small>AR</small></span>
+            <span className="armory-telemetry-chip"><Icon name="weight" size={11} /><b>{Math.round(outfitPlayer.carryWeight?.current ?? 0).toLocaleString()}/{Math.round(outfitPlayer.carryWeight?.max ?? 0).toLocaleString()}</b><small>WT</small></span>
+            <span className="armory-telemetry-chip is-gold"><Icon name="gold" size={11} /><b>{(outfitPlayer.gold ?? 0).toLocaleString()}</b></span>
+          </div>
+        )}
         {standalone && (onToggleDisplayMode || onTogglePauseWorld) && (
           <div className="armory-mode-pills" role="group" aria-label="Display and world state">
             {onToggleDisplayMode && (
@@ -493,7 +619,7 @@ export default function InventoryPage({ player, bridge, obscured = false, initia
         if (!result.available || !result.dataUrl) throw new Error(result.message ?? 'Could not capture item portrait from the current view.');
         itemThumbnailQueue(bridge).set(selected.id, result.dataUrl);
         return 'Saved as item portrait in Overwrite cache.';
-      }} /> : <ItemThumbnail item={selected} />}<div className="item-inspector__copy"><span className="eyebrow">{selected.armorTypeLabel || selected.weaponType || selected.category}{(selected.enchanted || selected.enchantments?.length) ? ' · ENCHANTED' : ''}{formatItemCombatMeta(selected) ? ` · ${formatItemCombatMeta(selected).toUpperCase()}` : ''}</span><h2>{selected.name}</h2><p className="item-form">{formId(selected.id)}</p><SkyDataList label="Item properties" rows={[...(typeof selected.damage === 'number' && selected.damage > 0 ? [{ id: 'damage', label: 'Damage (DMG)', value: String(Math.round(selected.damage)) }] : []), ...(typeof selected.armorRating === 'number' && selected.armorRating > 0 ? [{ id: 'armorRating', label: selected.armorTypeLabel ? `${selected.armorTypeLabel} Rating` : 'Armor Rating', value: String(Math.round(selected.armorRating)) }] : []), ...(selected.armorTypeLabel ? [{ id: 'armorClass', label: 'Armor Class', value: selected.armorTypeLabel }] : []), ...(selected.weaponType ? [{ id: 'weaponType', label: 'Weapon Class', value: selected.weaponType }] : []), { id: 'value', label: 'Value', value: selected.value.toLocaleString() + ' gold' }, { id: 'weight', label: 'Weight', value: String(selected.weight) }, { id: 'count', label: 'Quantity', value: selected.count.toLocaleString() }, { id: 'ratio', label: 'Value / weight', value: selected.weight > 0 ? (selected.value / selected.weight).toFixed(1) : 'Weightless' }, ...(selected.enchantmentCharge !== undefined ? [{ id: 'charge', label: 'Enchantment charge', value: `${selected.enchantmentCharge}%` }] : [])]} />{(selected.enchanted || selected.enchantments?.length) && <div className="selection-enchantments">{selected.enchantments?.length ? selected.enchantments.map((eff, idx) => <div key={`${eff.name}-${idx}`} className="selection-enchantment"><Icon name="flame" size={11} /><strong>{eff.name}</strong>{eff.description && <span>{eff.description}</span>}</div>) : <div className="selection-enchantment"><Icon name="flame" size={11} /><strong>{selected.enchantmentName || 'Enchanted Item'}</strong><span>Arcane enchantment active</span></div>}</div>}<p className="inspector-note">World model and alternate textures from the item record. Preview and Save use the selected lighting.</p></div></> : <Empty title="Select an item" detail="Details appear here." icon="inventory" />}</aside>}
+      }} /> : <ItemThumbnail item={selected} />}<div className="item-inspector__copy"><span className="eyebrow">{selected.armorTypeLabel || selected.weaponType || selected.category}{(selected.enchanted || selected.enchantments?.length) ? ' · ENCHANTED' : ''}{formatItemCombatMeta(selected) ? ` · ${formatItemCombatMeta(selected).toUpperCase()}` : ''}</span><h2>{selected.name}</h2><p className="item-form">{formId(selected.id)}</p><SkyDataList label="Item properties" rows={[...(typeof selected.damage === 'number' && selected.damage > 0 ? [{ id: 'damage', label: 'Damage (DMG)', value: String(Math.round(selected.damage)) }] : []), ...(typeof selected.armorRating === 'number' && selected.armorRating > 0 ? [{ id: 'armorRating', label: selected.armorTypeLabel ? `${selected.armorTypeLabel} Rating` : 'Armor Rating', value: String(Math.round(selected.armorRating)) }] : []), ...(selected.armorTypeLabel ? [{ id: 'armorClass', label: 'Armor Class', value: selected.armorTypeLabel }] : []), ...(selected.weaponType ? [{ id: 'weaponType', label: 'Weapon Class', value: selected.weaponType }] : []), { id: 'value', label: 'Value', value: selected.value.toLocaleString() + ' gold' }, { id: 'weight', label: 'Weight', value: String(selected.weight) }, { id: 'count', label: 'Quantity', value: selected.count.toLocaleString() }, { id: 'ratio', label: 'Value / weight', value: selected.weight > 0 ? (selected.value / selected.weight).toFixed(1) : 'Weightless' }, ...(selected.enchantmentCharge !== undefined ? [{ id: 'charge', label: 'Enchantment charge', value: `${selected.enchantmentCharge}%` }] : [])]} />{(selected.enchanted || selected.enchantments?.length) && <div className="selection-enchantments">{selected.enchantments?.length ? selected.enchantments.map((eff, idx) => <div key={`${eff.name}-${idx}`} className="selection-enchantment"><Icon name="enchant" size={11} /><strong>{eff.name}</strong>{eff.description && <span>{eff.description}</span>}</div>) : <div className="selection-enchantment"><Icon name="enchant" size={11} /><strong>{selected.enchantmentName || 'Enchanted Item'}</strong><span>Arcane enchantment active</span></div>}</div>}{selected.ingredientEffects?.length ? <div className="selection-ingredient-effects" aria-label="Ingredient effects">{selected.ingredientEffects.slice(0, 4).map((eff, idx) => <div key={`studio-ing-${eff.slot}-${idx}`} className={`selection-ingredient-effect${eff.known ? ` is-learned ${eff.isHostile || eff.isDetrimental ? 'is-poison' : 'is-potion'}` : ' is-unlearned'}`}>{eff.known ? <Icon name="check" size={10} /> : <em>?</em>}<strong>{eff.known ? (eff.name || 'Alchemical Effect') : 'Unknown Effect'}</strong><span className="selection-ingredient-state">{eff.known ? 'Learned' : 'Unlearned'}</span></div>)}</div> : null}<p className="inspector-note">World model and alternate textures from the item record. Preview and Save use the selected lighting.</p></div></> : <Empty title="Select an item" detail="Details appear here." icon="inventory" />}</aside>}
     </div>
 
     {readingBook && (

@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createSkyUltraGame,
   type SkyUltraContainerDisplayMode,
@@ -26,6 +26,66 @@ import {
   spellDeliveryLabels,
   type SpellRailCategory,
 } from './spellArt.js';
+
+const EMPTY_SPELLS: SkyUltraSpell[] = [];
+const EMPTY_ACTIVE_EFFECTS: NonNullable<Player['activeEffects']> = [];
+
+/** Maps Left/Right click in Magic and Favorites to Skyrim equip slots. */
+export function resolveSpellClickHand(
+  spell: Pick<SkyUltraSpell, 'kind' | 'hands' | 'twoHanded'>,
+  button: 'left' | 'right',
+): SkyUltraSpellHand | null {
+  const isVoice =
+    spell.kind === 'shout' ||
+    spell.kind === 'power' ||
+    spell.kind === 'lesserPower' ||
+    spell.hands.includes('voice');
+  if (isVoice) {
+    return button === 'left' ? 'voice' : null;
+  }
+  if (spell.twoHanded || (spell.hands.length === 1 && spell.hands[0] === 'both')) {
+    return 'both';
+  }
+  return button === 'right' ? 'right' : 'left';
+}
+
+export function computeOptimisticSpellEquipped(
+  current: SkyUltraSpellBook['equipped'] | undefined,
+  spellId: string,
+  hand: SkyUltraSpellHand,
+): SkyUltraSpellBook['equipped'] {
+  const base: SkyUltraSpellBook['equipped'] = {
+    left: current?.left ?? null,
+    right: current?.right ?? null,
+    voice: current?.voice ?? null,
+  };
+  if (hand === 'voice') return { ...base, voice: spellId };
+  if (hand === 'both') return { ...base, left: spellId, right: spellId };
+  if (hand === 'left') return { ...base, left: spellId };
+  return { ...base, right: spellId };
+}
+
+export function applySpellEquippedState(
+  spells: SkyUltraSpell[],
+  equipped: SkyUltraSpellBook['equipped'],
+): SkyUltraSpell[] {
+  let changed = false;
+  const next = spells.map(spell => {
+    const equippedLeft = equipped.left === spell.id;
+    const equippedRight = equipped.right === spell.id;
+    const equippedVoice = equipped.voice === spell.id;
+    if (
+      spell.equippedLeft === equippedLeft &&
+      spell.equippedRight === equippedRight &&
+      spell.equippedVoice === equippedVoice
+    ) {
+      return spell;
+    }
+    changed = true;
+    return { ...spell, equippedLeft, equippedRight, equippedVoice };
+  });
+  return changed ? next : spells;
+}
 
 export const containerModeLabels: Record<SkyUltraContainerDisplayMode, string> = {
   half: 'Half Container',
@@ -62,7 +122,7 @@ export interface ContainerPageProps {
   onClose?: () => void;
 }
 
-export function SpellHandBadges({ spell }: { spell: SkyUltraSpell }): React.JSX.Element | null {
+export const SpellHandBadges = React.memo(function SpellHandBadges({ spell }: { spell: SkyUltraSpell }): React.JSX.Element | null {
   if (!spell.equippedLeft && !spell.equippedRight && !spell.equippedVoice) return null;
   return (
     <span className="spellbook-hands" aria-label="Equipped slots">
@@ -71,7 +131,62 @@ export function SpellHandBadges({ spell }: { spell: SkyUltraSpell }): React.JSX.
       {spell.equippedVoice && <b title="Equipped as power / shout">V</b>}
     </span>
   );
-}
+});
+
+const SpellTile = React.memo(function SpellTile({
+  spell,
+  isSelected,
+  sigilSize,
+  onLeftClick,
+  onRightDown,
+  onRightUp,
+}: {
+  spell: SkyUltraSpell;
+  isSelected: boolean;
+  sigilSize: number;
+  onLeftClick: (spell: SkyUltraSpell) => void;
+  onRightDown: (id: string) => void;
+  onRightUp: (spell: SkyUltraSpell) => void;
+}): React.JSX.Element {
+  const isVoice =
+    spell.kind === 'shout' ||
+    spell.kind === 'power' ||
+    spell.kind === 'lesserPower' ||
+    spell.hands.includes('voice');
+  const equipHint = isVoice
+    ? 'Click to equip'
+    : spell.twoHanded
+      ? 'Click to equip (Both hands)'
+      : 'Left-click: Left hand · Right-click: Right hand';
+  return (
+    <button
+      type="button"
+      className={'spellbook-tile' + (isSelected ? ' is-active' : '') + (spell.favorite ? ' is-favorite' : '')}
+      style={spellColorStyle(spell)}
+      aria-pressed={isSelected}
+      title={spell.description ? `${spell.description}\n(${equipHint})` : `${spell.name} (${equipHint})`}
+      onClick={() => onLeftClick(spell)}
+      onMouseDown={e => {
+        if (e.button === 2) onRightDown(spell.id);
+      }}
+      onMouseUp={e => {
+        if (e.button === 2) onRightUp(spell);
+      }}
+      onContextMenu={e => e.preventDefault()}
+    >
+      <SpellSigil spell={spell} size={sigilSize} active={isSelected} />
+      <span className="spellbook-tile__copy">
+        <strong>{spell.name}</strong>
+        <small>
+          {spell.level ?? spellCategoryLabels[spell.category as SpellRailCategory] ?? spell.category}
+          <span>{spellCostLabel(spell)}</span>
+        </small>
+      </span>
+      <SpellHandBadges spell={spell} />
+      {spell.favorite && <span className="spellbook-tile__fav"><HeartIcon filled size={12} /></span>}
+    </button>
+  );
+});
 
 /** Equip buttons shared by the Magic and Favorites pages. */
 export function SpellEquipActions({
@@ -139,7 +254,7 @@ export default function MagicPage({
   bridge,
   obscured = false,
   displayMode = 'half',
-  pauseWorld = false,
+  pauseWorld = true,
   onChangeDisplayMode,
   onTogglePauseWorld,
   onClose,
@@ -151,7 +266,6 @@ export default function MagicPage({
   const [sort, setSort] = useState<'name' | 'cost' | 'school'>('school');
   const [layout, setLayout] = useState<'grid' | 'list'>('grid');
   const [selectedId, setSelectedId] = useState('');
-  const [hoverId, setHoverId] = useState('');
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
@@ -160,10 +274,24 @@ export default function MagicPage({
   const [renameDraft, setRenameDraft] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const resultsRef = useRef<HTMLDivElement | null>(null);
   const locked = useRef(false);
+  const mountedRef = useRef(true);
+  const hasLoadedRef = useRef(false);
+  const lastBookJsonRef = useRef('');
+  const rightDownIdRef = useRef('');
+  const equipChainRef = useRef<Promise<void>>(Promise.resolve());
+  const obscuredRef = useRef(obscured);
+  obscuredRef.current = obscured;
   const actionController = useRef<AbortController | null>(null);
 
-  useEffect(() => () => actionController.current?.abort(), [bridge]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      actionController.current?.abort();
+    };
+  }, [bridge]);
 
   useEffect(() => {
     if (!game || !bridge || obscured) return;
@@ -173,22 +301,29 @@ export default function MagicPage({
     const refresh = async (): Promise<void> => {
       if (pending || document.hidden || !(bridge.getVisibility?.().visible ?? true)) return;
       pending = true;
-      setLoading(true);
+      if (!hasLoadedRef.current) setLoading(true);
       try {
         const res = await game.spells({ signal: controller.signal });
         if (active) {
-          setBook(res);
+          hasLoadedRef.current = true;
+          const nextJson = JSON.stringify(res);
+          if (nextJson !== lastBookJsonRef.current) {
+            lastBookJsonRef.current = nextJson;
+            setBook(res);
+          }
           if (!res.available && res.message) setStatusMessage(res.message);
         }
       } catch (error) {
-        if (active) setStatusMessage(error instanceof Error ? error.message : 'Could not read your spellbook.');
+        if (active && !controller.signal.aborted) {
+          setStatusMessage(error instanceof Error ? error.message : 'Could not read your spellbook.');
+        }
       } finally {
         pending = false;
         if (active) setLoading(false);
       }
     };
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 4000);
+    const interval = window.setInterval(() => void refresh(), 15000);
     const onVis = (): void => void refresh();
     const unsubscribe = bridge.on('skyultra.visibility', onVis);
     document.addEventListener('visibilitychange', onVis);
@@ -201,7 +336,27 @@ export default function MagicPage({
     };
   }, [game, bridge, obscured, revision]);
 
-  const spells = book?.spells ?? [];
+  useEffect(() => {
+    const el = resultsRef.current;
+    if (!el) return;
+    let timer = 0;
+    const onScroll = (): void => {
+      if (!el.classList.contains('is-scrolling')) el.classList.add('is-scrolling');
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = 0;
+        el.classList.remove('is-scrolling');
+      }, 140);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      el.classList.remove('is-scrolling');
+      el.removeEventListener('scroll', onScroll);
+    };
+  }, [category]);
+
+  const spells = book?.spells ?? EMPTY_SPELLS;
   const counts = useMemo(() => {
     const result: Partial<Record<SpellRailCategory, number>> = { all: spells.length, favorites: 0, effects: player?.activeEffects?.length ?? 0 };
     for (const spell of spells) {
@@ -232,13 +387,17 @@ export default function MagicPage({
     });
   }, [spells, category, query, sort]);
 
-  const selected = filtered.find(s => s.id === selectedId) ?? filtered[0] ?? null;
-  const activeEffects = player?.activeEffects ?? [];
+  const selected = useMemo(() => filtered.find(s => s.id === selectedId) ?? filtered[0] ?? null, [filtered, selectedId]);
+  const activeEffects = player?.activeEffects ?? EMPTY_ACTIVE_EFFECTS;
   const magicka = book?.magicka ?? player?.magicka ?? { current: 0, max: 1 };
   const magickaPct = Math.max(0, Math.min(100, Math.round((magicka.current / Math.max(1, magicka.max)) * 100)));
   const playerName = player?.playerName || 'Dragonborn';
 
-  async function runAction<T extends { accepted: boolean; message?: string }>(label: string, request: (signal: AbortSignal) => Promise<T>): Promise<void> {
+  async function runAction<T extends { accepted: boolean; message?: string }>(
+    label: string,
+    request: (signal: AbortSignal) => Promise<T>,
+    onAccepted?: (result: T) => void,
+  ): Promise<void> {
     if (!game || obscured || locked.current) return;
     locked.current = true;
     setBusy(true);
@@ -248,29 +407,97 @@ export default function MagicPage({
     actionController.current = controller;
     try {
       const result = await request(controller.signal);
-      if (!controller.signal.aborted) {
+      if (!controller.signal.aborted && mountedRef.current) {
         setStatusMessage(result.message ?? (result.accepted ? 'Done.' : 'Skyrim declined that action.'));
-        setRevision(v => v + 1);
+        if (result.accepted && onAccepted) {
+          onAccepted(result);
+        } else {
+          setRevision(v => v + 1);
+        }
       }
     } catch (error) {
-      if (!controller.signal.aborted) setStatusMessage(error instanceof Error ? error.message : 'The spell action failed.');
+      if (!controller.signal.aborted && mountedRef.current) {
+        setStatusMessage(error instanceof Error ? error.message : 'The spell action failed.');
+      }
     } finally {
       locked.current = false;
-      if (!controller.signal.aborted) setBusy(false);
+      if (!controller.signal.aborted && mountedRef.current) setBusy(false);
     }
   }
 
-  const equip = (spell: SkyUltraSpell, hand: SkyUltraSpellHand): void => {
-    if (!game) return;
-    void runAction(`Readying ${spell.name}…`, signal => game.equipSpell(spell.id, hand, { signal }));
-  };
+  const equip = useCallback((spell: SkyUltraSpell, hand: SkyUltraSpellHand): void => {
+    if (!game || obscuredRef.current) return;
+    setStatusMessage(`Readying ${spell.name}…`);
+    lastBookJsonRef.current = '';
+    setBook(prev => {
+      if (!prev) return prev;
+      const optimistic = computeOptimisticSpellEquipped(prev.equipped, spell.id, hand);
+      return { ...prev, equipped: optimistic, spells: applySpellEquippedState(prev.spells, optimistic) };
+    });
+    equipChainRef.current = equipChainRef.current.then(async () => {
+      if (!mountedRef.current || obscuredRef.current) return;
+      try {
+        const result = await game.equipSpell(spell.id, hand);
+        if (!mountedRef.current) return;
+        setStatusMessage(result.message ?? (result.accepted ? 'Done.' : 'Skyrim declined that action.'));
+        if (result.equipped) {
+          lastBookJsonRef.current = '';
+          const eq = result.equipped;
+          setBook(prev => (prev ? { ...prev, equipped: eq, spells: applySpellEquippedState(prev.spells, eq) } : prev));
+        } else {
+          setRevision(v => v + 1);
+        }
+      } catch (error) {
+        if (mountedRef.current) {
+          setStatusMessage(error instanceof Error ? error.message : 'The spell action failed.');
+          setRevision(v => v + 1);
+        }
+      }
+    });
+  }, [game]);
   const toggleFavorite = (spell: SkyUltraSpell): void => {
     if (!game) return;
-    void runAction(spell.favorite ? `Removing ${spell.name} from favorites…` : `Adding ${spell.name} to favorites…`, signal =>
-      game.setFavorite(spell.id, 'spell', !spell.favorite, { signal }),
+    const nextFav = !spell.favorite;
+    void runAction(
+      spell.favorite ? `Removing ${spell.name} from favorites…` : `Adding ${spell.name} to favorites…`,
+      signal => game.setFavorite(spell.id, 'spell', nextFav, { signal }),
+      result => {
+        const appliedFav = typeof result.favorite === 'boolean' ? result.favorite : nextFav;
+        lastBookJsonRef.current = '';
+        setBook(prev =>
+          prev
+            ? {
+                ...prev,
+                spells: prev.spells.map(entry => (entry.id === spell.id ? { ...entry, favorite: appliedFav } : entry)),
+              }
+            : prev,
+        );
+      },
     );
   };
   const defaultEquip = (spell: SkyUltraSpell): void => equip(spell, spell.hands.includes('voice') ? 'voice' : spell.twoHanded ? 'both' : 'right');
+
+  const handleTileLeftClick = useCallback((spell: SkyUltraSpell): void => {
+    setSelectedId(spell.id);
+    const hand = resolveSpellClickHand(spell, 'left');
+    if (hand) equip(spell, hand);
+  }, [equip]);
+
+  const handleTileRightDown = useCallback((id: string): void => {
+    rightDownIdRef.current = id;
+  }, []);
+
+  const handleTileRightUp = useCallback((spell: SkyUltraSpell): void => {
+    if (rightDownIdRef.current !== spell.id) return;
+    rightDownIdRef.current = '';
+    setSelectedId(spell.id);
+    const hand = resolveSpellClickHand(spell, 'right');
+    if (hand) {
+      equip(spell, hand);
+    } else {
+      setStatusMessage('');
+    }
+  }, [equip]);
 
   const beginRenameSpell = (spell: SkyUltraSpell): void => {
     setConfirmDeleteId(null);
@@ -317,30 +544,36 @@ export default function MagicPage({
     setConfirmDeleteId(null);
   }, [selected?.id, category]);
 
+  const keyHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  keyHandlerRef.current = (event: KeyboardEvent): void => {
+    if (!selected || busy || obscured || event.ctrlKey || event.altKey || event.metaKey) return;
+    if ((event.target as HTMLElement | null)?.closest('input,textarea,select,[contenteditable=true]')) return;
+    const key = event.key.toLowerCase();
+    if (key === 'f') { event.preventDefault(); toggleFavorite(selected); }
+    else if (key === 'r') { event.preventDefault(); beginRenameSpell(selected); }
+    else if (key === 'delete' || key === 'x') {
+      event.preventDefault();
+      if (confirmDeleteId === selected.id) deleteSpellEntry(selected);
+      else setConfirmDeleteId(selected.id);
+    }
+    else if (key === 'enter') { event.preventDefault(); defaultEquip(selected); }
+    else if (!selected.hands.includes('voice') && !selected.twoHanded && (key === 'q' || key === 'e')) { event.preventDefault(); equip(selected, key === 'q' ? 'left' : 'right'); }
+  };
+
   useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (!selected || busy || obscured || event.ctrlKey || event.altKey || event.metaKey) return;
-      if ((event.target as HTMLElement | null)?.closest('input,textarea,select,[contenteditable=true]')) return;
-      const key = event.key.toLowerCase();
-      if (key === 'f') { event.preventDefault(); toggleFavorite(selected); }
-      else if (key === 'r') { event.preventDefault(); beginRenameSpell(selected); }
-      else if (key === 'delete' || key === 'x') {
-        event.preventDefault();
-        if (confirmDeleteId === selected.id) deleteSpellEntry(selected);
-        else setConfirmDeleteId(selected.id);
-      }
-      else if (key === 'enter') { event.preventDefault(); defaultEquip(selected); }
-      else if (!selected.hands.includes('voice') && !selected.twoHanded && (key === 'q' || key === 'e')) { event.preventDefault(); equip(selected, key === 'q' ? 'left' : 'right'); }
-    };
+    const onKey = (event: KeyboardEvent): void => keyHandlerRef.current(event);
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  });
+  }, []);
 
   return (
     <div
       className={`page inventory-page inventory-page--armory inventory-page--standalone spellbook-page spellbook-page--${displayMode}`}
       data-container-mode={displayMode}
       style={categoryColorStyle(category)}
+      onContextMenu={e => {
+        if (!(e.target as HTMLElement | null)?.closest('input,textarea')) e.preventDefault();
+      }}
     >
       <div className="spellbook-backdrop" aria-hidden="true">
         <i /><i /><i />
@@ -482,35 +715,25 @@ export default function MagicPage({
                 />
               </div>
 
-              <div className={'spellbook-results spellbook-results--' + layout} onMouseLeave={() => setHoverId('')}>
+              <div
+                ref={resultsRef}
+                className={'spellbook-results spellbook-results--' + layout}
+                onMouseUp={e => {
+                  if (e.button === 2) rightDownIdRef.current = '';
+                }}
+              >
                 {filtered.length ? (
-                  filtered.map(spell => {
-                    const isSelected = spell.id === selected?.id;
-                    return (
-                      <button
-                        type="button"
-                        key={spell.id}
-                        className={'spellbook-tile' + (isSelected ? ' is-active' : '') + (spell.favorite ? ' is-favorite' : '')}
-                        style={spellColorStyle(spell)}
-                        aria-pressed={isSelected}
-                        title={spell.description || spell.name}
-                        onMouseEnter={() => setHoverId(spell.id)}
-                        onClick={() => { setSelectedId(spell.id); if (!locked.current) setStatusMessage(''); }}
-                        onDoubleClick={() => { if (!busy && !obscured) defaultEquip(spell); }}
-                      >
-                        <SpellSigil spell={spell} size={layout === 'grid' ? 64 : 40} active={isSelected || hoverId === spell.id} />
-                        <span className="spellbook-tile__copy">
-                          <strong>{spell.name}</strong>
-                          <small>
-                            {spell.level ?? spellCategoryLabels[spell.category as SpellRailCategory] ?? spell.category}
-                            <span>{spellCostLabel(spell)}</span>
-                          </small>
-                        </span>
-                        <SpellHandBadges spell={spell} />
-                        {spell.favorite && <span className="spellbook-tile__fav"><HeartIcon filled size={12} /></span>}
-                      </button>
-                    );
-                  })
+                  filtered.map(spell => (
+                    <SpellTile
+                      key={spell.id}
+                      spell={spell}
+                      isSelected={spell.id === selected?.id}
+                      sigilSize={layout === 'grid' ? 64 : 40}
+                      onLeftClick={handleTileLeftClick}
+                      onRightDown={handleTileRightDown}
+                      onRightUp={handleTileRightUp}
+                    />
+                  ))
                 ) : (
                   <Empty
                     title={loading ? 'Reading your spellbook' : category === 'favorites' ? 'No favorite spells yet' : 'No spells matched'}
@@ -648,7 +871,7 @@ export default function MagicPage({
               {statusMessage ||
                 (category === 'effects'
                   ? `${activeEffects.length} active effect${activeEffects.length === 1 ? '' : 's'} on ${playerName}.`
-                  : `${filtered.length} spell${filtered.length === 1 ? '' : 's'} · Double-click or Enter to equip · Q / E for left / right · F to favorite`)}
+                  : `${filtered.length} spell${filtered.length === 1 ? '' : 's'} · Left-click: Left hand (or equip Shout / Power) · Right-click: Right hand · Q / E · F to favorite`)}
             </span>
           </div>
         </section>

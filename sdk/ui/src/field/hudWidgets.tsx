@@ -1,10 +1,15 @@
 import * as React from "react";
 import {
   getSkyWebView,
+  SKYULTRA_COMPASS_RADIUS_DEFAULT,
+  SKYULTRA_COMPASS_RADIUS_MAX,
+  SKYULTRA_COMPASS_RADIUS_MIN,
+  skyUltraPortraitCrestStyles,
   type SkyUltraCompassMarker,
   type SkyUltraCompassMarkerKind,
   type SkyUltraGameTopic,
   type SkyUltraHudBindingPath,
+  type SkyUltraPortraitCrestStyle,
   type SkyUltraVisibilityRule,
   type SkyUltraWidgetAnchor,
   type SkyUltraWidgetFontStyle,
@@ -155,17 +160,48 @@ export const widgetCatalog: WidgetCatalogEntry[] = [
   },
 ];
 
-export const hudColorSwatches: Array<{ label: string; hex: string }> = [
-  { label: "Dragonstone Gold", hex: "#e8b059" },
-  { label: "Cyber Cyan", hex: "#00f0ff" },
-  { label: "Synth Magenta", hex: "#ff2e93" },
-  { label: "Venom Green", hex: "#39ff14" },
-  { label: "Crimson Vitality", hex: "#ff5c6c" },
-  { label: "Plasma Violet", hex: "#a78bfa" },
-  { label: "Aurora Teal", hex: "#52e6d1" },
-  { label: "Frost Blue", hex: "#38bdf8" },
-  { label: "Sunspire Amber", hex: "#ffb95c" },
-  { label: "Pure Ivory", hex: "#f4efe6" },
+export const hudCrestStyleOptions: Array<{
+  value: SkyUltraPortraitCrestStyle;
+  label: string;
+  tag: string;
+  description: string;
+  colors: { metal: string; trim: string; hp: string; mp: string; sp: string };
+}> = [
+  {
+    value: "dragonblade",
+    label: "Dragonblade Relic",
+    tag: "BRONZE & STEEL",
+    description: "Sculpted sovereign dragon-crest sword with emerald, azure & gold vital grooves.",
+    colors: { metal: "#c2beae", trim: "#e8b059", hp: "#28d14c", mp: "#27a7ff", sp: "#f3c825" },
+  },
+  {
+    value: "daedric",
+    label: "Daedric Ebony",
+    tag: "OBSIDIAN & BLOOD",
+    description: "Darkened ebony-forged blade with crimson dragon eye, blood HP & amethyst magicka.",
+    colors: { metal: "#6a6f7f", trim: "#ff485e", hp: "#ef4444", mp: "#a855f7", sp: "#f59e0b" },
+  },
+  {
+    value: "dwemer",
+    label: "Dwemer Automaton",
+    tag: "TONAL BRASS",
+    description: "Gilded Dwarven brass blade with tonal cyan aperture & molten core channels.",
+    colors: { metal: "#d7a14e", trim: "#ffcf6b", hp: "#e8792f", mp: "#38bdf8", sp: "#facc15" },
+  },
+  {
+    value: "aetherial",
+    label: "Aetherial Silver",
+    tag: "MOONSTONE",
+    description: "Celestial silvered edge with starlight sapphire eye & luminous vital conduits.",
+    colors: { metal: "#b8d0ec", trim: "#68e6ff", hp: "#34d399", mp: "#60a5fa", sp: "#fbbf24" },
+  },
+  {
+    value: "nordic",
+    label: "Nordic Carved",
+    tag: "SKYRIM IRON",
+    description: "Forged pale steel war-blade with classic crimson, cobalt & emerald Skyrim channels.",
+    colors: { metal: "#98a4b2", trim: "#d8e2ee", hp: "#e11d48", mp: "#2563eb", sp: "#22c55e" },
+  },
 ];
 
 export const hudFontOptions: Array<{
@@ -221,10 +257,23 @@ export const hudAnchorOptions: Array<{
   { value: "top-left", label: "Top Left", shortLabel: "TOP-LEFT", sub: "NW Corner" },
   { value: "top-center", label: "Top Center", shortLabel: "TOP-CENTER", sub: "Upper Horizon" },
   { value: "top-right", label: "Top Right", shortLabel: "TOP-RIGHT", sub: "NE Corner" },
+  { value: "middle-left", label: "Middle Left", shortLabel: "MID-LEFT", sub: "West Flank" },
+  { value: "middle-center", label: "Middle Center", shortLabel: "MID-CENTER", sub: "Center Stage" },
+  { value: "middle-right", label: "Middle Right", shortLabel: "MID-RIGHT", sub: "East Flank" },
   { value: "bottom-left", label: "Bottom Left", shortLabel: "BOTTOM-LEFT", sub: "SW Corner" },
   { value: "bottom-center", label: "Bottom Center", shortLabel: "BOTTOM-CENTER", sub: "Lower Arc" },
   { value: "bottom-right", label: "Bottom Right", shortLabel: "BOTTOM-RIGHT", sub: "SE Corner" },
 ];
+
+export function clampCompassRadius(value?: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return SKYULTRA_COMPASS_RADIUS_DEFAULT;
+  }
+  return Math.max(
+    SKYULTRA_COMPASS_RADIUS_MIN,
+    Math.min(SKYULTRA_COMPASS_RADIUS_MAX, Math.round(value)),
+  );
+}
 
 export interface ResolvedWidgetPlacement {
   anchor: SkyUltraWidgetAnchor;
@@ -232,6 +281,7 @@ export interface ResolvedWidgetPlacement {
   opacity: number;
   glow: number;
   color: string;
+  theme?: string;
   fontStyle: SkyUltraWidgetFontStyle;
   offsetX: number;
   offsetY: number;
@@ -239,6 +289,11 @@ export interface ResolvedWidgetPlacement {
   width?: number;
   customLabel?: string;
   bindingPath?: SkyUltraHudBindingPath;
+  crestStyle?: SkyUltraPortraitCrestStyle;
+  hpColor?: string;
+  magickaColor?: string;
+  staminaColor?: string;
+  compassRadius?: number;
 }
 
 export const hudBindingOptions: Array<{
@@ -334,6 +389,7 @@ export function defaultWidgetPlacements(): Record<WidgetKind, ResolvedWidgetPlac
       offsetX: 0,
       offsetY: 0,
       visibilityRule: "always",
+      compassRadius: entry.id === "compass" ? SKYULTRA_COMPASS_RADIUS_DEFAULT : undefined,
     };
   }
   base.equipment = {
@@ -387,11 +443,21 @@ export function encodePlacementsParam(
       const glow = Math.round(p?.glow ?? def.glow);
       const color = (p?.color ?? def.color).replace(/^#/, "");
       const font = p?.fontStyle ?? def.fontStyle;
-      const ox = Math.max(-600, Math.min(600, Math.round(p?.offsetX ?? 0)));
-      const oy = Math.max(-400, Math.min(400, Math.round(p?.offsetY ?? 0)));
+      const ox = Math.max(-1600, Math.min(1600, Math.round(p?.offsetX ?? 0)));
+      const oy = Math.max(-900, Math.min(900, Math.round(p?.offsetY ?? 0)));
       const vis = p?.visibilityRule ?? "always";
       const bind = p?.bindingPath ?? "";
-      return `${kind}:${anchor}:${scale}:${opacity}:${glow}:${color}:${font}:${ox}:${oy}:${vis}:${bind}`;
+      const base = `${kind}:${anchor}:${scale}:${opacity}:${glow}:${color}:${font}:${ox}:${oy}:${vis}:${bind}`;
+      const crest = p?.crestStyle ?? "";
+      const hpC = (p?.hpColor ?? "").replace(/^#/, "");
+      const mpC = (p?.magickaColor ?? "").replace(/^#/, "");
+      const spC = (p?.staminaColor ?? "").replace(/^#/, "");
+      const radius = kind === "compass" ? String(clampCompassRadius(p?.compassRadius)) : "";
+      const wTheme = p?.theme && /^[a-z][a-z0-9-]{0,31}$/.test(p.theme) ? p.theme : "";
+      if (crest || hpC || mpC || spC || radius || wTheme) {
+        return `${base}:${crest}:${hpC}:${mpC}:${spC}:${radius}:${wTheme}`;
+      }
+      return base;
     })
     .join(";");
 }
@@ -419,10 +485,28 @@ export function decodePlacementsParam(
   const validFonts = new Set<string>(hudFontOptions.map((f) => f.value));
   const validVis = new Set<string>(hudVisibilityOptions.map((v) => v.value));
   const validBind = new Set<string>(hudBindingOptions.map((b) => b.path));
+  const validCrestStyles = new Set<string>(skyUltraPortraitCrestStyles);
   for (const token of raw.split(/[;,]+/)) {
     if (!token) continue;
-    const [kindRaw, anchorRaw, scaleRaw, opacityRaw, glowRaw, colorRaw, fontRaw, oxRaw, oyRaw, visRaw, bindRaw] =
-      token.split(":");
+    const [
+      kindRaw,
+      anchorRaw,
+      scaleRaw,
+      opacityRaw,
+      glowRaw,
+      colorRaw,
+      fontRaw,
+      oxRaw,
+      oyRaw,
+      visRaw,
+      bindRaw,
+      crestRaw,
+      hpColorRaw,
+      mpColorRaw,
+      spColorRaw,
+      radiusRaw,
+      themeRaw,
+    ] = token.split(":");
     const kind = kindRaw as WidgetKind;
     if (!kind || !map[kind]) continue;
     if (anchorRaw && validAnchors.has(anchorRaw)) {
@@ -448,17 +532,38 @@ export function decodePlacementsParam(
     }
     const oxNum = Number(oxRaw);
     if (oxRaw !== undefined && oxRaw !== "" && Number.isFinite(oxNum)) {
-      map[kind].offsetX = Math.max(-600, Math.min(600, Math.round(oxNum)));
+      map[kind].offsetX = Math.max(-1600, Math.min(1600, Math.round(oxNum)));
     }
     const oyNum = Number(oyRaw);
     if (oyRaw !== undefined && oyRaw !== "" && Number.isFinite(oyNum)) {
-      map[kind].offsetY = Math.max(-400, Math.min(400, Math.round(oyNum)));
+      map[kind].offsetY = Math.max(-900, Math.min(900, Math.round(oyNum)));
     }
     if (visRaw && validVis.has(visRaw)) {
       map[kind].visibilityRule = visRaw as SkyUltraVisibilityRule;
     }
     if (bindRaw && validBind.has(bindRaw)) {
       map[kind].bindingPath = bindRaw as SkyUltraHudBindingPath;
+    }
+    if (crestRaw && validCrestStyles.has(crestRaw)) {
+      map[kind].crestStyle = crestRaw as SkyUltraPortraitCrestStyle;
+    }
+    if (hpColorRaw && /^[0-9a-f]{3,6}$/i.test(hpColorRaw)) {
+      map[kind].hpColor = `#${hpColorRaw}`;
+    }
+    if (mpColorRaw && /^[0-9a-f]{3,6}$/i.test(mpColorRaw)) {
+      map[kind].magickaColor = `#${mpColorRaw}`;
+    }
+    if (spColorRaw && /^[0-9a-f]{3,6}$/i.test(spColorRaw)) {
+      map[kind].staminaColor = `#${spColorRaw}`;
+    }
+    if (kind === "compass" && radiusRaw !== undefined && radiusRaw !== "") {
+      const radiusNum = Number(radiusRaw);
+      if (Number.isFinite(radiusNum)) {
+        map[kind].compassRadius = clampCompassRadius(radiusNum);
+      }
+    }
+    if (themeRaw && /^[a-z][a-z0-9-]{0,31}$/.test(themeRaw)) {
+      map[kind].theme = themeRaw;
     }
   }
   return map;
@@ -475,7 +580,13 @@ export interface HudWidgetProps {
   fontStyle?: SkyUltraWidgetFontStyle;
   customLabel?: string;
   bindingPath?: SkyUltraHudBindingPath;
+  crestStyle?: SkyUltraPortraitCrestStyle;
+  hpColor?: string;
+  magickaColor?: string;
+  staminaColor?: string;
+  compassRadius?: number;
   variant?: "aether" | "plain";
+  liveHud?: boolean;
 }
 
 export function HudWidget({
@@ -489,6 +600,12 @@ export function HudWidget({
   fontStyle = "theme",
   customLabel,
   bindingPath,
+  crestStyle,
+  hpColor,
+  magickaColor,
+  staminaColor,
+  compassRadius,
+  liveHud = false,
 }: HudWidgetProps): React.JSX.Element {
   const entry = widgetCatalog.find((widget) => widget.id === kind);
   const resolvedColor = accentColor || entry?.defaultColor || "#e8b059";
@@ -520,6 +637,12 @@ export function HudWidget({
         nearbyActors={nearbyActors}
         fps={fps}
         accentColor={resolvedColor}
+        crestStyle={crestStyle}
+        hpColor={hpColor}
+        magickaColor={magickaColor}
+        staminaColor={staminaColor}
+        compassRadius={compassRadius}
+        liveHud={liveHud}
       />
     </div>
   );
@@ -527,6 +650,14 @@ export function HudWidget({
 
 function fmt(n: number | undefined): string {
   return typeof n === "number" && Number.isFinite(n) ? Math.round(n).toLocaleString() : "0";
+}
+
+function fmtVitalCompact(n: number | undefined): string {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "0";
+  const rounded = Math.round(n);
+  if (Math.abs(rounded) >= 1_000_000) return `${(rounded / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (Math.abs(rounded) >= 10_000) return `${(rounded / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  return rounded.toLocaleString();
 }
 
 function masteryTier(level: number): string {
@@ -548,6 +679,131 @@ function normalizeCompassDeg(deg: number): number {
   return ((deg % 360) + 360) % 360;
 }
 
+function hasNativeLiveHeadingReader(): boolean {
+  try {
+    return typeof (window as unknown as { __skyultraReadLiveHeading?: unknown })
+      .__skyultraReadLiveHeading === "function";
+  } catch {
+    return false;
+  }
+}
+
+function readNativeLiveHeading(): number | null {
+  try {
+    const reader = (window as unknown as { __skyultraReadLiveHeading?: () => number })
+      .__skyultraReadLiveHeading;
+    if (typeof reader !== "function") return null;
+    const value = reader();
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+interface ProjectedCompassEntry {
+  marker: SkyUltraCompassMarker;
+  delta: number;
+  absDelta: number;
+  clampedEdge: boolean;
+  distance: number;
+  visible: boolean;
+}
+
+function shouldShowFloatingCompassName(
+  marker: SkyUltraCompassMarker,
+  absDelta: number,
+  isFocused: boolean,
+): boolean {
+  return (
+    isFocused ||
+    (marker.kind === "enemy" && absDelta <= 32) ||
+    (marker.kind === "home" && marker.distance <= 50 && absDelta <= 42) ||
+    (isNamedPlaceKind(marker.kind) && marker.distance <= 30 && absDelta <= 26)
+  );
+}
+
+function computeCompassFocusSelection(
+  markers: readonly SkyUltraCompassMarker[],
+  focusHeading: number,
+  localRadiusM = COMPASS_LOCAL_RADIUS_M,
+): {
+  projectedMarkers: ProjectedCompassEntry[];
+  focusedEntry: ProjectedCompassEntry | null;
+  secondaryPinnedEntry: ProjectedCompassEntry | null;
+  absDeltaById: Map<string, number>;
+  signature: string;
+} {
+  const projectedMarkers = markers
+    .map((marker) => {
+      const delta = shortestCompassDelta(marker.angle, focusHeading);
+      const absDelta = Math.abs(delta);
+      const pinned = compassIsPinned(marker.kind);
+      const inFov = absDelta <= COMPASS_HALF_FOV;
+      const visible = (pinned || marker.distance <= localRadiusM) && (inFov || pinned);
+      return { marker, delta, absDelta, clampedEdge: !inFov, distance: marker.distance, visible };
+    })
+    .filter((entry) => entry.visible);
+
+  const aimedCandidates = projectedMarkers.filter((m) => !m.clampedEdge && m.absDelta <= 28);
+  const scoreFocusCandidate = (entry: ProjectedCompassEntry): number => {
+    const m = entry.marker;
+    let score = 100 - entry.absDelta * 2.4;
+    if (m.kind === "home") score += 55;
+    else if (m.kind === "enemy") score += 48;
+    else if (m.kind === "follower") score += 44;
+    else if (isNamedPlaceKind(m.kind)) score += 38;
+    else if (m.kind === "quest" || m.kind === "questDoor") score += 30;
+    else if (m.kind === "customMarker") score += 28;
+    if (entry.distance <= 12) score += 42;
+    else if (entry.distance <= 30) score += 24;
+    else if (entry.distance <= 50) score += 12;
+    return score;
+  };
+
+  const focusedEntry =
+    aimedCandidates.slice().sort((a, b) => scoreFocusCandidate(b) - scoreFocusCandidate(a))[0] ??
+    projectedMarkers.find((m) => m.marker.kind === "enemy" && !m.clampedEdge) ??
+    projectedMarkers.find((m) => m.marker.kind === "home" && m.distance <= 25) ??
+    projectedMarkers.find((m) => m.marker.kind === "quest" || m.marker.kind === "questDoor") ??
+    projectedMarkers.find((m) => m.marker.kind === "customMarker") ??
+    projectedMarkers.slice().sort((a, b) => a.absDelta - b.absDelta)[0] ??
+    null;
+
+  const secondaryPinnedEntry =
+    focusedEntry &&
+    focusedEntry.marker.kind !== "quest" &&
+    focusedEntry.marker.kind !== "questDoor" &&
+    focusedEntry.marker.kind !== "customMarker"
+      ? projectedMarkers.find(
+          (m) =>
+            m.marker.id !== focusedEntry.marker.id &&
+            (m.marker.kind === "quest" ||
+              m.marker.kind === "questDoor" ||
+              m.marker.kind === "customMarker"),
+        ) ?? null
+      : null;
+
+  const absDeltaById = new Map<string, number>();
+  for (const entry of projectedMarkers) absDeltaById.set(entry.marker.id, entry.absDelta);
+
+  const floatingIds: string[] = [];
+  for (const marker of markers) {
+    const absDelta = absDeltaById.get(marker.id) ?? 180;
+    const isFocused = focusedEntry?.marker.id === marker.id;
+    if (
+      shouldShowFloatingCompassName(marker, absDelta, isFocused) &&
+      marker.kind !== "quest" &&
+      marker.kind !== "questDoor" &&
+      marker.kind !== "customMarker" &&
+      marker.kind !== "follower"
+    ) {
+      floatingIds.push(marker.id);
+    }
+  }
+  const signature = `${focusedEntry?.marker.id ?? ""}|${secondaryPinnedEntry?.marker.id ?? ""}|${floatingIds.join(",")}`;
+  return { projectedMarkers, focusedEntry, secondaryPinnedEntry, absDeltaById, signature };
+}
+
 const COMPASS_HALF_FOV = 95;
 const COMPASS_SPAN_PCT = 44.5;
 const COMPASS_EDGE_LEFT_PCT = 3.6;
@@ -563,8 +819,7 @@ interface CompassTrack {
   targetAngle: number;
   dist: number;
   targetDist: number;
-  x: number;
-  placed: boolean;
+  repelOffset: number;
 }
 
 interface CompassElementState {
@@ -578,50 +833,122 @@ interface CompassElementState {
 interface CompassAnimator {
   focusHeading: number;
   trackElRef: React.RefObject<HTMLDivElement | null>;
+  tapeElRef: React.RefObject<HTMLDivElement | null>;
   hdgNumRef: React.RefObject<HTMLSpanElement | null>;
   hdgCardRef: React.RefObject<HTMLElement | null>;
   registerMarker: (id: string) => (el: HTMLDivElement | null) => void;
-  registerTick: (index: number) => (el: HTMLSpanElement | null) => void;
 }
 
 /**
  * Drives the compass at the display refresh rate by writing GPU-friendly
- * translate3d transforms straight to the DOM. React only re-renders when new
- * game data arrives (and ~8x/sec for the focus callout), so the strip glides
- * smoothly while walking/turning and never steals CPU from other SkyUltra views.
+ * translate3d transforms straight to the DOM. Subscribes directly to host
+ * delta events for 0ms heading/bearing updates while keeping markers locked
+ * in 1:1 sync with compass ticks during camera rotation.
  */
-function useCompassAnimator(rawHeading: number, markers: SkyUltraCompassMarker[]): CompassAnimator {
+function useCompassAnimator(
+  rawHeading: number,
+  markers: SkyUltraCompassMarker[],
+  bridge?: SkyWebViewAPI,
+  liveHud = false,
+  compassRadius = COMPASS_LOCAL_RADIUS_M,
+): CompassAnimator {
   const targetHeading = Number.isFinite(rawHeading) ? normalizeCompassDeg(rawHeading) : 0;
+  const clampedRadius = clampCompassRadius(compassRadius);
+  const liveHudRef = React.useRef<boolean>(liveHud);
+  liveHudRef.current = liveHud;
+  const localRadiusRef = React.useRef<number>(clampedRadius);
 
   const headingRef = React.useRef<number>(targetHeading);
   const headingPacketRef = React.useRef<{ value: number; ms: number }>({ value: targetHeading, ms: performance.now() });
   const headingVelRef = React.useRef<number>(0);
+  const lastHeadingSeqRef = React.useRef<number>(-1);
+  const lastDirectHeadingMsRef = React.useRef<number>(0);
   const tracksRef = React.useRef<Map<string, CompassTrack>>(new Map());
   const markersRef = React.useRef<SkyUltraCompassMarker[]>(markers);
   markersRef.current = markers;
 
   const markerEls = React.useRef<Map<string, HTMLDivElement>>(new Map());
+  const markerDistElsRef = React.useRef<Map<string, HTMLElement | null>>(new Map());
   const markerCallbacks = React.useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map());
-  const tickEls = React.useRef<Array<HTMLSpanElement | null>>([]);
-  const tickCallbacks = React.useRef<Array<(el: HTMLSpanElement | null) => void>>([]);
+  const hasDirectBridgeRef = React.useRef<boolean>(false);
   const elementState = React.useRef<WeakMap<HTMLElement, CompassElementState>>(new WeakMap());
   const trackElRef = React.useRef<HTMLDivElement>(null);
+  const tapeElRef = React.useRef<HTMLDivElement>(null);
+  const tapeTransformRef = React.useRef<string>("");
   const hdgNumRef = React.useRef<HTMLSpanElement>(null);
   const hdgCardRef = React.useRef<HTMLElement>(null);
   const widthRef = React.useRef<number>(0);
-  const frameCountRef = React.useRef<number>(0);
   const hdgTextRef = React.useRef<string>("");
+  const lastMotionMsRef = React.useRef<number>(performance.now());
+  const wakeLoopRef = React.useRef<(() => void) | null>(null);
+  const lastRenderedHeadingRef = React.useRef<number>(Number.NaN);
+  const layoutDirtyRef = React.useRef<boolean>(true);
+  const repelSettlingRef = React.useRef<boolean>(false);
 
   const [focusHeading, setFocusHeading] = React.useState<number>(targetHeading);
   const focusRef = React.useRef<{ value: number; ms: number }>({ value: targetHeading, ms: 0 });
+  const focusSigRef = React.useRef<string>("");
+
+  const ingestHeading = React.useCallback((nextRawHeading: number) => {
+    if (!Number.isFinite(nextRawHeading)) return;
+    const normalized = normalizeCompassDeg(nextRawHeading);
+    const now = performance.now();
+    const prev = headingPacketRef.current;
+    const dtSample = (now - prev.ms) / 1000;
+    const delta = shortestCompassDelta(normalized, prev.value);
+    if (Math.abs(delta) < 0.001 && dtSample < 0.15) {
+      return;
+    }
+    headingPacketRef.current = { value: normalized, ms: now };
+    layoutDirtyRef.current = true;
+    lastMotionMsRef.current = now;
+    wakeLoopRef.current?.();
+  }, []);
+
+  const syncTrackTargets = React.useCallback((nextMarkers: SkyUltraCompassMarker[], pruneMissing: boolean, fromDirectBridge = false) => {
+    const tracks = tracksRef.current;
+    const seen = pruneMissing ? new Set<string>() : null;
+    let changed = fromDirectBridge || !hasDirectBridgeRef.current;
+    for (const m of nextMarkers) {
+      if (seen) seen.add(m.id);
+      const angle = Number.isFinite(m.angle) ? normalizeCompassDeg(m.angle) : 0;
+      const dist = Number.isFinite(m.distance) ? m.distance : 0;
+      const existing = tracks.get(m.id);
+      if (existing) {
+        if (fromDirectBridge || !hasDirectBridgeRef.current) {
+          existing.targetAngle = angle;
+          existing.targetDist = dist;
+        }
+      } else {
+        tracks.set(m.id, { angle, targetAngle: angle, dist, targetDist: dist, repelOffset: 0 });
+        changed = true;
+      }
+    }
+    if (seen) {
+      for (const id of Array.from(tracks.keys())) {
+        if (!seen.has(id)) {
+          tracks.delete(id);
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      layoutDirtyRef.current = true;
+      lastMotionMsRef.current = performance.now();
+      wakeLoopRef.current?.();
+    }
+  }, []);
 
   const registerMarker = React.useCallback((id: string) => {
     let cb = markerCallbacks.current.get(id);
     if (!cb) {
       cb = (el: HTMLDivElement | null) => {
-        if (el) markerEls.current.set(id, el);
-        else {
+        if (el) {
+          markerEls.current.set(id, el);
+          markerDistElsRef.current.set(id, el.querySelector<HTMLElement>("[data-role='dist']"));
+        } else {
           markerEls.current.delete(id);
+          markerDistElsRef.current.delete(id);
           markerCallbacks.current.delete(id);
         }
       };
@@ -630,43 +957,65 @@ function useCompassAnimator(rawHeading: number, markers: SkyUltraCompassMarker[]
     return cb;
   }, []);
 
-  const registerTick = React.useCallback((index: number) => {
-    let cb = tickCallbacks.current[index];
-    if (!cb) {
-      cb = (el: HTMLSpanElement | null) => {
-        tickEls.current[index] = el;
-      };
-      tickCallbacks.current[index] = cb;
-    }
-    return cb;
-  }, []);
-
-  const stateFor = (el: HTMLElement): CompassElementState => {
-    let state = elementState.current.get(el);
-    if (!state) {
-      state = { transform: "", shown: false, edge: "", dist: "", opacity: "" };
-      elementState.current.set(el, state);
-    }
-    return state;
-  };
-
-  const frameRef = React.useRef<((now: number, dt: number) => void) | null>(null);
+  const frameRef = React.useRef<((now: number, dt: number) => boolean) | null>(null);
   if (frameRef.current === null) {
-    frameRef.current = (now: number, dt: number): void => {
-      // 1. Heading: follow the latest packet extrapolated by measured turn rate.
-      const packet = headingPacketRef.current;
-      const sincePacket = Math.max(0, (now - packet.ms) / 1000);
-      const predicted = normalizeCompassDeg(packet.value + headingVelRef.current * Math.min(sincePacket, 0.07));
-      const current = headingRef.current;
-      const headingDelta = shortestCompassDelta(predicted, current);
-      if (dt <= 0) {
-        // layout pass: keep current value
-      } else if (Math.abs(headingDelta) > 100) {
-        headingRef.current = predicted;
-      } else {
-        headingRef.current = normalizeCompassDeg(current + headingDelta * (1 - Math.exp(-dt * 20)));
+    frameRef.current = (now: number, dt: number): boolean => {
+      let moving = false;
+      // 1. Heading: read native shared memory directly per frame (0ms pipeline latency);
+      // fall back to crisp exponential catch-up when previewing without native host memory.
+      const nativeReaderPresent = liveHudRef.current && hasNativeLiveHeadingReader();
+      const liveHdg = nativeReaderPresent ? readNativeLiveHeading() : null;
+      if (liveHdg !== null) {
+        const norm = normalizeCompassDeg(liveHdg);
+        headingRef.current = norm;
+        headingPacketRef.current = { value: norm, ms: now };
+        headingVelRef.current = 0;
+      } else if (dt > 0) {
+        const packet = headingPacketRef.current;
+        const current = headingRef.current;
+        const delta = shortestCompassDelta(packet.value, current);
+        if (Math.abs(delta) > 120 || Math.abs(delta) <= 0.015) {
+          headingRef.current = packet.value;
+        } else {
+          moving = true;
+          const catchup = 1 - Math.exp(-90 * dt);
+          headingRef.current = normalizeCompassDeg(current + delta * catchup);
+        }
+        headingVelRef.current = 0;
       }
       const heading = headingRef.current;
+
+      // 2.Marker bearings & distances glide toward their latest world values.
+      const angleBlend = dt > 0 ? 1 - Math.exp(-dt * 36) : 0;
+      const distBlend = dt > 0 ? 1 - Math.exp(-dt * 18) : 0;
+      for (const track of tracksRef.current.values()) {
+        const dA = shortestCompassDelta(track.targetAngle, track.angle);
+        const dD = track.targetDist - track.dist;
+        if (dt > 0 && (Math.abs(dA) > 0.02 || Math.abs(dD) > 0.05)) {
+          moving = true;
+        }
+        track.angle = Math.abs(dA) > 60 ? track.targetAngle : normalizeCompassDeg(track.angle + dA * angleBlend);
+        track.dist = Math.abs(dD) > 20 ? track.targetDist : track.dist + dD * distBlend;
+      }
+
+      const headingChanged =
+        !Number.isFinite(lastRenderedHeadingRef.current) ||
+        Math.abs(shortestCompassDelta(heading, lastRenderedHeadingRef.current)) >= 0.002;
+      if (headingChanged) {
+        moving = true;
+      }
+
+      // Skip all DOM writes and allocations while stationary so the GPU stays completely idle.
+      if (!headingChanged && !moving && !repelSettlingRef.current && !layoutDirtyRef.current && dt > 0) {
+        return nativeReaderPresent || (now - lastMotionMsRef.current) < 180;
+      }
+
+      // 3. Cached width (kept fresh by ResizeObserver; avoid layout reads in RAF).
+      const width = widthRef.current;
+      if (width <= 0) return true;
+
+      lastRenderedHeadingRef.current = heading;
+      layoutDirtyRef.current = false;
 
       // Heading readout.
       const hdgText = String(Math.round(heading) % 360).padStart(3, "0");
@@ -676,73 +1025,88 @@ function useCompassAnimator(rawHeading: number, markers: SkyUltraCompassMarker[]
         if (hdgCardRef.current) hdgCardRef.current.textContent = cardinalLabelForHeading(heading);
       }
 
-      // Throttled React refresh for focus callout / floating names.
+      // React state refresh ONLY when focused marker, secondary quest pill, or floating name visibility changes.
       const focus = focusRef.current;
-      if (dt > 0 && now - focus.ms > 120 && Math.abs(shortestCompassDelta(heading, focus.value)) > 1.5) {
-        focusRef.current = { value: heading, ms: now };
-        setFocusHeading(heading);
+      if (dt > 0 && now - focus.ms >= 260) {
+        if (focus.ms === 0 && !focusSigRef.current) {
+          focusSigRef.current = computeCompassFocusSelection(markersRef.current, focus.value, localRadiusRef.current).signature;
+        }
+        const nextSig = computeCompassFocusSelection(markersRef.current, heading, localRadiusRef.current).signature;
+        if (nextSig !== focusSigRef.current) {
+          focusSigRef.current = nextSig;
+          focusRef.current = { value: heading, ms: now };
+          setFocusHeading(heading);
+        } else {
+          focusRef.current.ms = now;
+        }
       }
 
-      // 2. Marker bearings & distances glide toward their latest values.
-      const angleBlend = dt > 0 ? 1 - Math.exp(-dt * 14) : 0;
-      const distBlend = dt > 0 ? 1 - Math.exp(-dt * 10) : 0;
-      for (const track of tracksRef.current.values()) {
-        const dA = shortestCompassDelta(track.targetAngle, track.angle);
-        track.angle = Math.abs(dA) > 60 ? track.targetAngle : normalizeCompassDeg(track.angle + dA * angleBlend);
-        const dD = track.targetDist - track.dist;
-        track.dist = Math.abs(dD) > 20 ? track.targetDist : track.dist + dD * distBlend;
-      }
-
-      // 3. Project + continuous soft repulsion (no threshold snapping).
-      const projected: Array<{ id: string; track: CompassTrack; pct: number; edge: string; shown: boolean }> = [];
+      // 4. Project from (track.angle - heading) in 1:1 lockstep with ticks + smooth repulsion offset only.
+      const projected: Array<{
+        id: string;
+        track: CompassTrack;
+        basePct: number;
+        repelTarget: number;
+        edge: string;
+        shown: boolean;
+      }> = [];
       for (const marker of markersRef.current) {
         const track = tracksRef.current.get(marker.id);
         if (!track) continue;
         const pinned = compassIsPinned(marker.kind);
         const delta = shortestCompassDelta(track.angle, heading);
         const inFov = Math.abs(delta) <= COMPASS_HALF_FOV;
-        const shown = (pinned || track.dist <= COMPASS_LOCAL_RADIUS_M) && (inFov || pinned);
+        const shown = (pinned || track.dist <= localRadiusRef.current) && (inFov || pinned);
         const edge = inFov ? "" : delta < 0 ? "left" : "right";
-        const pct = inFov
+        const basePct = inFov
           ? 50 + (delta / COMPASS_HALF_FOV) * COMPASS_SPAN_PCT
           : delta < 0
             ? COMPASS_EDGE_LEFT_PCT
             : COMPASS_EDGE_RIGHT_PCT;
-        projected.push({ id: marker.id, track, pct, edge, shown });
+        projected.push({ id: marker.id, track, basePct, repelTarget: 0, edge, shown });
       }
-      const inView = projected.filter((p) => p.shown && p.edge === "").sort((a, b) => a.pct - b.pct);
+      const inView = projected
+        .filter((p) => p.shown && p.edge === "")
+        .sort((a, b) => a.basePct - b.basePct);
       const softRadius = 4.2;
       for (let iter = 0; iter < 2; iter++) {
         for (let i = 1; i < inView.length; i++) {
           const left = inView[i - 1];
           const right = inView[i];
-          const gap = right.pct - left.pct;
+          const leftPos = left.basePct + left.repelTarget;
+          const rightPos = right.basePct + right.repelTarget;
+          const gap = rightPos - leftPos;
           if (gap < softRadius) {
             const t = 1 - Math.max(0, gap) / softRadius;
             const push = t * t * 1.05;
-            left.pct = Math.max(6.5, left.pct - push);
-            right.pct = Math.min(93.5, right.pct + push);
+            left.repelTarget = Math.max(6.5, leftPos - push) - left.basePct;
+            right.repelTarget = Math.min(93.5, rightPos + push) - right.basePct;
           }
         }
       }
 
-      // 4. Width cache (re-read rarely to avoid layout thrash).
-      frameCountRef.current = (frameCountRef.current + 1) % 30;
-      if (widthRef.current <= 0 || frameCountRef.current === 0) {
-        const w = trackElRef.current?.clientWidth ?? 0;
-        if (w > 0) widthRef.current = w;
-      }
-      const width = widthRef.current;
-      if (width <= 0) return;
+      const stateFor = (el: HTMLElement): CompassElementState => {
+        let state = elementState.current.get(el);
+        if (!state) {
+          state = { transform: "", shown: false, edge: "", dist: "", opacity: "" };
+          elementState.current.set(el, state);
+        }
+        return state;
+      };
 
-      const xBlend = dt > 0 ? 1 - Math.exp(-dt * 26) : 0;
+      const repelBlend = dt > 0 ? 1 - Math.exp(-dt * 26) : 0;
+      let anyRepelSettling = false;
       for (const p of projected) {
         const track = p.track;
-        if (!track.placed || Math.abs(p.pct - track.x) > 30) {
-          track.x = p.pct;
-          track.placed = true;
-        } else {
-          track.x += (p.pct - track.x) * xBlend;
+        if (p.edge !== "") {
+          track.repelOffset = 0;
+        } else if (dt > 0) {
+          const repelStep = p.repelTarget - track.repelOffset;
+          if (Math.abs(repelStep) > 0.02) {
+            moving = true;
+            anyRepelSettling = true;
+          }
+          track.repelOffset += repelStep * repelBlend;
         }
         const el = markerEls.current.get(p.id);
         if (!el) continue;
@@ -756,7 +1120,11 @@ function useCompassAnimator(rawHeading: number, markers: SkyUltraCompassMarker[]
           }
           continue;
         }
-        const transform = `translate3d(${((track.x / 100) * width).toFixed(1)}px,0,0) translate(-50%,-50%)`;
+        const finalPct =
+          p.edge !== ""
+            ? p.basePct
+            : Math.max(6.0, Math.min(94.0, p.basePct + track.repelOffset));
+        const transform = `translate3d(${((finalPct / 100) * width).toFixed(2)}px,0,0) translate(-50%,-50%)`;
         if (transform !== state.transform) {
           el.style.transform = transform;
           state.transform = transform;
@@ -773,104 +1141,98 @@ function useCompassAnimator(rawHeading: number, markers: SkyUltraCompassMarker[]
         }
         const distLabel = `${Math.round(track.dist)}m`;
         if (distLabel !== state.dist) {
-          const distEl = el.querySelector<HTMLElement>("[data-role='dist']");
+          const distEl = markerDistElsRef.current.get(p.id) ?? el.querySelector<HTMLElement>("[data-role='dist']");
           if (distEl) distEl.textContent = distLabel;
           state.dist = distLabel;
         }
       }
+      repelSettlingRef.current = anyRepelSettling;
 
-      // 5. Bearing ticks & cardinals.
-      const ticks = tickEls.current;
-      for (let i = 0; i < ticks.length; i++) {
-        const el = ticks[i];
-        if (!el) continue;
-        const state = stateFor(el);
-        const delta = shortestCompassDelta(i * 5, heading);
-        if (Math.abs(delta) > COMPASS_HALF_FOV) {
-          if (state.shown || state.opacity === "") {
-            el.style.visibility = "hidden";
-            state.shown = false;
-            state.opacity = "h";
-          }
-          continue;
-        }
-        const pct = 50 + (delta / COMPASS_HALF_FOV) * COMPASS_SPAN_PCT;
-        const suffix = el.dataset.kind === "cardinal" ? " translate(-50%,-50%)" : " translateX(-50%)";
-        const transform = `translate3d(${((pct / 100) * width).toFixed(1)}px,0,0)${suffix}`;
-        if (transform !== state.transform) {
-          el.style.transform = transform;
-          state.transform = transform;
-        }
-        const fade = Math.max(0.18, Math.min(1, (1 - Math.abs(delta) / COMPASS_HALF_FOV) * 1.45)).toFixed(2);
-        if (fade !== state.opacity || !state.shown) {
-          el.style.opacity = fade;
-          el.style.visibility = "visible";
-          state.opacity = fade;
-          state.shown = true;
-        }
+      // 5. Translate the single GPU-backed bearings tape in one DOM write.
+      const pxPerDeg = (width * (COMPASS_SPAN_PCT / 100)) / COMPASS_HALF_FOV;
+      const tapeOffsetPx = width * 0.5 - heading * pxPerDeg;
+      const tapeTransform = `translate3d(${tapeOffsetPx.toFixed(2)}px,0,0)`;
+      if (tapeElRef.current && tapeTransform !== tapeTransformRef.current) {
+        tapeElRef.current.style.transform = tapeTransform;
+        tapeTransformRef.current = tapeTransform;
       }
+      if (moving) {
+        lastMotionMsRef.current = now;
+      }
+      return nativeReaderPresent || moving || (now - lastMotionMsRef.current) < 180;
     };
   }
 
-  // New heading packet: estimate turn rate for extrapolation.
   React.useLayoutEffect(() => {
-    const now = performance.now();
-    const prev = headingPacketRef.current;
-    const dtSample = (now - prev.ms) / 1000;
-    const delta = shortestCompassDelta(targetHeading, prev.value);
-    if (dtSample > 0.004 && dtSample < 0.25 && Math.abs(delta) < 120) {
-      const inst = Math.max(-720, Math.min(720, delta / dtSample));
-      headingVelRef.current = headingVelRef.current * 0.45 + inst * 0.55;
-    } else {
-      headingVelRef.current = 0;
+    if (hasDirectBridgeRef.current && performance.now() - headingPacketRef.current.ms < 500) {
+      return;
     }
-    headingPacketRef.current = { value: targetHeading, ms: now };
-  }, [targetHeading]);
+    ingestHeading(targetHeading);
+  }, [targetHeading, ingestHeading]);
 
-  // New marker packet: update targets, add/prune tracks.
   React.useLayoutEffect(() => {
-    const tracks = tracksRef.current;
-    const seen = new Set<string>();
-    for (const m of markers) {
-      seen.add(m.id);
-      const angle = Number.isFinite(m.angle) ? normalizeCompassDeg(m.angle) : 0;
-      const dist = Number.isFinite(m.distance) ? m.distance : 0;
-      const existing = tracks.get(m.id);
-      if (existing) {
-        existing.targetAngle = angle;
-        existing.targetDist = dist;
-      } else {
-        tracks.set(m.id, { angle, targetAngle: angle, dist, targetDist: dist, x: 50, placed: false });
-      }
-    }
-    for (const id of Array.from(tracks.keys())) {
-      if (!seen.has(id)) tracks.delete(id);
-    }
-  }, [markers]);
-
-  // After every commit, place freshly mounted elements immediately (no flash).
-  React.useLayoutEffect(() => {
-    frameRef.current?.(performance.now(), 0);
-  });
+    syncTrackTargets(markers, true, false);
+  }, [markers, syncTrackTargets]);
 
   React.useEffect(() => {
-    const bridge = getSkyWebView();
+    if (localRadiusRef.current === clampedRadius) return;
+    localRadiusRef.current = clampedRadius;
+    focusSigRef.current = "";
+    layoutDirtyRef.current = true;
+    lastMotionMsRef.current = performance.now();
+    wakeLoopRef.current?.();
+  }, [clampedRadius]);
+
+  // After marker list or radius changes, place freshly mounted elements immediately (no flash).
+  React.useLayoutEffect(() => {
+    layoutDirtyRef.current = true;
+    if (widthRef.current <= 0 && trackElRef.current) {
+      const w = trackElRef.current.clientWidth;
+      if (w > 0) widthRef.current = w;
+    }
+    frameRef.current?.(performance.now(), 0);
+  }, [markers, clampedRadius]);
+
+  React.useEffect(() => {
+    const trackEl = trackElRef.current;
+    if (!trackEl) return;
+    const measure = (): void => {
+      const w = trackEl.clientWidth;
+      if (w > 0 && w !== widthRef.current) {
+        widthRef.current = w;
+        layoutDirtyRef.current = true;
+        frameRef.current?.(performance.now(), 0);
+      }
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(trackEl);
+    return () => observer.disconnect();
+  }, []);
+
+  React.useEffect(() => {
+    const activeBridge = bridge ?? getSkyWebView();
     let rafId = 0;
     let last = performance.now();
-    let hostVisible = bridge?.getVisibility?.().visible ?? true;
-    const loop = (now: number): void => {
+    let hostVisible = activeBridge?.getVisibility?.().visible ?? true;
+    const loop = (): void => {
       rafId = 0;
       if ((typeof document !== "undefined" && document.hidden) || !hostVisible) {
         return;
       }
-      const dt = Math.min(0.05, Math.max(0.0005, (now - last) / 1000));
+      const now = performance.now();
+      const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
       last = now;
-      frameRef.current?.(now, dt);
-      rafId = requestAnimationFrame(loop);
+      const keepRunning = frameRef.current?.(now, dt) ?? false;
+      if (keepRunning) {
+        rafId = requestAnimationFrame(loop);
+      }
     };
     const syncLoop = (): void => {
       const active = (typeof document === "undefined" || !document.hidden) && hostVisible;
       if (active && !rafId) {
+        lastMotionMsRef.current = performance.now();
         last = performance.now();
         rafId = requestAnimationFrame(loop);
       } else if (!active && rafId) {
@@ -878,23 +1240,58 @@ function useCompassAnimator(rawHeading: number, markers: SkyUltraCompassMarker[]
         rafId = 0;
       }
     };
+    wakeLoopRef.current = syncLoop;
     syncLoop();
-    const offVis = bridge?.on<{ visible: boolean }>("skyultra.visibility", (ev) => {
+    const offHeading = activeBridge?.on?.<{ heading?: number; seq?: number }>("skyultra.compassHeading", (ev) => {
+      if ((typeof document !== "undefined" && document.hidden) || !hostVisible || !ev) return;
+      if (typeof ev.seq === "number") {
+        if (ev.seq <= lastHeadingSeqRef.current) {
+          return;
+        }
+        lastHeadingSeqRef.current = ev.seq;
+      }
+      if (typeof ev.heading === "number" && Number.isFinite(ev.heading)) {
+        lastDirectHeadingMsRef.current = performance.now();
+        hasDirectBridgeRef.current = true;
+        ingestHeading(ev.heading);
+      }
+    });
+    const offUpdate = activeBridge?.on?.<{
+      delta?: { heading?: number; compassMarkers?: SkyUltraCompassMarker[] };
+      snapshot?: { heading?: number; compassMarkers?: SkyUltraCompassMarker[] };
+    }>("skyultra.game.update", (ev) => {
+      if ((typeof document !== "undefined" && document.hidden) || !hostVisible || !ev) return;
+      const nextMarkers = ev.delta?.compassMarkers ?? ev.snapshot?.compassMarkers;
+      if (Array.isArray(nextMarkers)) {
+        hasDirectBridgeRef.current = true;
+        syncTrackTargets(nextMarkers, false, true);
+      }
+      const nextHeading = ev.delta?.heading ?? ev.snapshot?.heading;
+      if (typeof nextHeading === "number" && Number.isFinite(nextHeading) &&
+          performance.now() - lastDirectHeadingMsRef.current > 500) {
+        hasDirectBridgeRef.current = true;
+        ingestHeading(nextHeading);
+      }
+    });
+    const offVis = activeBridge?.on?.<{ visible: boolean }>("skyultra.visibility", (ev) => {
       hostVisible = Boolean(ev?.visible);
       syncLoop();
     });
     document.addEventListener("visibilitychange", syncLoop);
     return () => {
+      wakeLoopRef.current = null;
+      offHeading?.();
+      offUpdate?.();
       offVis?.();
       document.removeEventListener("visibilitychange", syncLoop);
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, []);
+  }, [bridge, ingestHeading, syncTrackTargets]);
 
-  return { focusHeading, trackElRef, hdgNumRef, hdgCardRef, registerMarker, registerTick };
+  return { focusHeading, trackElRef, tapeElRef, hdgNumRef, hdgCardRef, registerMarker };
 }
 
-function CompassActorPortrait({
+const CompassActorPortrait = React.memo(function CompassActorPortrait({
   bridge,
   referenceId,
   baseFormId,
@@ -1020,7 +1417,7 @@ function CompassActorPortrait({
       )}
     </span>
   );
-}
+});
 
 function cardinalLabelForHeading(deg: number): string {
   const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
@@ -1040,7 +1437,7 @@ function isNamedPlaceKind(kind: SkyUltraCompassMarkerKind): boolean {
   );
 }
 
-export function CompassPoiIcon({
+export const CompassPoiIcon = React.memo(function CompassPoiIcon({
   kind,
   size = 22,
 }: {
@@ -1140,11 +1537,9 @@ export function CompassPoiIcon({
     case "blacksmith":
       return (
         <svg viewBox="0 0 32 32" width={size} height={size} aria-hidden="true" className="hud-compass-poi-svg">
-          {/* Crossed Forged War-Hammer & Sparks */}
+          {/* Forged War-Hammer & Anvil */}
           <path d="M10.4 4.8l5.8-2 2.5 2.6-5.4 2.8-2.9-3.4z" fill="#fff3dc" />
           <path d="M14.8 6.8l6.8 7.4" stroke="#fff3dc" strokeWidth="2.3" strokeLinecap="round" />
-          <circle cx="24.2" cy="7.4" r="1.3" fill="#fff3dc" />
-          <circle cx="7.4" cy="11.2" r="1.1" fill="currentColor" />
           {/* Heavy Horned Nordic Anvil */}
           <path
             d="M4 16.4h18.2c3 0 5.4-1.3 6.2-3.2v5.6c-2.1.9-4 2-5.1 3.7H10.4c-.8-1.9-2.8-3.1-6.4-3.7v-2.4z"
@@ -1221,9 +1616,9 @@ export function CompassPoiIcon({
             strokeWidth="2.1"
             strokeLinejoin="round"
           />
-          {/* 4-Point Waypoint Star */}
-          <path
-            d="M16 6.2l2.4 4.9 4.9 2.4-4.9 2.4-2.4 4.9-2.4-4.9-4.9-2.4 4.9-2.4 2.4-4.9z"
+          {/* Waypoint Diamond Beacon */}
+          <polygon
+            points="16,7.4 21.6,13.5 16,19.6 10.4,13.5"
             fill="#fff0ff"
           />
           <circle cx="16" cy="13.5" r="2.2" fill="#d946ef" />
@@ -1313,7 +1708,7 @@ export function CompassPoiIcon({
         </svg>
       );
   }
-}
+});
 
 const DEFAULT_DEMO_COMPASS_MARKERS: SkyUltraCompassMarker[] = [
   { id: "demo:quest", name: "Bleak Falls Barrow", subtitle: "Retrieve the Dragonstone", kind: "quest", categoryLabel: "Active Quest", angle: 12, distance: 340, discovered: true },
@@ -1335,80 +1730,279 @@ const COMPASS_CARDINAL_POINTS: Array<{ deg: number; label: string; major: boolea
   { deg: 315, label: "NW", major: false },
 ];
 
-const COMPASS_DEGREE_TICKS: number[] = Array.from({ length: 72 }, (_, idx) => idx * 5);
+const COMPASS_TAPE_TICKS: Array<{ tapeDeg: number; deg: number; leftPct: string }> = Array.from(
+  { length: 121 },
+  (_, idx) => {
+    const tapeDeg = -120 + idx * 5;
+    return {
+      tapeDeg,
+      deg: normalizeCompassDeg(tapeDeg),
+      leftPct: `${((tapeDeg / COMPASS_HALF_FOV) * COMPASS_SPAN_PCT).toFixed(4)}%`,
+    };
+  },
+);
+
+const CompassCapLeft = React.memo(function CompassCapLeft(): React.JSX.Element {
+  return (
+    <svg className="hud-sovereign-compass__cap hud-sovereign-compass__cap--left" viewBox="0 0 92 64" aria-hidden="true">
+      <defs>
+        <linearGradient id="skyCompassGoldL" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="var(--compass-gold-bright, #fff8dc)" />
+          <stop offset="38%" stopColor="var(--compass-gold, #f2c464)" />
+          <stop offset="75%" stopColor="var(--compass-gold-deep, #b88228)" />
+          <stop offset="100%" stopColor="var(--compass-gold-shadow, #5e3d0c)" />
+        </linearGradient>
+        <linearGradient id="skyCompassObsidianL" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="var(--sky-raised, rgba(22, 26, 38, 0.96))" />
+          <stop offset="50%" stopColor="var(--sky-surface, rgba(10, 12, 18, 0.98))" />
+          <stop offset="100%" stopColor="var(--sky-bg, rgba(5, 6, 10, 0.98))" />
+        </linearGradient>
+      </defs>
+      <path d="M92 5H42L6 32l36 27h50" fill="url(#skyCompassObsidianL)" stroke="url(#skyCompassGoldL)" strokeWidth="2.2" strokeLinejoin="round" />
+      <path d="M90 11H46L18 32l28 21h44" fill="var(--compass-gold, #f2c464)" fillOpacity="0.09" stroke="url(#skyCompassGoldL)" strokeWidth="1.25" strokeOpacity="0.85" />
+      <path d="M34 21L21 32l13 11M68 15L48 32l20 17" fill="none" stroke="url(#skyCompassGoldL)" strokeWidth="1.3" strokeOpacity="0.65" strokeLinecap="round" />
+      <polygon points="34,32 47,21 60,32 47,43" fill="url(#skyCompassGoldL)" />
+      <polygon points="39,32 47,25.5 55,32 47,38.5" fill="var(--sky-surface, #131824)" />
+      <polygon points="42.5,32 47,28.2 51.5,32 47,35.8" fill="var(--compass-gold-bright, #fff7d6)" />
+      <circle cx="15" cy="32" r="2.5" fill="var(--compass-gold-bright, #fff8dc)" />
+      <line x1="0" y1="32" x2="11" y2="32" stroke="url(#skyCompassGoldL)" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+});
+
+const CompassCapRight = React.memo(function CompassCapRight(): React.JSX.Element {
+  return (
+    <svg className="hud-sovereign-compass__cap hud-sovereign-compass__cap--right" viewBox="0 0 92 64" aria-hidden="true">
+      <defs>
+        <linearGradient id="skyCompassGoldR" x1="100%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="var(--compass-gold-bright, #fff8dc)" />
+          <stop offset="38%" stopColor="var(--compass-gold, #f2c464)" />
+          <stop offset="75%" stopColor="var(--compass-gold-deep, #b88228)" />
+          <stop offset="100%" stopColor="var(--compass-gold-shadow, #5e3d0c)" />
+        </linearGradient>
+        <linearGradient id="skyCompassObsidianR" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor="var(--sky-raised, rgba(22, 26, 38, 0.96))" />
+          <stop offset="50%" stopColor="var(--sky-surface, rgba(10, 12, 18, 0.98))" />
+          <stop offset="100%" stopColor="var(--sky-bg, rgba(5, 6, 10, 0.98))" />
+        </linearGradient>
+      </defs>
+      <path d="M0 5h50l36 27-36 27H0" fill="url(#skyCompassObsidianR)" stroke="url(#skyCompassGoldR)" strokeWidth="2.2" strokeLinejoin="round" />
+      <path d="M2 11h44l28 21-28 21H2" fill="var(--compass-gold, #f2c464)" fillOpacity="0.09" stroke="url(#skyCompassGoldR)" strokeWidth="1.25" strokeOpacity="0.85" />
+      <path d="M58 21l13 11-13 11M24 15l20 17-20 17" fill="none" stroke="url(#skyCompassGoldR)" strokeWidth="1.3" strokeOpacity="0.65" strokeLinecap="round" />
+      <polygon points="58,32 45,21 32,32 45,43" fill="url(#skyCompassGoldR)" />
+      <polygon points="53,32 45,25.5 37,32 45,38.5" fill="var(--sky-surface, #131824)" />
+      <polygon points="49.5,32 45,28.2 40.5,32 45,35.8" fill="var(--compass-gold-bright, #fff7d6)" />
+      <circle cx="77" cy="32" r="2.5" fill="var(--compass-gold-bright, #fff8dc)" />
+      <line x1="81" y1="32" x2="92" y2="32" stroke="url(#skyCompassGoldR)" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+});
+
+const CompassBearingsStrip = React.memo(function CompassBearingsStrip({
+  tapeElRef,
+}: {
+  tapeElRef: React.RefObject<HTMLDivElement | null>;
+}): React.JSX.Element {
+  return (
+    <div className="hud-sovereign-compass__bearings" aria-hidden="true">
+      <div className="hud-sovereign-compass__tape" ref={tapeElRef}>
+        {COMPASS_TAPE_TICKS.map((item) => {
+          const cardinal = COMPASS_CARDINAL_POINTS.find((c) => c.deg === item.deg);
+          if (cardinal) {
+            return (
+              <span
+                key={`card-${item.tapeDeg}`}
+                style={{ left: item.leftPct }}
+                data-kind="cardinal"
+                className={
+                  "hud-sovereign-compass__cardinal" +
+                  (cardinal.major ? " is-major" : " is-inter") +
+                  (cardinal.label === "N" ? " is-north" : "")
+                }
+              >
+                <b>{cardinal.label}</b>
+                <i />
+              </span>
+            );
+          }
+          const isThirty = item.deg % 30 === 0;
+          const isTen = item.deg % 10 === 0;
+          return (
+            <span
+              key={`tick-${item.tapeDeg}`}
+              style={{ left: item.leftPct }}
+              data-kind="tick"
+              className={
+                "hud-sovereign-compass__tick" +
+                (isThirty ? " is-thirty" : isTen ? " is-ten" : " is-five")
+              }
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+});
+
+const CompassMarkerNode = React.memo(function CompassMarkerNode({
+  marker,
+  isFocused,
+  showFloatingName,
+  zOrder,
+  bridge,
+  onRegisterEl,
+}: {
+  marker: SkyUltraCompassMarker;
+  isFocused: boolean;
+  showFloatingName: boolean;
+  zOrder: number;
+  bridge?: SkyWebViewAPI;
+  onRegisterEl: (el: HTMLDivElement | null) => void;
+}): React.JSX.Element {
+  const isQuest = marker.kind === "quest" || marker.kind === "questDoor";
+  const isCustomWaypoint = marker.kind === "customMarker";
+  const isEnemy = marker.kind === "enemy";
+  const isFollower = marker.kind === "follower";
+  const isUndiscovered = marker.discovered === false;
+
+  const hpPct =
+    isEnemy && typeof marker.healthPct === "number"
+      ? Math.max(4, Math.min(100, marker.healthPct))
+      : 100;
+  const ringCirc = 2 * Math.PI * 19;
+  const ringDashOffset = ringCirc * (1 - hpPct / 100);
+
+  return (
+    <div
+      ref={onRegisterEl}
+      className={
+        `hud-sovereign-compass__marker hud-sovereign-compass__marker--${marker.kind}` +
+        (isQuest ? " is-quest-banner" : "") +
+        (isCustomWaypoint ? " is-waypoint-beacon" : "") +
+        (isEnemy || isFollower ? " is-actor-portrait" : "") +
+        (isFocused ? " is-focused" : "") +
+        (isUndiscovered ? " is-undiscovered" : " is-discovered")
+      }
+      style={{ zIndex: zOrder }}
+      title={marker.name}
+    >
+      {isQuest && (
+        <span className="hud-sovereign-compass__special-crown hud-sovereign-compass__special-crown--quest">
+          {marker.kind === "questDoor" ? "PASSAGE" : "QUEST"}
+        </span>
+      )}
+      {isCustomWaypoint && (
+        <span className="hud-sovereign-compass__special-crown hud-sovereign-compass__special-crown--waypoint">
+          WAYPOINT
+        </span>
+      )}
+      {isFollower && (
+        <span className="hud-sovereign-compass__special-crown hud-sovereign-compass__special-crown--follower">
+          {marker.name}
+        </span>
+      )}
+
+      {showFloatingName && !isQuest && !isCustomWaypoint && !isFollower && (
+        <span className="hud-sovereign-compass__marker-tag">
+          {isUndiscovered ? `? · ${marker.name}` : marker.name}
+        </span>
+      )}
+
+      <span className="hud-sovereign-compass__edge-arrow hud-sovereign-compass__edge-arrow--left">‹</span>
+
+      <div className="hud-sovereign-compass__marker-glyph">
+        <span className="hud-sovereign-compass__marker-halo" aria-hidden="true" />
+        {isEnemy || isFollower ? (
+          <>
+            <CompassActorPortrait
+              bridge={bridge}
+              referenceId={marker.referenceId}
+              baseFormId={marker.baseFormId}
+              name={marker.name}
+              hostile={isEnemy}
+              size={isFocused ? 36 : 32}
+            />
+            {isEnemy && (
+              <svg viewBox="0 0 44 44" className="hud-sovereign-compass__enemy-ring" aria-hidden="true">
+                <circle cx="22" cy="22" r="19" fill="none" stroke="rgba(255, 255, 255, 0.14)" strokeWidth="2.4" />
+                <circle
+                  cx="22"
+                  cy="22"
+                  r="19"
+                  fill="none"
+                  stroke="#ff3b5c"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeDasharray={ringCirc}
+                  strokeDashoffset={ringDashOffset}
+                  transform="rotate(-90 22 22)"
+                />
+              </svg>
+            )}
+          </>
+        ) : (
+          <CompassPoiIcon
+            kind={marker.kind}
+            size={isQuest || isCustomWaypoint ? (isFocused ? 27 : 24) : isFocused ? 23 : 20}
+          />
+        )}
+        {marker.elevation && marker.elevation !== "level" && (
+          <em className={`hud-sovereign-compass__elev hud-sovereign-compass__elev--${marker.elevation}`}>
+            {marker.elevation === "above" ? "▲" : "▼"}
+          </em>
+        )}
+      </div>
+
+      <span className="hud-sovereign-compass__edge-arrow hud-sovereign-compass__edge-arrow--right">›</span>
+
+      <small className="hud-sovereign-compass__marker-dist" data-role="dist" />
+    </div>
+  );
+}, (prev, next) => (
+  prev.marker.id === next.marker.id &&
+  prev.marker.kind === next.marker.kind &&
+  prev.marker.name === next.marker.name &&
+  prev.marker.discovered === next.marker.discovered &&
+  prev.marker.elevation === next.marker.elevation &&
+  prev.marker.referenceId === next.marker.referenceId &&
+  prev.marker.baseFormId === next.marker.baseFormId &&
+  prev.marker.healthPct === next.marker.healthPct &&
+  prev.isFocused === next.isFocused &&
+  prev.showFloatingName === next.showFloatingName &&
+  prev.zOrder === next.zOrder &&
+  prev.bridge === next.bridge &&
+  prev.onRegisterEl === next.onRegisterEl
+));
 
 function SkyUltraCompassBar({
   player,
   heading: rawHeading,
   bridge,
+  liveHud = false,
+  compassRadius,
 }: {
   player: Player;
   heading: number;
   bridge?: SkyWebViewAPI;
+  liveHud?: boolean;
+  compassRadius?: number;
 }) {
   const markers =
     player.compassMarkers !== undefined
       ? player.compassMarkers
       : DEFAULT_DEMO_COMPASS_MARKERS;
 
-  const anim = useCompassAnimator(rawHeading, markers);
+  const localRadiusM = clampCompassRadius(compassRadius);
+  const anim = useCompassAnimator(rawHeading, markers, bridge, liveHud, localRadiusM);
   const focusHeading = anim.focusHeading;
 
-  // Coarse projection (refreshed on data packets and ~8x/sec) used only for
-  // focus selection & label decisions. Pixel positions are animated by the hook.
-  const projectedMarkers = markers
-    .map((marker) => {
-      const delta = shortestCompassDelta(marker.angle, focusHeading);
-      const absDelta = Math.abs(delta);
-      const pinned = compassIsPinned(marker.kind);
-      const inFov = absDelta <= COMPASS_HALF_FOV;
-      const visible = (pinned || marker.distance <= COMPASS_LOCAL_RADIUS_M) && (inFov || pinned);
-      return { marker, delta, absDelta, clampedEdge: !inFov, distance: marker.distance, visible };
-    })
-    .filter((entry) => entry.visible);
-
-  const aimedCandidates = projectedMarkers.filter((m) => !m.clampedEdge && m.absDelta <= 28);
-  const scoreFocusCandidate = (entry: (typeof projectedMarkers)[number]): number => {
-    const m = entry.marker;
-    let score = 100 - entry.absDelta * 2.4;
-    if (m.kind === "home") score += 55;
-    else if (m.kind === "enemy") score += 48;
-    else if (m.kind === "follower") score += 44;
-    else if (isNamedPlaceKind(m.kind)) score += 38;
-    else if (m.kind === "quest" || m.kind === "questDoor") score += 30;
-    else if (m.kind === "customMarker") score += 28;
-    if (entry.distance <= 12) score += 42;
-    else if (entry.distance <= 30) score += 24;
-    else if (entry.distance <= 50) score += 12;
-    return score;
-  };
-
-  const focusedEntry =
-    aimedCandidates.slice().sort((a, b) => scoreFocusCandidate(b) - scoreFocusCandidate(a))[0] ??
-    projectedMarkers.find((m) => m.marker.kind === "enemy" && !m.clampedEdge) ??
-    projectedMarkers.find((m) => m.marker.kind === "home" && m.distance <= 25) ??
-    projectedMarkers.find((m) => m.marker.kind === "quest" || m.marker.kind === "questDoor") ??
-    projectedMarkers.find((m) => m.marker.kind === "customMarker") ??
-    projectedMarkers.slice().sort((a, b) => a.absDelta - b.absDelta)[0] ??
-    null;
-
-  const secondaryPinnedEntry =
-    focusedEntry &&
-    focusedEntry.marker.kind !== "quest" &&
-    focusedEntry.marker.kind !== "questDoor" &&
-    focusedEntry.marker.kind !== "customMarker"
-      ? projectedMarkers.find(
-          (m) =>
-            m.marker.id !== focusedEntry.marker.id &&
-            (m.marker.kind === "quest" ||
-              m.marker.kind === "questDoor" ||
-              m.marker.kind === "customMarker"),
-        ) ?? null
-      : null;
-
+  // Coarse projection (updated only when focused marker, secondary pill, or floating name set changes).
+  const { focusedEntry, secondaryPinnedEntry, absDeltaById } = computeCompassFocusSelection(
+    markers,
+    focusHeading,
+    localRadiusM,
+  );
   const cardinalLabel = cardinalLabelForHeading(focusHeading);
-  const absDeltaById = new Map<string, number>();
-  for (const entry of projectedMarkers) absDeltaById.set(entry.marker.id, entry.absDelta);
 
   return (
     <section
@@ -1416,30 +2010,7 @@ function SkyUltraCompassBar({
       aria-label={`SkyUltra Compass Heading ${Math.round(focusHeading)} degrees ${cardinalLabel}`}
     >
       <div className="hud-sovereign-compass__shell">
-        {/* Left Sovereign Imperial Astrolabe & Dragon-Wing Filigree End-Cap */}
-        <svg className="hud-sovereign-compass__cap hud-sovereign-compass__cap--left" viewBox="0 0 92 64" aria-hidden="true">
-          <defs>
-            <linearGradient id="skyCompassGoldL" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#fff8dc" />
-              <stop offset="38%" stopColor="#f2c464" />
-              <stop offset="75%" stopColor="#b88228" />
-              <stop offset="100%" stopColor="#5e3d0c" />
-            </linearGradient>
-            <linearGradient id="skyCompassObsidianL" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor="rgba(22, 26, 38, 0.96)" />
-              <stop offset="50%" stopColor="rgba(10, 12, 18, 0.98)" />
-              <stop offset="100%" stopColor="rgba(5, 6, 10, 0.98)" />
-            </linearGradient>
-          </defs>
-          <path d="M92 5H42L6 32l36 27h50" fill="url(#skyCompassObsidianL)" stroke="url(#skyCompassGoldL)" strokeWidth="2.2" strokeLinejoin="round" />
-          <path d="M90 11H46L18 32l28 21h44" fill="rgba(242, 196, 100, 0.08)" stroke="url(#skyCompassGoldL)" strokeWidth="1.25" strokeOpacity="0.85" />
-          <path d="M34 21L21 32l13 11M68 15L48 32l20 17" fill="none" stroke="url(#skyCompassGoldL)" strokeWidth="1.3" strokeOpacity="0.65" strokeLinecap="round" />
-          <polygon points="34,32 47,21 60,32 47,43" fill="url(#skyCompassGoldL)" />
-          <polygon points="39,32 47,25.5 55,32 47,38.5" fill="#131824" />
-          <polygon points="42.5,32 47,28.2 51.5,32 47,35.8" fill="#fff7d6" />
-          <circle cx="15" cy="32" r="2.5" fill="#fff8dc" />
-          <line x1="0" y1="32" x2="11" y2="32" stroke="url(#skyCompassGoldL)" strokeWidth="1.8" strokeLinecap="round" />
-        </svg>
+        <CompassCapLeft />
 
         {/* Main Sovereign Astrolabe Horizon Ribbon Track */}
         <div className="hud-sovereign-compass__track" ref={anim.trackElRef}>
@@ -1450,49 +2021,14 @@ function SkyUltraCompassBar({
 
           <div className="hud-sovereign-compass__center-notch" aria-hidden="true">
             <svg viewBox="0 0 44 20" className="hud-sovereign-compass__crown-svg">
-              <path d="M4 17L13 5l9 7.5L31 5l9 12H4z" fill="rgba(12, 15, 22, 0.95)" stroke="#f5c96a" strokeWidth="1.6" strokeLinejoin="round" />
-              <path d="M13 15l9-10 9 10H13z" fill="#f7d27d" />
-              <polygon points="22,2 25.2,7.5 22,12.5 18.8,7.5" fill="#fffbeb" />
+              <path d="M4 17L13 5l9 7.5L31 5l9 12H4z" fill="var(--sky-bg, rgba(12, 15, 22, 0.95))" stroke="var(--compass-gold, #f5c96a)" strokeWidth="1.6" strokeLinejoin="round" />
+              <path d="M13 15l9-10 9 10H13z" fill="var(--compass-gold, #f7d27d)" />
+              <polygon points="22,2 25.2,7.5 22,12.5 18.8,7.5" fill="var(--compass-gold-bright, #fffbeb)" />
             </svg>
             <span className="hud-sovereign-compass__center-hairline" />
           </div>
 
-          {/* Degree & Cardinal Marks — positioned per-frame by the animator */}
-          <div className="hud-sovereign-compass__bearings" aria-hidden="true">
-            {COMPASS_DEGREE_TICKS.map((deg, index) => {
-              const cardinal = COMPASS_CARDINAL_POINTS.find((c) => c.deg === deg);
-              if (cardinal) {
-                return (
-                  <span
-                    key={`card-${deg}`}
-                    ref={anim.registerTick(index)}
-                    data-kind="cardinal"
-                    className={
-                      "hud-sovereign-compass__cardinal" +
-                      (cardinal.major ? " is-major" : " is-inter") +
-                      (cardinal.label === "N" ? " is-north" : "")
-                    }
-                  >
-                    <b>{cardinal.label}</b>
-                    <i />
-                  </span>
-                );
-              }
-              const isThirty = deg % 30 === 0;
-              const isTen = deg % 10 === 0;
-              return (
-                <span
-                  key={`tick-${deg}`}
-                  ref={anim.registerTick(index)}
-                  data-kind="tick"
-                  className={
-                    "hud-sovereign-compass__tick" +
-                    (isThirty ? " is-thirty" : isTen ? " is-ten" : " is-five")
-                  }
-                />
-              );
-            })}
-          </div>
+          <CompassBearingsStrip tapeElRef={anim.tapeElRef} />
 
           {/* Quest Spires, Waypoint Beacons, Portrait Medallions & Local POIs */}
           <div className="hud-sovereign-compass__markers">
@@ -1503,14 +2039,7 @@ function SkyUltraCompassBar({
               const isCustomWaypoint = marker.kind === "customMarker";
               const isEnemy = marker.kind === "enemy";
               const isFollower = marker.kind === "follower";
-              const isUndiscovered = marker.discovered === false;
-
-              const showFloatingName =
-                isFocused ||
-                (isEnemy && absDelta <= 32) ||
-                (marker.kind === "home" && marker.distance <= 50 && absDelta <= 42) ||
-                (isNamedPlaceKind(marker.kind) && marker.distance <= 30 && absDelta <= 26);
-
+              const showFloatingName = shouldShowFloatingCompassName(marker, absDelta, isFocused);
               const zOrder = isFocused
                 ? 50
                 : isQuest
@@ -1523,130 +2052,24 @@ function SkyUltraCompassBar({
                         ? 36
                         : marker.kind === "home"
                           ? 34
-                          : Math.max(5, 24 - Math.round(absDelta / 8));
-
-              const hpPct =
-                isEnemy && typeof marker.healthPct === "number"
-                  ? Math.max(4, Math.min(100, marker.healthPct))
-                  : 100;
-              const ringCirc = 2 * Math.PI * 19;
-              const ringDashOffset = ringCirc * (1 - hpPct / 100);
+                          : 20;
 
               return (
-                <div
+                <CompassMarkerNode
                   key={marker.id}
-                  ref={anim.registerMarker(marker.id)}
-                  className={
-                    `hud-sovereign-compass__marker hud-sovereign-compass__marker--${marker.kind}` +
-                    (isQuest ? " is-quest-banner" : "") +
-                    (isCustomWaypoint ? " is-waypoint-beacon" : "") +
-                    (isEnemy || isFollower ? " is-actor-portrait" : "") +
-                    (isFocused ? " is-focused" : "") +
-                    (isUndiscovered ? " is-undiscovered" : " is-discovered")
-                  }
-                  style={{ zIndex: zOrder }}
-                  title={marker.name}
-                >
-                  {isQuest && (
-                    <span className="hud-sovereign-compass__special-crown hud-sovereign-compass__special-crown--quest">
-                      {marker.kind === "questDoor" ? "PASSAGE" : "QUEST"}
-                    </span>
-                  )}
-                  {isCustomWaypoint && (
-                    <span className="hud-sovereign-compass__special-crown hud-sovereign-compass__special-crown--waypoint">
-                      WAYPOINT
-                    </span>
-                  )}
-                  {isFollower && (
-                    <span className="hud-sovereign-compass__special-crown hud-sovereign-compass__special-crown--follower">
-                      {marker.name}
-                    </span>
-                  )}
-
-                  {showFloatingName && !isQuest && !isCustomWaypoint && !isFollower && (
-                    <span className="hud-sovereign-compass__marker-tag">
-                      {isUndiscovered ? `? · ${marker.name}` : marker.name}
-                    </span>
-                  )}
-
-                  <span className="hud-sovereign-compass__edge-arrow hud-sovereign-compass__edge-arrow--left">‹</span>
-
-                  <div className="hud-sovereign-compass__marker-glyph">
-                    <span className="hud-sovereign-compass__marker-halo" aria-hidden="true" />
-                    {isEnemy || isFollower ? (
-                      <>
-                        <CompassActorPortrait
-                          bridge={bridge}
-                          referenceId={marker.referenceId}
-                          baseFormId={marker.baseFormId}
-                          name={marker.name}
-                          hostile={isEnemy}
-                          size={isFocused ? 36 : 32}
-                        />
-                        {isEnemy && (
-                          <svg viewBox="0 0 44 44" className="hud-sovereign-compass__enemy-ring" aria-hidden="true">
-                            <circle cx="22" cy="22" r="19" fill="none" stroke="rgba(255, 255, 255, 0.14)" strokeWidth="2.4" />
-                            <circle
-                              cx="22"
-                              cy="22"
-                              r="19"
-                              fill="none"
-                              stroke="#ff3b5c"
-                              strokeWidth="2.5"
-                              strokeLinecap="round"
-                              strokeDasharray={ringCirc}
-                              strokeDashoffset={ringDashOffset}
-                              transform="rotate(-90 22 22)"
-                            />
-                          </svg>
-                        )}
-                      </>
-                    ) : (
-                      <CompassPoiIcon
-                        kind={marker.kind}
-                        size={isQuest || isCustomWaypoint ? (isFocused ? 27 : 24) : isFocused ? 23 : 20}
-                      />
-                    )}
-                    {marker.elevation && marker.elevation !== "level" && (
-                      <em className={`hud-sovereign-compass__elev hud-sovereign-compass__elev--${marker.elevation}`}>
-                        {marker.elevation === "above" ? "▲" : "▼"}
-                      </em>
-                    )}
-                  </div>
-
-                  <span className="hud-sovereign-compass__edge-arrow hud-sovereign-compass__edge-arrow--right">›</span>
-
-                  <small className="hud-sovereign-compass__marker-dist" data-role="dist" />
-                </div>
+                  marker={marker}
+                  isFocused={isFocused}
+                  showFloatingName={showFloatingName}
+                  zOrder={zOrder}
+                  bridge={bridge}
+                  onRegisterEl={anim.registerMarker(marker.id)}
+                />
               );
             })}
           </div>
         </div>
 
-        {/* Right Sovereign Imperial Astrolabe & Dragon-Wing Filigree End-Cap */}
-        <svg className="hud-sovereign-compass__cap hud-sovereign-compass__cap--right" viewBox="0 0 92 64" aria-hidden="true">
-          <defs>
-            <linearGradient id="skyCompassGoldR" x1="100%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor="#fff8dc" />
-              <stop offset="38%" stopColor="#f2c464" />
-              <stop offset="75%" stopColor="#b88228" />
-              <stop offset="100%" stopColor="#5e3d0c" />
-            </linearGradient>
-            <linearGradient id="skyCompassObsidianR" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor="rgba(22, 26, 38, 0.96)" />
-              <stop offset="50%" stopColor="rgba(10, 12, 18, 0.98)" />
-              <stop offset="100%" stopColor="rgba(5, 6, 10, 0.98)" />
-            </linearGradient>
-          </defs>
-          <path d="M0 5h50l36 27-36 27H0" fill="url(#skyCompassObsidianR)" stroke="url(#skyCompassGoldR)" strokeWidth="2.2" strokeLinejoin="round" />
-          <path d="M2 11h44l28 21-28 21H2" fill="rgba(242, 196, 100, 0.08)" stroke="url(#skyCompassGoldR)" strokeWidth="1.25" strokeOpacity="0.85" />
-          <path d="M58 21l13 11-13 11M24 15l20 17-20 17" fill="none" stroke="url(#skyCompassGoldR)" strokeWidth="1.3" strokeOpacity="0.65" strokeLinecap="round" />
-          <polygon points="58,32 45,21 32,32 45,43" fill="url(#skyCompassGoldR)" />
-          <polygon points="53,32 45,25.5 37,32 45,38.5" fill="#131824" />
-          <polygon points="49.5,32 45,28.2 40.5,32 45,35.8" fill="#fff7d6" />
-          <circle cx="77" cy="32" r="2.5" fill="#fff8dc" />
-          <line x1="81" y1="32" x2="92" y2="32" stroke="url(#skyCompassGoldR)" strokeWidth="1.8" strokeLinecap="round" />
-        </svg>
+        <CompassCapRight />
       </div>
 
       {/* Bottom Sovereign Horizon Telemetry Plaque & Rich Target Dossier */}
@@ -1711,6 +2134,12 @@ function WidgetContent({
   nearbyActors,
   fps,
   accentColor,
+  crestStyle,
+  hpColor,
+  magickaColor,
+  staminaColor,
+  compassRadius,
+  liveHud = false,
 }: {
   kind: WidgetKind;
   player: Player | null;
@@ -1718,7 +2147,14 @@ function WidgetContent({
   nearbyActors?: Npc[];
   fps?: number;
   accentColor: string;
+  crestStyle?: SkyUltraPortraitCrestStyle;
+  hpColor?: string;
+  magickaColor?: string;
+  staminaColor?: string;
+  compassRadius?: number;
+  liveHud?: boolean;
 }): React.JSX.Element {
+  const crestUid = React.useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [liveFps, setLiveFps] = React.useState<number>(fps ?? 60);
   const [frameMs, setFrameMs] = React.useState<number>(16.7);
 
@@ -1844,7 +2280,15 @@ function WidgetContent({
   if (kind === "compass") {
     const rawHeading = player.heading ?? 0;
     const angle = Number.isFinite(rawHeading) ? ((rawHeading % 360) + 360) % 360 : 0;
-    return <SkyUltraCompassBar player={player} heading={angle} bridge={bridge} />;
+    return (
+      <SkyUltraCompassBar
+        player={player}
+        heading={angle}
+        bridge={bridge}
+        liveHud={liveHud}
+        compassRadius={compassRadius}
+      />
+    );
   }
 
   if (kind === "radar") {
@@ -2113,24 +2557,206 @@ function WidgetContent({
   }
 
   if (kind === "character") {
+    const resolvedCrestStyle: SkyUltraPortraitCrestStyle = crestStyle ?? "dragonblade";
+    const stylePreset =
+      hudCrestStyleOptions.find((opt) => opt.value === resolvedCrestStyle) ?? hudCrestStyleOptions[0];
     const hpPct = Math.round(skyMeterFraction(player.health.current, player.health.max) * 100);
+    const mpPct = Math.round(skyMeterFraction(player.magicka.current, player.magicka.max) * 100);
+    const spPct = Math.round(skyMeterFraction(player.stamina.current, player.stamina.max) * 100);
+    const resolvedHpColor = hpColor || stylePreset.colors.hp;
+    const resolvedMpColor = magickaColor || stylePreset.colors.mp;
+    const resolvedSpColor = staminaColor || stylePreset.colors.sp;
+    const crestStyleVars = {
+      "--crest-trim": accentColor || stylePreset.colors.trim,
+      "--crest-hp-custom": resolvedHpColor,
+      "--crest-mp-custom": resolvedMpColor,
+      "--crest-sp-custom": resolvedSpColor,
+    } as React.CSSProperties;
+    const gBlade = `cb-${crestUid}`;
+    const gTrim = `ct-${crestUid}`;
+    const gPommel = `cp-${crestUid}`;
+    const gEye = `ce-${crestUid}`;
     return (
-      <section className="hud-character-floating" aria-label="Character Identity">
-        <PlayerPortrait
-          player={player}
-          bridge={bridge}
-          size="sm"
-          badge={`L${player.level}`}
-          className="hud-character-floating__portrait"
-        />
-        <div className="hud-character-floating__info">
-          <div className="hud-character-floating__row">
-            <strong>{player.playerName}</strong>
-            <span>LVL {player.level}</span>
+      <section
+        className="hud-dragonblade-crest"
+        data-crest-style={resolvedCrestStyle}
+        style={crestStyleVars}
+        aria-label="Sovereign Dragonblade Portrait Crest"
+      >
+        <svg
+          className="hud-dragonblade-crest__svg"
+          viewBox="0 0 460 112"
+          fill="none"
+          aria-hidden="true"
+        >
+          <defs>
+            <linearGradient id={gBlade} x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="var(--crest-metal-hi)" />
+              <stop offset="48%" stopColor="var(--crest-metal-mid)" />
+              <stop offset="100%" stopColor="var(--crest-metal-lo)" />
+            </linearGradient>
+            <linearGradient id={gTrim} x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="var(--crest-rim)" />
+              <stop offset="55%" stopColor="var(--crest-trim)" />
+              <stop offset="100%" stopColor="var(--crest-trim)" stopOpacity="0.48" />
+            </linearGradient>
+            <linearGradient id={gPommel} x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="var(--crest-rim)" />
+              <stop offset="50%" stopColor="var(--crest-metal-mid)" />
+              <stop offset="100%" stopColor="#17191d" />
+            </linearGradient>
+            <radialGradient id={gEye} cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#fff7d6" />
+              <stop offset="45%" stopColor="var(--crest-eye)" />
+              <stop offset="100%" stopColor="transparent" />
+            </radialGradient>
+          </defs>
+
+          {/* Left Turned Sword Pommel & Hilt Neck */}
+          <path
+            d="M 4,56 L 14,42 L 24,39 L 29,43 L 36,41 L 41,45 L 48,43 L 48,69 L 41,67 L 36,71 L 29,69 L 24,73 L 14,70 Z"
+            fill={`url(#${gPommel})`}
+            stroke="var(--crest-trim)"
+            strokeOpacity="0.48"
+            strokeWidth="1.2"
+          />
+          <line x1="17" y1="42" x2="17" y2="70" stroke="rgb(0 0 0 / 55%)" strokeWidth="2" />
+          <line x1="27" y1="41" x2="27" y2="71" stroke="rgb(255 255 255 / 26%)" strokeWidth="1.2" />
+          <line x1="36" y1="42" x2="36" y2="70" stroke="rgb(0 0 0 / 60%)" strokeWidth="2" />
+
+          {/* Swept Sculpted Blade Spine, Dorsal Notches, Upturned Tip & Lower Guard Hook */}
+          <path
+            d="M 128,27 L 148,22 L 156,28 L 286,28 L 306,20 L 315,27 L 348,18 L 362,25 L 392,22 C 420,19 440,12 454,3 C 449,33 428,67 386,84 L 336,102 L 360,76 L 130,76 Z"
+            fill={`url(#${gBlade})`}
+            stroke="var(--crest-metal-lo)"
+            strokeOpacity="0.78"
+            strokeWidth="1.4"
+          />
+          {/* Razor Blade Upper Rim Accent & Crosshatched Tip Gusset */}
+          <path
+            d="M 382,25 C 414,22 436,15 449,7 C 441,34 420,58 386,74 L 352,74 L 382,74 C 412,56 426,38 432,26 Z"
+            fill={`url(#${gTrim})`}
+            opacity="0.82"
+          />
+          <path
+            d="M 358,76 L 404,76 L 342,99 L 363,76 Z"
+            fill={`url(#${gTrim})`}
+            opacity="0.72"
+          />
+
+          {/* Recessed Dark Channel Backing + Brushed Metallic Bar Divider Ribs */}
+          <rect
+            x="136"
+            y="32"
+            width="268"
+            height="41"
+            rx="4"
+            fill="var(--crest-channel)"
+            stroke="var(--crest-metal-hi)"
+            strokeOpacity="0.4"
+            strokeWidth="1.2"
+          />
+          <line x1="138" y1="45.5" x2="394" y2="45.5" stroke={`url(#${gBlade})`} strokeWidth="2.2" />
+          <line x1="138" y1="59.5" x2="368" y2="59.5" stroke={`url(#${gBlade})`} strokeWidth="2.2" />
+
+          {/* Lower Clawed Guard Spur Under Portrait Ring */}
+          <path
+            d="M 52,74 L 68,87 L 58,92 L 96,102 L 138,108 L 118,90 L 146,74 L 96,86 Z"
+            fill={`url(#${gBlade})`}
+            stroke="rgb(0 0 0 / 55%)"
+            strokeWidth="1.1"
+          />
+
+          {/* Upper Snarling Dragon / Guardian Crest Head Above Bezel */}
+          <path
+            d="M 38,38 L 44,10 L 56,22 L 70,5 L 69,20 L 96,15 L 116,12 L 106,24 L 154,32 L 122,38 L 96,26 L 62,32 L 54,48 L 40,48 Z"
+            fill={`url(#${gBlade})`}
+            stroke="var(--crest-trim)"
+            strokeOpacity="0.55"
+            strokeWidth="1.2"
+          />
+          <path
+            d="M 48,16 L 62,25 L 86,21 L 54,31 Z"
+            fill={`url(#${gTrim})`}
+            opacity="0.7"
+          />
+          {/* Glowing Dragon Eye */}
+          <ellipse cx="64" cy="24" rx="7" ry="4" fill={`url(#${gEye})`} />
+          <path d="M 59,23 Q 64,20 69,24 Q 64,26 59,23 Z" fill="var(--crest-eye)" />
+
+          {/* Ornate Circular Portrait Bezel Ring & 4 Cardinal Diamond Studs */}
+          <circle
+            cx="96"
+            cy="56"
+            r="37"
+            fill="none"
+            stroke={`url(#${gTrim})`}
+            strokeWidth="4.2"
+          />
+          <circle
+            cx="96"
+            cy="56"
+            r="34"
+            fill="none"
+            stroke="rgb(255 255 255 / 35%)"
+            strokeWidth="1"
+          />
+          {/* North, East, South, West Cardinal Diamonds */}
+          <polygon points="96,13 102,19 96,25 90,19" fill={`url(#${gTrim})`} stroke="#0a0c10" strokeWidth="1" />
+          <polygon points="135,50 141,56 135,62 129,56" fill={`url(#${gTrim})`} stroke="#0a0c10" strokeWidth="1" />
+          <polygon points="96,87 102,93 96,99 90,93" fill={`url(#${gTrim})`} stroke="#0a0c10" strokeWidth="1" />
+          <polygon points="57,50 63,56 57,62 51,56" fill={`url(#${gTrim})`} stroke="#0a0c10" strokeWidth="1" />
+        </svg>
+
+        <div className="hud-dragonblade-crest__portrait-socket">
+          <div className="hud-dragonblade-crest__portrait-mask">
+            <PlayerPortrait player={player} bridge={bridge} size="sm" />
           </div>
-          <div className="hud-character-floating__sub">
-            <span>{player.location}</span>
-            <em>HP {hpPct}%</em>
+          <span className="hud-dragonblade-crest__level">L{player.level}</span>
+        </div>
+
+        <div className="hud-dragonblade-crest__blade-body">
+          <div className="hud-dragonblade-crest__identity">
+            <strong>{player.playerName}</strong>
+            <small>{player.location}</small>
+          </div>
+          <div className="hud-dragonblade-crest__bars">
+            <div
+              className="hud-dragonblade-crest__bar-row hud-dragonblade-crest__bar-row--hp"
+              title={`Health: ${fmt(player.health.current)} / ${fmt(player.health.max)} (${hpPct}%)`}
+            >
+              <div
+                className="hud-dragonblade-crest__bar-fill"
+                style={{ width: `${hpPct}%`, "--bar-color": "var(--crest-hp)" } as React.CSSProperties}
+              />
+              <span className="hud-dragonblade-crest__bar-label">
+                HP {fmtVitalCompact(player.health.current)}/{fmtVitalCompact(player.health.max)}
+              </span>
+            </div>
+            <div
+              className="hud-dragonblade-crest__bar-row hud-dragonblade-crest__bar-row--mp"
+              title={`Magicka: ${fmt(player.magicka.current)} / ${fmt(player.magicka.max)} (${mpPct}%)`}
+            >
+              <div
+                className="hud-dragonblade-crest__bar-fill"
+                style={{ width: `${mpPct}%`, "--bar-color": "var(--crest-mp)" } as React.CSSProperties}
+              />
+              <span className="hud-dragonblade-crest__bar-label">
+                MP {fmtVitalCompact(player.magicka.current)}/{fmtVitalCompact(player.magicka.max)}
+              </span>
+            </div>
+            <div
+              className="hud-dragonblade-crest__bar-row hud-dragonblade-crest__bar-row--sp"
+              title={`Stamina: ${fmt(player.stamina.current)} / ${fmt(player.stamina.max)} (${spPct}%)`}
+            >
+              <div
+                className="hud-dragonblade-crest__bar-fill"
+                style={{ width: `${spPct}%`, "--bar-color": "var(--crest-sp)" } as React.CSSProperties}
+              />
+              <span className="hud-dragonblade-crest__bar-label">
+                SP {fmtVitalCompact(player.stamina.current)}/{fmtVitalCompact(player.stamina.max)}
+              </span>
+            </div>
           </div>
         </div>
       </section>

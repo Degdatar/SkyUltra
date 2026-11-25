@@ -8,6 +8,13 @@ export const skyUltraItemActions = ['drop','activate','read','learn','charge','d
 export type SkyUltraItemAction = typeof skyUltraItemActions[number];
 export type SkyUltraArmorWeightClass = 'heavy' | 'light' | 'clothing' | 'shield';
 export interface ItemEnchantment { name: string; description?: string; magnitude?: number; duration?: number; }
+export interface ItemIngredientEffect {
+  slot: number;
+  known: boolean;
+  name?: string;
+  isHostile?: boolean;
+  isDetrimental?: boolean;
+}
 export interface Item {
   id: string;
   name: string;
@@ -49,6 +56,10 @@ export interface Item {
   pickpocketChance?: number;
   /** Skyrim's saved read flag for books, notes and spell tomes; absent on other items. */
   isRead?: boolean;
+  /** Learned/unlearned alchemical effect traits for Ingredient items. */
+  ingredientEffects?: ItemIngredientEffect[];
+  knownEffectCount?: number;
+  totalEffectCount?: number;
   favorite?: boolean;
   stolen?: boolean;
 }
@@ -113,7 +124,7 @@ export interface SkyUltraCompassMarker {
   healthPct?: number;
 }
 export interface Player {
-  available: boolean; playerName: string; level: number; location?: string; carryWeight?: { current: number; max: number };
+  available: boolean; playerName: string; characterKey?: string; portraitRevision?: number; level: number; location?: string; carryWeight?: { current: number; max: number };
   sequence?: number; snapshotScope?: 'full' | 'hud';
   heading?: number; compassMarkers?: SkyUltraCompassMarker[]; calendar?: { hour: number; minute: number; day: number; month: string; year: number } | null;
   health: { current: number; max: number }; stamina: { current: number; max: number }; magicka: { current: number; max: number }; armorRating: number; gold: number;
@@ -228,6 +239,422 @@ export interface SkyUltraContainerTransferResult {
   message?: string;
   container?: SkyUltraContainerSnapshot;
 }
+export type SkyUltraBlacksmithStationKind = 'forge' | 'tanning' | 'smelter' | 'grindstone' | 'workbench';
+export type SkyUltraBlacksmithStationMode = 'craft' | 'temper';
+export interface SkyUltraBlacksmithMaterial {
+  id: string;
+  name: string;
+  required: number;
+  owned: number;
+  met: boolean;
+}
+export interface SkyUltraBlacksmithRequirement {
+  label: string;
+  met: boolean;
+  kind?: 'perk' | 'skill' | 'item';
+}
+export interface SkyUltraBlacksmithRecipe {
+  recipeId: string;
+  itemId: string;
+  name: string;
+  category: string;
+  itemType?: string;
+  outputCount: number;
+  value: number;
+  weight: number;
+  damage?: number;
+  armorRating?: number;
+  weaponType?: string;
+  armorTypeLabel?: string;
+  enchanted?: boolean;
+  enchantmentName?: string;
+  ownedCount?: number;
+  materials: SkyUltraBlacksmithMaterial[];
+  requirements: SkyUltraBlacksmithRequirement[];
+  conditionsMet: boolean;
+  materialsMet: boolean;
+  canCraft: boolean;
+  maxCraftable: number;
+  blockReason?: string;
+}
+export interface SkyUltraBlacksmithTemperItem {
+  id: string;
+  itemId: string;
+  recipeId: string;
+  stackIndex: number;
+  name: string;
+  category: string;
+  itemType?: string;
+  count: number;
+  value: number;
+  weight: number;
+  equipped: boolean;
+  enchanted?: boolean;
+  enchantmentName?: string;
+  weaponType?: string;
+  armorTypeLabel?: string;
+  currentTier: string;
+  currentHealth: number;
+  targetTier: string;
+  targetHealth: number;
+  currentStat: number;
+  projectedStat: number;
+  materials: SkyUltraBlacksmithMaterial[];
+  requirements: SkyUltraBlacksmithRequirement[];
+  canTemper: boolean;
+  blockReason?: string;
+}
+export interface SkyUltraBlacksmithSnapshot {
+  available: boolean;
+  stationKind: SkyUltraBlacksmithStationKind;
+  stationMode: SkyUltraBlacksmithStationMode;
+  stationName: string;
+  isSkyforge?: boolean;
+  smithingSkill?: number;
+  smithingBaseSkill?: number;
+  hasArcaneBlacksmith?: boolean;
+  playerName?: string;
+  playerGold?: number;
+  playerCarryWeight?: { current: number; max: number };
+  categories: Array<{ id: string; label: string; count: number }>;
+  recipes: SkyUltraBlacksmithRecipe[];
+  temperItems: SkyUltraBlacksmithTemperItem[];
+  message?: string;
+}
+export interface SkyUltraBlacksmithCraftOptions {
+  recipeId: number | string;
+  count?: number;
+}
+export interface SkyUltraBlacksmithCraftResult {
+  accepted: boolean;
+  recipeId?: string;
+  craftedName?: string;
+  craftedCount?: number;
+  xpGained?: number;
+  message?: string;
+  snapshot?: SkyUltraBlacksmithSnapshot;
+}
+export interface SkyUltraBlacksmithTemperOptions {
+  recipeId: number | string;
+  itemId: number | string;
+  stackIndex?: number;
+}
+export interface SkyUltraBlacksmithTemperResult {
+  accepted: boolean;
+  itemId?: string;
+  recipeId?: string;
+  itemName?: string;
+  newTier?: string;
+  newStat?: number;
+  xpGained?: number;
+  message?: string;
+  snapshot?: SkyUltraBlacksmithSnapshot;
+}
+export const skyUltraBlacksmithMethods = ['game.getBlacksmithSnapshot','game.blacksmithCraft','game.blacksmithTemper'] as const;
+
+export interface SkyUltraEnchantingItem {
+  id: string;
+  itemId: string;
+  stackIndex: number;
+  name: string;
+  itemKind: 'weapon' | 'armor';
+  category: string;
+  count: number;
+  value: number;
+  weight: number;
+  equipped: boolean;
+  damage?: number;
+  armorRating?: number;
+  weaponType?: string;
+  armorTypeLabel?: string;
+  keywordIds: string[];
+}
+export interface SkyUltraDisenchantableEffect {
+  name: string;
+  description: string;
+  magnitude: number;
+  duration: number;
+}
+export interface SkyUltraDisenchantableItem {
+  id: string;
+  itemId: string;
+  stackIndex: number;
+  name: string;
+  itemKind: 'weapon' | 'armor';
+  category: string;
+  count: number;
+  value: number;
+  weight: number;
+  equipped: boolean;
+  damage?: number;
+  armorRating?: number;
+  weaponType?: string;
+  armorTypeLabel?: string;
+  enchantmentId: string;
+  baseEnchantmentId: string;
+  enchantmentName: string;
+  effects: SkyUltraDisenchantableEffect[];
+  alreadyKnown: boolean;
+  isDisallowed: boolean;
+  isUniqueLocked?: boolean;
+  isQuestItem: boolean;
+  isPlayerCreated: boolean;
+  canDisenchant: boolean;
+  blockReason?: string;
+  estimatedXp: number;
+}
+export interface SkyUltraKnownEnchantmentEffect {
+  name: string;
+  descriptionTemplate: string;
+  baseMagnitude: number;
+  baseDuration: number;
+  area: number;
+  powerAffectsMagnitude: boolean;
+  powerAffectsDuration: boolean;
+  noMagnitude: boolean;
+  perkBonusMult: number;
+}
+export interface SkyUltraKnownEnchantment {
+  id: string;
+  name: string;
+  originalName?: string;
+  isCustomNamed?: boolean;
+  targetKind: 'weapon' | 'armor';
+  school: string;
+  baseCost: number;
+  wornRestrictionIds: string[];
+  wornRestrictionLabels: string[];
+  effects: SkyUltraKnownEnchantmentEffect[];
+}
+export interface SkyUltraSoulGemEntry {
+  id: string;
+  gemId: string;
+  stackIndex: number;
+  name: string;
+  soulLevel: number;
+  soulLabel: string;
+  soulPoints: number;
+  armorScale: number;
+  count: number;
+  value: number;
+  weight: number;
+  isReusable: boolean;
+}
+export interface SkyUltraEnchantingSnapshot {
+  available: boolean;
+  stationName: string;
+  enchantingSkill?: number;
+  enchantingBaseSkill?: number;
+  skillMultiplier?: number;
+  maxEnchantments?: number;
+  hasExtraEffect?: boolean;
+  superEnchantingUnlocked?: boolean;
+  superEnchantingEnabled?: boolean;
+  superEnchantingActive?: boolean;
+  unlimitedEnchantments?: boolean;
+  playerName?: string;
+  playerGold?: number;
+  playerCarryWeight?: { current: number; max: number };
+  enchantableItems: SkyUltraEnchantingItem[];
+  disenchantableItems: SkyUltraDisenchantableItem[];
+  knownEnchantments: SkyUltraKnownEnchantment[];
+  soulGems: SkyUltraSoulGemEntry[];
+  message?: string;
+}
+export interface SkyUltraEnchantBatchItem {
+  itemId: number | string;
+  stackIndex?: number;
+  count?: number;
+  customName?: string;
+}
+export interface SkyUltraEnchantBatchSoulGem {
+  soulGemId: number | string;
+  soulGemStackIndex?: number;
+}
+export interface SkyUltraEnchantItemOptions {
+  itemId?: number | string;
+  stackIndex?: number;
+  items?: SkyUltraEnchantBatchItem[];
+  enchantmentIds: Array<number | string>;
+  soulGemId?: number | string;
+  soulGemStackIndex?: number;
+  soulGems?: SkyUltraEnchantBatchSoulGem[];
+  chargeSlider?: number;
+  customName?: string;
+  applyCustomNameToAll?: boolean;
+}
+export interface SkyUltraEnchantItemResult {
+  accepted: boolean;
+  itemId?: string;
+  itemName?: string;
+  enchantmentNames?: string[];
+  enchantedItems?: Array<{ itemId: string; itemName: string; charge?: number; uses?: number }>;
+  batchCount?: number;
+  charge?: number;
+  uses?: number;
+  xpGained?: number;
+  message?: string;
+  snapshot?: SkyUltraEnchantingSnapshot;
+}
+export interface SkyUltraDisenchantItemOptions {
+  itemId: number | string;
+  stackIndex?: number;
+}
+export interface SkyUltraDisenchantItemResult {
+  accepted: boolean;
+  itemId?: string;
+  itemName?: string;
+  learnedEnchantmentId?: string;
+  learnedEnchantmentName?: string;
+  xpGained?: number;
+  message?: string;
+  snapshot?: SkyUltraEnchantingSnapshot;
+}
+export interface SkyUltraRenameEnchantmentOptions {
+  enchantmentId: number | string;
+  name?: string;
+  reset?: boolean;
+}
+export interface SkyUltraRenameEnchantmentResult {
+  accepted: boolean;
+  enchantmentId?: string;
+  name?: string;
+  originalName?: string;
+  isCustomNamed?: boolean;
+  message?: string;
+  snapshot?: SkyUltraEnchantingSnapshot;
+}
+export interface SkyUltraActiveBookSnapshot {
+  available: boolean;
+  bookId?: string;
+  refId?: string;
+  title?: string;
+  text?: string;
+  pages?: string[];
+  images?: string[];
+  bookStyle?: 'book' | 'note' | 'map';
+  canTake?: boolean;
+  isStealing?: boolean;
+  taken?: boolean;
+  value?: number;
+  weight?: number;
+  teachesSkill?: boolean;
+  skillName?: string;
+  teachesSpell?: boolean;
+  spellName?: string;
+  activateDevice?: 'keyboard' | 'mouse' | 'gamepad';
+  activateMouseButton?: number;
+  activateKeyLabel?: string;
+  activateKeyCode?: string;
+  activateKey?: string;
+}
+export interface SkyUltraTakeActiveBookResult {
+  accepted: boolean;
+  taken?: boolean;
+  stolen?: boolean;
+  title?: string;
+  message?: string;
+  book?: SkyUltraActiveBookSnapshot;
+}
+export interface SkyUltraOpenNativeBookResult {
+  accepted: boolean;
+  openingNative?: boolean;
+  message?: string;
+}
+export const skyUltraEnchantingMethods = ['game.getEnchantingSnapshot','game.enchantItem','game.disenchantItem','game.renameEnchantment'] as const;
+export const skyUltraBookMethods = ['game.getActiveBookSnapshot','game.takeActiveBook','game.openNativeActiveBook'] as const;
+export interface SkyUltraAlchemyIngredientEffect {
+  slot: number;
+  known: boolean;
+  effectId?: string;
+  name?: string;
+  descriptionTemplate?: string;
+  isHostile?: boolean;
+  isDetrimental?: boolean;
+  baseMagnitude?: number;
+  baseDuration?: number;
+  baseCost?: number;
+  powerAffectsMagnitude?: boolean;
+  powerAffectsDuration?: boolean;
+  noMagnitude?: boolean;
+  noDuration?: boolean;
+  school?: string;
+  isRestoreVital?: boolean;
+}
+export interface SkyUltraAlchemyIngredient {
+  id: string;
+  itemId: string;
+  name: string;
+  count: number;
+  value: number;
+  weight: number;
+  isFood?: boolean;
+  isStolen?: boolean;
+  isQuest?: boolean;
+  knownCount: number;
+  effects: SkyUltraAlchemyIngredientEffect[];
+}
+export interface SkyUltraAlchemyKnownEffect {
+  effectId: string;
+  name: string;
+  isHostile: boolean;
+  isDetrimental: boolean;
+  school: string;
+  ingredientCount: number;
+  descriptionTemplate?: string;
+}
+export interface SkyUltraAlchemySnapshot {
+  available: boolean;
+  stationName: string;
+  alchemySkill?: number;
+  alchemyBaseSkill?: number;
+  fortifyAlchemyPct?: number;
+  skillMultiplier?: number;
+  initMult?: number;
+  skillFactor?: number;
+  goldMult?: number;
+  alchemistRank?: number;
+  hasPhysician?: boolean;
+  hasBenefactor?: boolean;
+  hasPoisoner?: boolean;
+  hasPurity?: boolean;
+  experimenterEffects?: number;
+  playerName?: string;
+  playerGold?: number;
+  carryWeight?: number;
+  maxCarryWeight?: number;
+  ingredients: SkyUltraAlchemyIngredient[];
+  knownEffects: SkyUltraAlchemyKnownEffect[];
+  message?: string;
+}
+export interface SkyUltraAlchemyCraftOptions {
+  ingredientIds: Array<number | string>;
+  count?: number;
+  customName?: string;
+}
+export interface SkyUltraAlchemyCraftResult {
+  accepted: boolean;
+  failedCombination?: boolean;
+  isPoison?: boolean;
+  craftedName?: string;
+  craftedCount?: number;
+  goldValue?: number;
+  xpGained?: number;
+  discoveredEffects?: string[];
+  message?: string;
+  snapshot?: SkyUltraAlchemySnapshot;
+}
+export interface SkyUltraEatIngredientOptions {
+  ingredientId: number | string;
+}
+export interface SkyUltraEatIngredientResult {
+  accepted: boolean;
+  ingredientName?: string;
+  discoveredEffects?: string[];
+  message?: string;
+  snapshot?: SkyUltraAlchemySnapshot;
+}
+export const skyUltraAlchemyMethods = ['game.getAlchemySnapshot','game.alchemyCraft','game.eatIngredient'] as const;
 export const skyUltraInventoryMethods = ['game.getInventory','game.getItemThumbnail','game.equipItem','game.unequipItem','game.itemAction','game.renameItem','game.getBarterSnapshot','game.barterTransaction','game.getContainerSnapshot','game.containerTransfer'] as const;
 
 /** Spell book categories, matching Skyrim's Magic menu tabs. */
@@ -582,7 +1009,7 @@ class SharedGameFeedHub {
     const id = this.nextSubscriberId++;
     const topics = normalizeTopics(options.topics);
     const scope: 'full' | 'hud' = options.scope === 'hud' ? 'hud' : 'full';
-    const intervalMs = Math.max(16, Math.min(5000, Math.round(options.intervalMs ?? (scope === 'hud' ? 16 : 750))));
+    const intervalMs = Math.max(8, Math.min(5000, Math.round(options.intervalMs ?? (scope === 'hud' ? 8 : 750))));
     const emitInitial = options.emitInitial !== false;
 
     const wasEmpty = this.subscribers.size === 0;
@@ -946,6 +1373,109 @@ export function createSkyUltraGame(bridge:SkyWebViewAPI=getSkyWebView()) {
       if(input.sort&&['name','value','weight','count','vw'].includes(input.sort))payload.sort=input.sort;
       return bridge.request<SkyUltraContainerSnapshot>('game.getContainerSnapshot',payload,options);
     },
+    blacksmithSnapshot: (options?:SkyUltraRequestOptions)=>bridge.request<SkyUltraBlacksmithSnapshot>('game.getBlacksmithSnapshot',{},options),
+    blacksmithCraft: (input:SkyUltraBlacksmithCraftOptions,options?:SkyUltraRequestOptions)=>{
+      if(!input||typeof input!=='object')throw new TypeError('Blacksmith craft options are required.');
+      const checkedId=inventoryFormId(input.recipeId);
+      const count=input.count===undefined?1:input.count;
+      if(!Number.isInteger(count)||count<1||count>1000)throw new TypeError('Craft count must be an integer between 1 and 1000.');
+      return bridge.request<SkyUltraBlacksmithCraftResult>('game.blacksmithCraft',{recipeId:checkedId,count},options);
+    },
+    blacksmithTemper: (input:SkyUltraBlacksmithTemperOptions,options?:SkyUltraRequestOptions)=>{
+      if(!input||typeof input!=='object')throw new TypeError('Blacksmith temper options are required.');
+      const payload:{recipeId:number|string;itemId:number|string;stackIndex?:number}={
+        recipeId:inventoryFormId(input.recipeId),
+        itemId:inventoryFormId(input.itemId),
+      };
+      if(typeof input.stackIndex==='number'&&Number.isInteger(input.stackIndex))payload.stackIndex=input.stackIndex;
+      return bridge.request<SkyUltraBlacksmithTemperResult>('game.blacksmithTemper',payload,options);
+    },
+    enchantingSnapshot: (options?:SkyUltraRequestOptions)=>bridge.request<SkyUltraEnchantingSnapshot>('game.getEnchantingSnapshot',{},options),
+    enchantItem: (input:SkyUltraEnchantItemOptions,options?:SkyUltraRequestOptions)=>{
+      if(!input||typeof input!=='object')throw new TypeError('Enchant item options are required.');
+      if(!Array.isArray(input.enchantmentIds)||input.enchantmentIds.length===0)throw new TypeError('At least one enchantmentId is required.');
+      const payload:Record<string,JsonValue>={
+        enchantmentIds:input.enchantmentIds.map(id=>inventoryFormId(id)),
+      };
+      if(Array.isArray(input.items)&&input.items.length>0){
+        payload.items=input.items.map(entry=>{
+          const itemObj:Record<string,JsonValue>={itemId:inventoryFormId(entry.itemId)};
+          if(typeof entry.stackIndex==='number'&&Number.isInteger(entry.stackIndex))itemObj.stackIndex=entry.stackIndex;
+          if(typeof entry.count==='number'&&Number.isInteger(entry.count)&&entry.count>1)itemObj.count=Math.min(256,entry.count);
+          if(typeof entry.customName==='string'){
+            const trimmed=entry.customName.trim().slice(0,64);
+            if(trimmed)itemObj.customName=trimmed;
+          }
+          return itemObj;
+        });
+      }else if(input.itemId!==undefined){
+        payload.itemId=inventoryFormId(input.itemId);
+        if(typeof input.stackIndex==='number'&&Number.isInteger(input.stackIndex))payload.stackIndex=input.stackIndex;
+      }else{
+        throw new TypeError('At least one target item is required.');
+      }
+      if(Array.isArray(input.soulGems)&&input.soulGems.length>0){
+        payload.soulGems=input.soulGems.map(entry=>{
+          const gemObj:Record<string,JsonValue>={soulGemId:inventoryFormId(entry.soulGemId)};
+          if(typeof entry.soulGemStackIndex==='number'&&Number.isInteger(entry.soulGemStackIndex))gemObj.soulGemStackIndex=entry.soulGemStackIndex;
+          return gemObj;
+        });
+      }else if(input.soulGemId!==undefined){
+        payload.soulGemId=inventoryFormId(input.soulGemId);
+        if(typeof input.soulGemStackIndex==='number'&&Number.isInteger(input.soulGemStackIndex))payload.soulGemStackIndex=input.soulGemStackIndex;
+      }else{
+        throw new TypeError('At least one Soul Gem is required.');
+      }
+      if(typeof input.chargeSlider==='number'&&Number.isFinite(input.chargeSlider))payload.chargeSlider=Math.max(0.15,Math.min(1,input.chargeSlider));
+      if(typeof input.customName==='string'){
+        const trimmed=input.customName.trim().slice(0,64);
+        if(trimmed)payload.customName=trimmed;
+      }
+      if(input.applyCustomNameToAll===true)payload.applyCustomNameToAll=true;
+      return bridge.request<SkyUltraEnchantItemResult>('game.enchantItem',payload,options);
+    },
+    disenchantItem: (input:SkyUltraDisenchantItemOptions,options?:SkyUltraRequestOptions)=>{
+      if(!input||typeof input!=='object')throw new TypeError('Disenchant item options are required.');
+      const payload:{itemId:number|string;stackIndex?:number}={itemId:inventoryFormId(input.itemId)};
+      if(typeof input.stackIndex==='number'&&Number.isInteger(input.stackIndex))payload.stackIndex=input.stackIndex;
+      return bridge.request<SkyUltraDisenchantItemResult>('game.disenchantItem',payload,options);
+    },
+    renameEnchantment: (input:SkyUltraRenameEnchantmentOptions,options?:SkyUltraRequestOptions)=>{
+      if(!input||typeof input!=='object')throw new TypeError('Rename enchantment options are required.');
+      const payload:Record<string,JsonValue>={enchantmentId:inventoryFormId(input.enchantmentId)};
+      if(input.reset===true){
+        payload.reset=true;
+      }else{
+        const trimmed=typeof input.name==='string'?input.name.trim():'';
+        if(!trimmed)throw new TypeError('A non-empty enchantment name is required.');
+        payload.name=trimmed.slice(0,80);
+      }
+      return bridge.request<SkyUltraRenameEnchantmentResult>('game.renameEnchantment',payload,options);
+    },
+    alchemySnapshot: (options?:SkyUltraRequestOptions)=>bridge.request<SkyUltraAlchemySnapshot>('game.getAlchemySnapshot',{},options),
+    alchemyCraft: (input:SkyUltraAlchemyCraftOptions,options?:SkyUltraRequestOptions)=>{
+      if(!input||typeof input!=='object')throw new TypeError('Alchemy craft options are required.');
+      if(!Array.isArray(input.ingredientIds)||input.ingredientIds.length<2||input.ingredientIds.length>3)throw new TypeError('Select 2 or 3 ingredients.');
+      const payload:Record<string,JsonValue>={
+        ingredientIds:input.ingredientIds.map(id=>inventoryFormId(id)),
+      };
+      const count=input.count===undefined?1:input.count;
+      if(!Number.isInteger(count)||count<1||count>500)throw new TypeError('Brew count must be an integer between 1 and 500.');
+      payload.count=count;
+      if(typeof input.customName==='string'){
+        const trimmed=input.customName.trim().slice(0,64);
+        if(trimmed)payload.customName=trimmed;
+      }
+      return bridge.request<SkyUltraAlchemyCraftResult>('game.alchemyCraft',payload,options);
+    },
+    eatIngredient: (input:SkyUltraEatIngredientOptions,options?:SkyUltraRequestOptions)=>{
+      if(!input||typeof input!=='object')throw new TypeError('Eat ingredient options are required.');
+      return bridge.request<SkyUltraEatIngredientResult>('game.eatIngredient',{ingredientId:inventoryFormId(input.ingredientId)},options);
+    },
+    activeBookSnapshot: (options?:SkyUltraRequestOptions)=>bridge.request<SkyUltraActiveBookSnapshot>('game.getActiveBookSnapshot',{},options),
+    getActiveBookSnapshot: (options?:SkyUltraRequestOptions)=>bridge.request<SkyUltraActiveBookSnapshot>('game.getActiveBookSnapshot',{},options),
+    takeActiveBook: (options?:SkyUltraRequestOptions)=>bridge.request<SkyUltraTakeActiveBookResult>('game.takeActiveBook',{},options),
+    openNativeActiveBook: (options?:SkyUltraRequestOptions)=>bridge.request<SkyUltraOpenNativeBookResult>('game.openNativeActiveBook',{},options),
     containerTransfer: (input:SkyUltraContainerTransferOptions,options?:SkyUltraRequestOptions)=>{
       if(!input||typeof input!=='object')throw new TypeError('Container transfer options are required.');
       const resolvedMode=input.mode??input.action;

@@ -346,7 +346,20 @@ export function installSkyUltraMock<
 }
 
 export { readSkyUltraPerformance, compareSkyUltraPerformance } from "./performance.js";
-export type { SkyUltraTimingMetric, SkyUltraTimingDelta, SkyUltraPerformanceSnapshot, SkyUltraNativeCapture } from "./performance.js";
+export type {
+  SkyUltraTimingMetric,
+  SkyUltraTimingDelta,
+  SkyUltraPerformanceSnapshot,
+  SkyUltraNativeCapture,
+  SkyUltraPercentileSummary,
+  SkyUltraFrameTraceRecord,
+  SkyUltraCefCopyTelemetry,
+  SkyUltraUltralightReplayTelemetry,
+  SkyUltraNativeQueueTelemetry,
+  SkyUltraThumbnailTelemetry,
+  SkyUltraBenchmarkGuidance,
+  SkyUltraFrameTraceSnapshot,
+} from "./performance.js";
 
 export * from './renderer.js';
 export * from './settings.js';
